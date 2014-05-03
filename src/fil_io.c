@@ -208,7 +208,6 @@ static PyObject *_os_write(PyObject *self, PyObject *args)
     return PyInt_FromSsize_t(result);
 }
 
-
 PyDoc_STRVAR(_fd_wait_read_ready_doc, "wait for fd to be ready for read.");
 static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *kwargs)
 {

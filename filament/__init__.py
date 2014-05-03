@@ -1,4 +1,9 @@
-from filament._cext import *
+try:
+    from filament._cext import *
+except ImportError:
+    # No C extension available
+    # FIXME(comstud): Create python versions of stuff
+    from filament import patcher
 
 #from filament import sched
 #from filament import lock

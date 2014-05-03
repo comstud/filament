@@ -1,19 +1,12 @@
-"""_socket replacement that cooperates with Filaments"""
+"""_socket replacement that cooperates with Filaments."""
 
-from filament import io as _fil_io
-
-import sys
 import _socket as _orig_socket
 
-from _socket import *
-
-_ORIG_MAP = {}
+from filament import io as _fil_io
+from filament import patcher
 
 def _patch():
-    if not _ORIG_MAP:
-        _ORIG_MAP['_socket'] = _orig_socket
-        sys.modules['_socket'] = sys.modules[__name__]
-    return _ORIG_MAP
+    patcher.patch('_socket.socket', NBSocket)
 
 
 class NBSocket(_orig_socket.socket):
@@ -33,6 +26,3 @@ class NBSocket(_orig_socket.socket):
 
     def setblocking(self, opt):
         self._act_nonblocking = (opt == 0)
-
-
-socket = NBSocket
