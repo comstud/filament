@@ -5,6 +5,7 @@ import _socket as _orig_socket
 from filament import io as _fil_io
 from filament import patcher
 
+
 def _patch():
     patcher.patch('_socket.socket', NBSocket)
 

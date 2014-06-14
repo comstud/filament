@@ -4,7 +4,7 @@ import os
 import sys
 
 from distutils import sysconfig
-from setuptools import setup
+import setuptools
 
 
 def _greenlet_include_dir():
@@ -61,7 +61,7 @@ else:
             opt = '-O2 -DNDEBUG'
         os.environ['OPT'] = opt
 
-setup(
+setuptools.setup(
     setup_requires=['pbr'],
     pbr=True,
 )

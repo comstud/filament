@@ -10,6 +10,7 @@ from filament import patcher
 
 _orig_fdopen = None
 
+
 def _patch():
     global _orig_fdopen
     _orig_fdopen = patcher.patch('os.fdopen', fdopen)
@@ -81,7 +82,7 @@ def fdopen(fd, *args, **kwargs):
         f._act_nonblocking = True
         return f
 
-    if stat.S_IFMT(s.st_mode) & (stat.S_IFIFO|stat.S_IFSOCK|stat.S_IFCHR):
+    if stat.S_IFMT(s.st_mode) & (stat.S_IFIFO | stat.S_IFSOCK | stat.S_IFCHR):
         new_flags = orig_flags | os.O_NONBLOCK
         try:
             fcntl.fcntl(fd, fcntl.F_SETFL, new_flags)

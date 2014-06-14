@@ -68,11 +68,14 @@ class Patcher(object):
 
 _PATCHER = Patcher()
 
+
 def patch(name, new_object):
     return _PATCHER.patch(name, new_object)
 
+
 def get_original(name):
     return _PATCHER.get_original(name)
+
 
 def patch_all():
     from filament.patcher import socket
