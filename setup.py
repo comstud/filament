@@ -1,16 +1,10 @@
+#!/usr/bin/env python
+
 import os
 import sys
 
-try:
-    import setuptools
-    setup = setuptools.setup
-    Extension = setuptools.Extension
-except ImportError:
-    from distutils import core
-    setup = core.setup
-    Extension = core.Extension
-
 from distutils import sysconfig
+from setuptools import setup
 
 
 def _greenlet_include_dir():
@@ -36,16 +30,10 @@ def _greenlet_include_dir():
 
 
 gl_inc = _greenlet_include_dir()
-ext_incs = []
 if gl_inc:
-    ext_incs.append(gl_inc)
-
-sources = ['cext.c', 'fil_lock.c', 'fil_cond.c', 'filament.c',
-           'fil_message.c', 'fil_scheduler.c', 'fil_semaphore.c',
-           'fil_util.c', 'fil_waiter.c', 'fil_exceptions.c',
-           'fil_iothread.c', 'fil_io.c', 'fil_timer.c']
-source_dir = 'src'
-include_dir = 'include'
+    cflags = os.environ.get("CFLAGS")
+    cflags = "%s-I%s" % (' ' if cflags else '', gl_inc)
+    os.environ['CFLAGS'] = cflags
 
 if '--debug' in sys.argv:
     orig_opt = sysconfig.get_config_var('OPT')
@@ -73,39 +61,7 @@ else:
             opt = '-O2 -DNDEBUG'
         os.environ['OPT'] = opt
 
-#
-
-sources = [os.path.join(source_dir, source) for source in sources]
-include_dirs = [include_dir] + ext_incs
-
-cext_mod = Extension('filament._cext',
-                     include_dirs=include_dirs,
-                     libraries=['pthread', 'event_pthreads'],
-                     sources=sources)
-
-setup(name='filament',
-      version = '0.0.1',
-      description = 'Filament: Microthreads for Python',
-      ext_modules = [cext_mod],
-      author='Chris Behrens',
-      author_email='cbehrens@codestud.com',
-      packages=['filament'],
-      test_suite='tests',
-      license="MIT License",
-      classifiers=[
-        'Intended Audience :: Developers',
-        'License :: OSI Approved :: MIT License',
-        'Natural Language :: English',
-        'Programming Language :: C',
-        'Programming Language :: Python',
-        'Programming Language :: Python :: 2',
-        'Programming Language :: Python :: 2.5',
-        'Programming Language :: Python :: 2.6',
-        'Programming Language :: Python :: 2.7',
-#        'Programming Language :: Python :: 3',
-#        'Programming Language :: Python :: 3.0',
-#        'Programming Language :: Python :: 3.1',
-#        'Programming Language :: Python :: 3.2',
-        'Operating System :: OS Independent',
-        'Topic :: Software Development :: Libraries :: Python Modules'],
-      )
+setup(
+    setup_requires=['pbr'],
+    pbr=True,
+)
