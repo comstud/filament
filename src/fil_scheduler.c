@@ -30,7 +30,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <pthread.h>
-#include <greenlet/greenlet.h>
+#include <greenlet.h>
 #include "fil_scheduler.h"
 #include "fil_util.h"
 

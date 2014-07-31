@@ -2,7 +2,7 @@
 #define __FIL_SCHEDULER_H__
 
 #include <Python.h>
-#include <greenlet/greenlet.h>
+#include <greenlet.h>
 #include <sys/time.h>
 
 typedef struct _pyfil_scheduler PyFilScheduler;

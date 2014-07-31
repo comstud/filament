@@ -29,7 +29,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <pthread.h>
-#include <greenlet/greenlet.h>
+#include <greenlet.h>
 #include "fil_message.h"
 #include "fil_waiter.h"
 #include "fil_util.h"

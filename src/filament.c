@@ -24,7 +24,7 @@
  */
 
 #include <Python.h>
-#include <greenlet/greenlet.h>
+#include <greenlet.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>

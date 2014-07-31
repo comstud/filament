@@ -14,19 +14,44 @@ def _greenlet_include_dir():
     the path or raise.
     """
     py_inc = sysconfig.get_python_inc()
-    greenlet_header = os.path.join(py_inc, 'greenlet', 'greenlet.h')
-    if os.path.exists(greenlet_header):
-        return
-    # Next best guess is it's in /usr/local/include/<python>/
-    path_parts = os.path.split(py_inc)
-    # if 'py_inc' ends in a /, then the last part of the split is '', so
-    # look at the previous one
-    python_part = path_parts[-1] if path_parts[-1] else path_parts[-2]
-    # We're assuming unix here...
-    gl_hdr_dir = '/usr/local/include/%s' % python_part
-    if os.path.exists(gl_hdr_dir + '/greenlet/greenlet.h'):
+
+    def _get_python_part():
+        path_parts = os.path.split(py_inc)
+        # if 'py_inc' ends in a /, then the last part of the split is '', so
+        # look at the previous one
+        return path_parts[-1] if path_parts[-1] else path_parts[-2]
+
+    def _search_dir(path):
+        if os.path.exists(os.path.join(path, 'greenlet.h')):
+            return path
+        gl_hdr_dir = os.path.join(path, 'greenlet')
+        if os.path.exists(os.path.join(gl_hdr_dir, 'greenlet.h')):
+            return gl_hdr_dir
+
+    # Check venv first.
+    venv = os.environ.get('VIRTUAL_ENV')
+    if venv:
+        with open("/tmp/wat", 'w') as f:
+            f.write("%s\n" % venv)
+        gl_hdr_dir = os.path.join(venv, 'include', 'site',
+                                  _get_python_part())
+        if os.path.exists(os.path.join(gl_hdr_dir, 'greenlet.h')):
+            return gl_hdr_dir
+        gl_hdr_dir = os.path.join(gl_hdr_dir, 'greenlet')
+        if os.path.exists(os.path.join(gl_hdr_dir, 'greenlet.h')):
+            return gl_hdr_dir
+
+    gl_hdr_dir = _search_dir(py_inc)
+    if gl_hdr_dir:
+        if gl_hdr_dir == py_inc:
+            return
         return gl_hdr_dir
-    raise RuntimeError('Not sure where the greenlet header is')
+
+    # Next best guess is it's in /usr/local/include/<python>/
+    # We're assuming unix here...
+    gl_hdr_dir = _search_dir('/usr/local/include/%s' % _get_python_part())
+    if gl_hdr_dir:
+        return gl_hdr_dir
 
 
 gl_inc = _greenlet_include_dir()
