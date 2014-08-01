@@ -1,4 +1,5 @@
 coverage
+discover
 flake8
 pylint
 python-subunit

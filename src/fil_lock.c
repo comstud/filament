@@ -363,7 +363,7 @@ static PyObject *_rlock_release(PyFilRLock *self, PyObject *args)
 static PyMethodDef _lock_methods[] = {
     {"acquire", (PyCFunction)_lock_acquire, METH_VARARGS|METH_KEYWORDS, _lock_acquire_doc},
     {"release", (PyCFunction)_lock_release, METH_NOARGS, _lock_release_doc},
-    {"__enter__", (PyCFunction)_lock_acquire, METH_VARARGS, _lock_acquire_doc},
+    {"__enter__", (PyCFunction)_lock_acquire, METH_VARARGS|METH_KEYWORDS, _lock_acquire_doc},
     {"__exit__", (PyCFunction)_lock_release, METH_VARARGS, _lock_release_doc},
     { NULL, NULL }
 };
