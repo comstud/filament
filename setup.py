@@ -7,6 +7,10 @@ from distutils import sysconfig
 import setuptools
 
 
+def _greenlet_header_exists(hdr_dir):
+    return os.path.exists(os.path.join(hdr_dir, 'greenlet.h'))
+
+
 def _greenlet_include_dir():
     """Find the greenlet include directory.  It may be different than
     the python include directory that the extension builder adds
@@ -19,27 +23,28 @@ def _greenlet_include_dir():
         path_parts = os.path.split(py_inc)
         # if 'py_inc' ends in a /, then the last part of the split is '', so
         # look at the previous one
-        return path_parts[-1] if path_parts[-1] else path_parts[-2]
+        python_part = path_parts[-1] if path_parts[-1] else path_parts[-2]
+        # We might have something like 'python3.5m', so drop last char while
+        # it's not a digit
+        while python_part and not python_part[-1].isdigit():
+            python_part = python_part[:-1]
+        return python_part
 
     def _search_dir(path):
-        if os.path.exists(os.path.join(path, 'greenlet.h')):
-            return path
-        gl_hdr_dir = os.path.join(path, 'greenlet')
-        if os.path.exists(os.path.join(gl_hdr_dir, 'greenlet.h')):
-            return gl_hdr_dir
+        for x in range(2):
+            if _greenlet_header_exists(path):
+                return path
+            path = os.path.join(path, 'greenlet')
 
     # Check venv first.
     venv = os.environ.get('VIRTUAL_ENV')
     if venv:
-        with open("/tmp/wat", 'w') as f:
-            f.write("%s\n" % venv)
         gl_hdr_dir = os.path.join(venv, 'include', 'site',
                                   _get_python_part())
-        if os.path.exists(os.path.join(gl_hdr_dir, 'greenlet.h')):
-            return gl_hdr_dir
-        gl_hdr_dir = os.path.join(gl_hdr_dir, 'greenlet')
-        if os.path.exists(os.path.join(gl_hdr_dir, 'greenlet.h')):
-            return gl_hdr_dir
+        for x in range(2):
+            if _greenlet_header_exists(gl_hdr_dir):
+                return gl_hdr_dir
+            gl_hdr_dir = os.path.join(gl_hdr_dir, 'greenlet')
 
     gl_hdr_dir = _search_dir(py_inc)
     if gl_hdr_dir:
@@ -49,9 +54,10 @@ def _greenlet_include_dir():
 
     # Next best guess is it's in /usr/local/include/<python>/
     # We're assuming unix here...
-    gl_hdr_dir = _search_dir('/usr/local/include/%s' % _get_python_part())
-    if gl_hdr_dir:
+    gl_hdr_dir = os.path.join('/usr/local/include', _get_python_part())
+    if _greenlet_header_exists(gl_hdr_dir):
         return gl_hdr_dir
+    raise RuntimeError('Not sure where the greenlet header is')
 
 
 gl_inc = _greenlet_include_dir()

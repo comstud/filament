@@ -168,7 +168,7 @@ static PyFilament *cext_spawn(PyObject *_self, PyObject *args, PyObject *kwargs)
     return fil;
 }
 
-PyDoc_STRVAR(cext_doc, "Filament _cext module.");
+PyDoc_STRVAR(cext_doc, "Filament _filament module.");
 static PyMethodDef cext_methods[] = {
     {"sleep", (PyCFunction)cext_sleep, METH_VARARGS, cext_sleep_doc },
     {"spawn", (PyCFunction)cext_spawn, METH_VARARGS|METH_KEYWORDS, cext_spawn_doc },
@@ -177,12 +177,12 @@ static PyMethodDef cext_methods[] = {
 };
 
 PyMODINIT_FUNC
-init_cext(void)
+init_filament(void)
 {
     PyObject *m;
 
     PyGreenlet_Import();
-    m = Py_InitModule3("_cext", cext_methods, cext_doc);
+    m = Py_InitModule3("_filament", cext_methods, cext_doc);
     if (m == NULL)
         return;
     filament_type_init(m);

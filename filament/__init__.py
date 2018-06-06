@@ -1,5 +1,5 @@
 try:
-    from filament._cext import *  # noqa
+    from _filament import *  # noqa
 except ImportError:
     # No C extension available
     # FIXME(comstud): Create python versions of stuff
