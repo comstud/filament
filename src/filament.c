@@ -261,16 +261,18 @@ static PyTypeObject _filament_type = {
 
 int filament_type_init(PyObject *module)
 {
-    PyObject *m;
+    PyObject *m = module;
 
     PyGreenlet_Import();
     _filament_type.tp_base = &PyGreenlet_Type;
     if (PyType_Ready(&_filament_type) < 0)
         return -1;
 
+    /*
     m = fil_create_module("filament.filament");
     if (m == NULL)
         return -1;
+    */
 
     Py_INCREF((PyObject *)&_filament_type);
     if (PyModule_AddObject(m, "Filament",
@@ -280,12 +282,14 @@ int filament_type_init(PyObject *module)
         return -1;
     }
 
+    /*
     if (PyModule_AddObject(module, "filament", m) != 0)
     {
         return -1;
     }
 
     Py_INCREF(m);
+    */
 
     return 0;
 }

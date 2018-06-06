@@ -1,7 +1,7 @@
 import filament
 
 
-class GreenThread(filament.filament.Filament):
+class GreenThread(filament.Filament):
     pass
 
 
