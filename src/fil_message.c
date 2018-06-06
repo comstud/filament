@@ -49,7 +49,7 @@ typedef struct _pyfil_message {
     uint32_t tot_waiters;
     WaiterList *waiters;
     WaiterList *last_waiter;
-    PyObject *resufil_or_exc_type;
+    PyObject *result_or_exc_type;
     PyObject *exc_value; /* non NULL indicates exception */
     PyObject *exc_tb;
 } PyFilMessage;
@@ -100,7 +100,7 @@ static PyFilWaiter *_waiter_remove(PyFilMessage *message, WaiterList *waiterlist
 
 static void _message_dealloc(PyFilMessage *self)
 {
-    Py_CLEAR(self->resufil_or_exc_type);
+    Py_CLEAR(self->result_or_exc_type);
     Py_CLEAR(self->exc_value);
     Py_CLEAR(self->exc_tb);
     assert(self->tot_waiters == 0);
@@ -111,20 +111,18 @@ static void _message_dealloc(PyFilMessage *self)
 
 static PyObject *_message_result(PyFilMessage *self)
 {
-    Py_INCREF(self->resufil_or_exc_type);
+    Py_INCREF(self->result_or_exc_type);
 
     if (self->exc_value)
     {
-        if (self->exc_value)
-            Py_INCREF(self->exc_value);
-        if (self->exc_tb)
-            Py_INCREF(self->exc_tb);
-        PyErr_Restore(self->resufil_or_exc_type, self->exc_value,
+        Py_XINCREF(self->exc_value);
+        Py_XINCREF(self->exc_tb);
+        PyErr_Restore(self->result_or_exc_type, self->exc_value,
                       self->exc_tb);
         return NULL;
     }
 
-    return self->resufil_or_exc_type;
+    return self->result_or_exc_type;
 }
 
 static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
@@ -133,7 +131,7 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
     WaiterList *waiterlist;
     int err;
 
-    if (self->resufil_or_exc_type != NULL)
+    if (self->result_or_exc_type != NULL)
     {
         return _message_result(self);
     }
@@ -180,14 +178,14 @@ static int __message_send(PyFilMessage *self, PyObject *message)
     WaiterList *waiterlist;
     PyFilWaiter *waiter;
 
-    if (self->resufil_or_exc_type != NULL)
+    if (self->result_or_exc_type != NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Can only send once");
         return -1;
     }
 
     Py_INCREF(message);
-    self->resufil_or_exc_type = message;
+    self->result_or_exc_type = message;
 
     while((waiterlist = self->waiters) != NULL)
     {
@@ -205,19 +203,17 @@ static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
     WaiterList *waiterlist;
     PyFilWaiter *waiter;
 
-    if (self->resufil_or_exc_type != NULL)
+    if (self->result_or_exc_type != NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Can only send once");
         return -1;
     }
 
     Py_INCREF(exc_type);
-    if (exc_value != NULL)
-        Py_INCREF(exc_value);
-    if (exc_tb != NULL)
-        Py_INCREF(exc_tb);
+    Py_XINCREF(exc_value);
+    Py_XINCREF(exc_tb);
 
-    self->resufil_or_exc_type = exc_type;
+    self->result_or_exc_type = exc_type;
     self->exc_value = exc_value;
     self->exc_tb = exc_tb;
 

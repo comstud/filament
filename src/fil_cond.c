@@ -88,9 +88,9 @@ static int _cond_init(PyFilCond *self, PyObject *args, PyObject *kwargs)
     else
     {
         Py_INCREF(lock);
-        self->lock = lock;
     }
 
+    self->lock = lock;
     Py_XINCREF(verbose);
     self->verbose = verbose;
 

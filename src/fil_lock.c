@@ -227,7 +227,7 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
     }
 
     assert(lock->lock.locked == 1);
-    lock->owner = fil_get_ident();
+    lock->owner = owner;
     lock->count = 1;
 
     /* signal cleaned waiterlist up */
@@ -490,7 +490,7 @@ int fil_lock_type_init(PyObject *module)
 
     if (PyModule_AddObject(m, "RLock", (PyObject *)&_rlock_type) != 0)
     {
-        /* FIXME: remove LTLock from module */
+        /* FIXME: remove Lock from module */
         Py_DECREF((PyObject *)&_rlock_type);
         return -1;
     }

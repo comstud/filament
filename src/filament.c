@@ -79,8 +79,7 @@ static int __filament_init(PyFilament *self, PyObject *method, PyObject *args, P
 
     Py_INCREF(method);
     Py_INCREF(args);
-    if (kwargs != NULL)
-        Py_INCREF(kwargs);
+    Py_XINCREF(kwargs);
 
     main_method = PyObject_GetAttrString((PyObject *)self, "main");
     if (main_method == NULL)

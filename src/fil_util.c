@@ -76,7 +76,7 @@ int fil_timeoutobj_to_timespec(PyObject *timeoutobj,
     sec = (long)timeout;
     nsec = (timeout - (double)sec) * 1E9;
 
-    if (ts_buf->tv_nsec > (1000000000L - nsec))
+    if (ts_buf->tv_nsec >= (1000000000L - nsec))
     {
         ts_buf->tv_sec++;
         ts_buf->tv_nsec = ts_buf->tv_nsec - (1000000000L - nsec);
