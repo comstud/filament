@@ -53,8 +53,11 @@ def _greenlet_include_dir():
         return gl_hdr_dir
 
     # Next best guess is it's in /usr/local/include/<python>/
-    # We're assuming unix here...
-    gl_hdr_dir = os.path.join('/usr/local/include', _get_python_part())
+    gl_hdr_dir = os.path.join(os.path.sep,
+                              'usr',
+                              'local',
+                              'include',
+                              python_part)
     if _greenlet_header_exists(gl_hdr_dir):
         return gl_hdr_dir
     raise RuntimeError('Not sure where the greenlet header is')
