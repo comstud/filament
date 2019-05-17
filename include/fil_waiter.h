@@ -16,7 +16,7 @@ typedef struct _waiterlist WaiterList;
 int fil_waiter_type_init(PyObject *module);
 PyFilWaiter *fil_waiter_alloc(void);
 int fil_waiter_wait(PyFilWaiter *waiter, struct timespec *ts);
-void fil_waiter_signal(PyFilWaiter *waiter, int gil_unlocked);
+void fil_waiter_signal(PyFilWaiter *waiter);
 
 struct _waiterlist {
     WaiterList *prev;
@@ -58,11 +58,11 @@ struct _pyfil_waiter {
 #define waiterlist_iterate_and_remove(cur, head, tmp) \
     _waiterlist_iterate_and_remove(cur, &(head), tmp)
 
-#define waiterlist_signal_all(head, gil_unlocked) \
-    _waiterlist_signal_all(&(head), gil_unlocked)
+#define waiterlist_signal_all(head) \
+    _waiterlist_signal_all(&(head))
 
-#define waiterlist_signal_first(head, gil_unlocked) \
-    _waiterlist_signal_first(&(head), gil_unlocked)
+#define waiterlist_signal_first(head) \
+    _waiterlist_signal_first(&(head))
 
 #define waiterlist_empty(head) \
     (head.next == &(head))
@@ -92,19 +92,19 @@ static inline void _waiterlist_del(WaiterList *entry)
     prev->next = next;
 }
 
-static inline void _waiterlist_signal_all(WaiterList *head, int gil_unlocked)
+static inline void _waiterlist_signal_all(WaiterList *head)
 {
     WaiterList *wl, *tmp;
     _waiterlist_iterate_and_remove(wl, head, tmp) {
-        fil_waiter_signal(waiterlist_entry(wl), gil_unlocked);
+        fil_waiter_signal(waiterlist_entry(wl));
     }
 }
 
-static inline void _waiterlist_signal_first(WaiterList *head, int gil_unlocked)
+static inline void _waiterlist_signal_first(WaiterList *head)
 {
     WaiterList *wl = head->next;
     _waiterlist_del(wl);
-    fil_waiter_signal(waiterlist_entry(wl), gil_unlocked);
+    fil_waiter_signal(waiterlist_entry(wl));
 }
 
 #endif /* __FIL_WAITER_H__ */

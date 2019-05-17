@@ -128,7 +128,7 @@ static int __lock_release(PyFilLock *lock)
      * going to grab it anyway.  This prevents some races without
      * additional work to resolve them.
      */
-    waiterlist_signal_first(lock->waiters, 0);
+    waiterlist_signal_first(lock->waiters);
     return 0;
 }
 
@@ -217,7 +217,7 @@ static int __rlock_release(PyFilRLock *lock)
      * going to grab it anyway.  This prevents some races without
      * additional work to resolve them.
      */
-    waiterlist_signal_first(lock->lock.waiters, 0);
+    waiterlist_signal_first(lock->lock.waiters);
     return 0;
 }
 

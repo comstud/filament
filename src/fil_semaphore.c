@@ -155,7 +155,7 @@ static void __semaphore_release(PyFilSemaphore *sema)
      * just going to grab it anyway. This prevents some races without
      * additional work to resolve them.
      */
-    waiterlist_signal_first(sema->waiters, 0);
+    waiterlist_signal_first(sema->waiters);
 
     return;
 }

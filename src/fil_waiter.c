@@ -155,7 +155,7 @@ static int __waiter_wait(PyFilWaiter *waiter, struct timespec *ts)
     return 0;
 }
 
-static void __waiter_signal(PyFilWaiter *waiter, int gil_unlocked)
+static void __waiter_signal(PyFilWaiter *waiter)
 {
     if (waiter->signaled)
         return;
@@ -164,38 +164,22 @@ static void __waiter_signal(PyFilWaiter *waiter, int gil_unlocked)
 
     if (waiter->sched == NULL)
     {
-        PyThreadState *thr_state = NULL;
-
-        /* If the GIL is held, we'll release it so we can allow other
-         * threads to run.  It's not strictly necessary, but may be a
-         * nice place to do it.
+        /* We don't necessarily need to release the GIL but this
+         * might be better to wake up other threads sooner
          */
-        if (!gil_unlocked)
-        {
-            thr_state = PyEval_SaveThread();
-        }
+        PyThreadState *thr_state = PyEval_SaveThread();
 
         pthread_mutex_lock(&(waiter->waiter_lock));
         pthread_cond_signal(&(waiter->waiter_cond));
         pthread_mutex_unlock(&(waiter->waiter_lock));
 
-        if (!gil_unlocked)
-        {
-            PyEval_RestoreThread(thr_state);
-        }
+        PyEval_RestoreThread(thr_state);
         return;
     }
 
     if (waiter->gl != NULL)
     {
-        /* NOTE(comstud): This will INCREF waiter->gl without holding
-         * the GIL if 'gil_unlocked' is true.  This is safe to do without
-         * holding the GIL because 'gl' cannot go away.
-         */
         fil_scheduler_gl_switch(waiter->sched, NULL, waiter->gl);
-        /* XXX FIXME no this is not safe. another thread could INCREF at same time
-         * and the incref is not atomic
-         */
     }
 
     return;
@@ -231,7 +215,7 @@ static PyObject *_waiter_wait(PyFilWaiter *self, PyObject *args, PyObject *kwarg
 PyDoc_STRVAR(_waiter_signal_doc, "Signal the waiter.");
 static PyObject *_waiter_signal(PyFilWaiter *self, PyObject *args)
 {
-    __waiter_signal(self, 0);
+    __waiter_signal(self);
     Py_RETURN_NONE;
 }
 
@@ -325,7 +309,7 @@ int fil_waiter_wait(PyFilWaiter *waiter, struct timespec *ts)
     return __waiter_wait(waiter, ts);
 }
 
-void fil_waiter_signal(PyFilWaiter *waiter, int gil_unlocked)
+void fil_waiter_signal(PyFilWaiter *waiter)
 {
-    __waiter_signal(waiter, gil_unlocked);
+    __waiter_signal(waiter);
 }

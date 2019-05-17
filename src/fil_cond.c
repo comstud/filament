@@ -153,7 +153,7 @@ static int __cond_notify(PyFilCond *cond, int num)
             return 0;
         }
 
-        waiterlist_signal_first(cond->waiters, 0);
+        waiterlist_signal_first(cond->waiters);
     }
 
     return 0;

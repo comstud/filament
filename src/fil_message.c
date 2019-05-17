@@ -144,7 +144,7 @@ static int __message_send(PyFilMessage *self, PyObject *message)
     Py_INCREF(message);
     self->result_or_exc_type = message;
 
-    waiterlist_signal_all(self->waiters, 0);
+    waiterlist_signal_all(self->waiters);
 
     return 0;
 }
@@ -167,7 +167,7 @@ static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
     self->exc_value = exc_value;
     self->exc_tb = exc_tb;
 
-    waiterlist_signal_all(self->waiters, 0);
+    waiterlist_signal_all(self->waiters);
 
     return 0;
 }

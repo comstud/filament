@@ -410,7 +410,7 @@ static void _iothread_event_cb(evutil_socket_t fd, short what, void *arg)
 
         pthread_mutex_unlock(&(ecbi->ecbi_lock));
 
-        fil_waiter_signal(ecbi->waiter, 1);
+        fil_waiter_signal(ecbi->waiter);
 
         iothr->thread_state = PyEval_SaveThread();
 
@@ -449,7 +449,7 @@ static void _iothread_event_cb(evutil_socket_t fd, short what, void *arg)
 
     pthread_mutex_unlock(&(ecbi->ecbi_lock));
 
-    fil_waiter_signal(ecbi->waiter, 1);
+    fil_waiter_signal(ecbi->waiter);
 
     iothr->thread_state = PyEval_SaveThread();
 }
@@ -692,7 +692,6 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
     {
         int errno_save = errno;
 
-        event_del(ev);
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
 

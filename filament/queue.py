@@ -59,7 +59,6 @@ class LiteQueue(object):
     def put(self, item):
         with self.lock:
             return self._put_guts(item, True, None)
-        filament.yield_thread()
 
     def put_nowait(self, item):
         return self.put(item)
