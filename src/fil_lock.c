@@ -35,24 +35,14 @@
 #include "fil_util.h"
 #include "fil_waiter.h"
 
-typedef struct _waiterlist WaiterList;
-
-typedef struct _waiterlist
-{
-    PyFilWaiter *waiter;
-    WaiterList *prev;
-    WaiterList *next;
-} WaiterList;
-
 typedef struct _pyfil_lock {
     PyObject_HEAD
     int locked;
-    WaiterList *waiters;
-    WaiterList *last_waiter;
+    WaiterList waiters;
 } PyFilLock;
 
 typedef struct _pyfil_rlock {
-    PyFilLock lock;
+    PyFilLock lock; /* must remain first. */
     uint64_t owner;
     uint64_t count;
 } PyFilRLock;
@@ -60,7 +50,14 @@ typedef struct _pyfil_rlock {
 
 static PyFilLock *_lock_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
-    return (PyFilLock *)type->tp_alloc(type, 0);
+    PyFilLock *self = (PyFilLock *)type->tp_alloc(type, 0);
+
+    if (self != NULL)
+    {
+        waiterlist_init(self->waiters);
+    }
+
+    return self;
 }
 
 static int _lock_init(PyFilLock *self, PyObject *args, PyObject *kwargs)
@@ -74,44 +71,11 @@ static void _lock_dealloc(PyFilLock *self)
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static WaiterList *_waiter_add(PyFilLock *lock, PyFilWaiter *waiter)
-{
-    WaiterList *waiterlist = malloc(sizeof(WaiterList));
-
-    if (waiterlist == NULL)
-        return NULL;
-    waiterlist->waiter = waiter;
-    waiterlist->next = NULL;
-    if ((waiterlist->prev = lock->last_waiter) == NULL)
-        lock->waiters = waiterlist;
-    else
-        waiterlist->prev->next = waiterlist;
-    lock->last_waiter = waiterlist;
-    return waiterlist;
-}
-
-static PyFilWaiter *_waiter_remove(PyFilLock *lock, WaiterList *waiterlist)
-{
-    PyFilWaiter *waiter = waiterlist->waiter;
-
-    if (waiterlist->prev)
-        waiterlist->prev->next = waiterlist->next;
-    else
-        lock->waiters = waiterlist->next;
-    if (waiterlist->next)
-        waiterlist->next->prev = waiterlist->prev;
-    else
-        lock->last_waiter = waiterlist->prev;
-    free(waiterlist);
-    return waiter;
-}
-
 static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
 {
-    WaiterList *waiterlist;
     PyFilWaiter *waiter;
 
-    if (!lock->locked && !lock->waiters)
+    if (!lock->locked && waiterlist_empty(lock->waiters))
     {
         lock->locked = 1;
         return 0;
@@ -128,18 +92,12 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
         return -1;
     }
 
-    waiterlist = _waiter_add(lock, waiter);
-    if (waiterlist == NULL)
-    {
-        Py_DECREF(waiter);
-        PyErr_NoMemory();
-        return -1;
-    }
+    waiterlist_add_waiter_tail(lock->waiters, waiter);
 
     int err = fil_waiter_wait(waiter, ts);
     if (err)
     {
-        _waiter_remove(lock, waiterlist);
+        waiterlist_remove_waiter(waiter);
         Py_DECREF(waiter);
         return -1;
     }
@@ -154,16 +112,13 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
 
 static int __lock_release(PyFilLock *lock)
 {
-    WaiterList *waiterlist;
-    PyFilWaiter *waiter;
-
     if (!lock->locked)
     {
         PyErr_SetString(PyExc_RuntimeError, "release without acquire");
         return -1;
     }
 
-    if ((waiterlist = lock->waiters) == NULL)
+    if (waiterlist_empty(lock->waiters))
     {
         lock->locked = 0;
         return 0;
@@ -173,19 +128,17 @@ static int __lock_release(PyFilLock *lock)
      * going to grab it anyway.  This prevents some races without
      * additional work to resolve them.
      */
-    waiter = _waiter_remove(lock, waiterlist);
-    fil_waiter_signal(waiter, 0);
+    waiterlist_signal_first(lock->waiters, 0);
     return 0;
 }
 
 static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
 {
-    WaiterList *waiterlist;
     PyFilWaiter *waiter;
     uint64_t owner;
 
     owner = fil_get_ident();
-    if (!lock->lock.locked && !lock->lock.waiters)
+    if (!lock->lock.locked && waiterlist_empty(lock->lock.waiters))
     {
         lock->lock.locked = 1;
         lock->owner = owner;
@@ -210,18 +163,12 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
         return -1;
     }
 
-    waiterlist = _waiter_add(&(lock->lock), waiter);
-    if (waiterlist == NULL)
-    {
-        Py_DECREF(waiter);
-        PyErr_NoMemory();
-        return -1;
-    }
+    waiterlist_add_waiter_tail(lock->lock.waiters, waiter);
 
     int err = fil_waiter_wait(waiter, ts);
     if (err)
     {
-        _waiter_remove(&(lock->lock), waiterlist);
+        waiterlist_remove_waiter(waiter);
         Py_DECREF(waiter);
         return -1;
     }
@@ -238,8 +185,6 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
 
 static int __rlock_release(PyFilRLock *lock)
 {
-    WaiterList *waiterlist;
-    PyFilWaiter *waiter;
     uint64_t owner;
 
     if (!lock->lock.locked)
@@ -262,7 +207,7 @@ static int __rlock_release(PyFilRLock *lock)
 
     lock->owner = 0;
 
-    if ((waiterlist = lock->lock.waiters) == NULL)
+    if (waiterlist_empty(lock->lock.waiters))
     {
         lock->lock.locked = 0;
         return 0;
@@ -272,8 +217,7 @@ static int __rlock_release(PyFilRLock *lock)
      * going to grab it anyway.  This prevents some races without
      * additional work to resolve them.
      */
-    waiter = _waiter_remove(&(lock->lock), waiterlist);
-    fil_waiter_signal(waiter, 0);
+    waiterlist_signal_first(lock->lock.waiters, 0);
     return 0;
 }
 

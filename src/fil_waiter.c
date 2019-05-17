@@ -36,18 +36,6 @@
 #include "fil_util.h"
 #include "fil_exceptions.h"
 
-typedef struct _pyfil_waiter PyFilWaiter; /* Forward reference */
-
-typedef struct _pyfil_waiter {
-    PyObject_HEAD
-    PyFilScheduler *sched;
-    PyGreenlet *gl;
-    pthread_mutex_t waiter_lock;
-    pthread_cond_t waiter_cond;
-    int signaled;
-} PyFilWaiter;
-
-
 static PyFilWaiter *_waiter_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
     PyFilWaiter *self = NULL;
@@ -205,6 +193,9 @@ static void __waiter_signal(PyFilWaiter *waiter, int gil_unlocked)
          * holding the GIL because 'gl' cannot go away.
          */
         fil_scheduler_gl_switch(waiter->sched, NULL, waiter->gl);
+        /* XXX FIXME no this is not safe. another thread could INCREF at same time
+         * and the incref is not atomic
+         */
     }
 
     return;

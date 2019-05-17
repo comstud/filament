@@ -35,66 +35,23 @@
 #include "fil_waiter.h"
 #include "fil_util.h"
 
-typedef struct _waiterlist WaiterList; /* Forward reference */
-
-typedef struct _waiterlist
-{
-    PyFilWaiter *waiter;
-    WaiterList *prev;
-    WaiterList *next;
-} WaiterList;
-
 typedef struct _pyfil_semaphore {
     PyObject_HEAD
     Py_ssize_t counter;
     uint32_t tot_waiters;
-    WaiterList *waiters;
-    WaiterList *last_waiter;
+    WaiterList waiters;
 } PyFilSemaphore;
-
-
-static WaiterList *_waiter_add(PyFilSemaphore *sema, PyFilWaiter *waiter)
-{
-    WaiterList *waiterlist = malloc(sizeof(WaiterList));
-
-    if (waiterlist == NULL)
-        return NULL;
-    waiterlist->waiter = waiter;
-    waiterlist->next = NULL;
-    if ((waiterlist->prev = sema->last_waiter) == NULL)
-        sema->waiters = waiterlist;
-    else
-        waiterlist->prev->next = waiterlist;
-    sema->last_waiter = waiterlist;
-    return waiterlist;
-}
-
-static PyFilWaiter *_waiter_remove(PyFilSemaphore *sema, WaiterList *waiterlist)
-{
-    PyFilWaiter *waiter = waiterlist->waiter;
-
-    if (waiterlist->prev)
-        waiterlist->prev->next = waiterlist->next;
-    else
-        sema->waiters = waiterlist->next;
-    if (waiterlist->next)
-        waiterlist->next->prev = waiterlist->prev;
-    else
-        sema->last_waiter = waiterlist->prev;
-    free(waiterlist);
-    return waiter;
-}
 
 
 static PyFilSemaphore *_semaphore_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
-    PyFilSemaphore *self = NULL;
+    PyFilSemaphore *self = (PyFilSemaphore *)type->tp_alloc(type, 0);
 
-    self = (PyFilSemaphore *)type->tp_alloc(type, 0);
-    if (self == NULL)
-        return NULL;
-
-    self->counter = 1;
+    if (self != NULL)
+    {
+        waiterlist_init(self->waiters);
+        self->counter = 1;
+    }
 
     return self;
 }
@@ -140,7 +97,6 @@ static int _semaphore_init(PyFilSemaphore *self, PyObject *args, PyObject *kwarg
 static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timespec *ts)
 {
     PyFilWaiter *waiter;
-    WaiterList *waiterlist;
     int err;
 
     if ((sema->counter > 0) && !sema->tot_waiters)
@@ -161,20 +117,14 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
         return -1;
     }
 
-    waiterlist = _waiter_add(sema, waiter);
-    if (waiterlist == NULL)
-    {
-        Py_DECREF(waiter);
-        PyErr_NoMemory();
-        return -1;
-    }
+    waiterlist_add_waiter_tail(sema->waiters, waiter);
 
     sema->tot_waiters++;
     err = fil_waiter_wait(waiter, ts);
     sema->tot_waiters--;
     if (err)
     {
-        _waiter_remove(sema, waiterlist);
+        waiterlist_remove_waiter(waiter);
         Py_DECREF(waiter);
         return -1;
     }
@@ -189,16 +139,13 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
 
 static void __semaphore_release(PyFilSemaphore *sema)
 {
-    PyFilWaiter *waiter;
-    WaiterList *waiterlist;
-
     if (sema->counter < 0)
     {
         sema->counter++;
         return;
     }
 
-    if ((waiterlist = sema->waiters) == NULL)
+    if (waiterlist_empty(sema->waiters))
     {
         sema->counter++;
         return;
@@ -208,8 +155,7 @@ static void __semaphore_release(PyFilSemaphore *sema)
      * just going to grab it anyway. This prevents some races without
      * additional work to resolve them.
      */
-    waiter = _waiter_remove(sema, waiterlist);
-    fil_waiter_signal(waiter, 0);
+    waiterlist_signal_first(sema->waiters, 0);
 
     return;
 }

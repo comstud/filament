@@ -36,30 +36,23 @@
 #include "fil_util.h"
 #include "fil_waiter.h"
 
-typedef struct _waiterlist WaiterList;
-
-typedef struct _waiterlist
-{
-    PyFilWaiter *waiter;
-    WaiterList *prev;
-    WaiterList *next;
-} WaiterList;
-
 typedef struct _pyfil_cond {
     PyObject_HEAD
     PyObject *lock;
     PyObject *verbose;
-    WaiterList *waiters;
-    WaiterList *last_waiter;
+    WaiterList waiters;
 } PyFilCond;
 
 
-static PyObject *_cond_new(PyTypeObject *type, PyObject *args, PyObject *kw)
+static PyFilCond *_cond_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
-    PyObject *self = type->tp_alloc(type, 0);
+    PyFilCond *self = (PyFilCond *)type->tp_alloc(type, 0);
 
-    if (self == NULL)
-        return NULL;
+    if (self != NULL)
+    {
+        waiterlist_init(self->waiters);
+    }
+
     return self;
 }
 
@@ -105,41 +98,8 @@ static void _cond_dealloc(PyFilCond *self)
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static WaiterList *_waiter_add(PyFilCond *cond, PyFilWaiter *waiter)
-{
-    WaiterList *waiterlist = malloc(sizeof(WaiterList));
-
-    if (waiterlist == NULL)
-        return NULL;
-    waiterlist->waiter = waiter;
-    waiterlist->next = NULL;
-    if ((waiterlist->prev = cond->last_waiter) == NULL)
-        cond->waiters = waiterlist;
-    else
-        waiterlist->prev->next = waiterlist;
-    cond->last_waiter = waiterlist;
-    return waiterlist;
-}
-
-static PyFilWaiter *_waiter_remove(PyFilCond *cond, WaiterList *waiterlist)
-{
-    PyFilWaiter *waiter = waiterlist->waiter;
-
-    if (waiterlist->prev)
-        waiterlist->prev->next = waiterlist->next;
-    else
-        cond->waiters = waiterlist->next;
-    if (waiterlist->next)
-        waiterlist->next->prev = waiterlist->prev;
-    else
-        cond->last_waiter = waiterlist->prev;
-    free(waiterlist);
-    return waiter;
-}
-
 static int __cond_wait(PyFilCond *cond, struct timespec *ts)
 {
-    WaiterList *waiterlist;
     PyFilWaiter *waiter;
     PyObject *result;
 
@@ -149,19 +109,13 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
         return -1;
     }
 
-    waiterlist = _waiter_add(cond, waiter);
-    if (waiterlist == NULL)
-    {
-        Py_DECREF(waiter);
-        PyErr_NoMemory();
-        return -1;
-    }
+    waiterlist_add_waiter_tail(cond->waiters, waiter);
 
     result = PyObject_CallMethod(cond->lock, "release", NULL);
     Py_XDECREF(result);
     if (result == NULL)
     {
-        _waiter_remove(cond, waiterlist);
+        waiterlist_remove_waiter(waiter);
         return -1;
     }
 
@@ -170,7 +124,7 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
     {
         PyObject *exc_type, *exc_value, *exc_tb;
 
-        _waiter_remove(cond, waiterlist);
+        waiterlist_remove_waiter(waiter);
         Py_DECREF(waiter);
         PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
         result = PyObject_CallMethod(cond->lock, "acquire", NULL);
@@ -190,20 +144,16 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
 
 static int __cond_notify(PyFilCond *cond, int num)
 {
-    WaiterList *waiterlist;
-    PyFilWaiter *waiter;
     int count = 0;
 
-    while((num < 0) || (count < num))
+    for(;(num < 0) || (count < num);count++)
     {
-        if ((waiterlist = cond->waiters) == NULL)
+        if (waiterlist_empty(cond->waiters))
         {
             return 0;
         }
 
-        waiter = _waiter_remove(cond, waiterlist);
-        fil_waiter_signal(waiter, 0);
-        count++;
+        waiterlist_signal_first(cond->waiters, 0);
     }
 
     return 0;

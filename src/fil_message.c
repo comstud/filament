@@ -34,68 +34,34 @@
 #include "fil_waiter.h"
 #include "fil_util.h"
 
-
-typedef struct _waiterlist WaiterList;
-
-typedef struct _waiterlist
-{
-    PyFilWaiter *waiter;
-    WaiterList *prev;
-    WaiterList *next;
-} WaiterList;
-
 typedef struct _pyfil_message {
     PyObject_HEAD
     uint32_t tot_waiters;
-    WaiterList *waiters;
-    WaiterList *last_waiter;
+
+    WaiterList waiters;
+
     PyObject *result_or_exc_type;
+    int is_exc;
     PyObject *exc_value; /* non NULL indicates exception */
     PyObject *exc_tb;
 } PyFilMessage;
 
 
-static PyObject *_message_new(PyTypeObject *type, PyObject *args, PyObject *kw)
+static PyFilMessage *_message_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
-    return type->tp_alloc(type, 0);
+    PyFilMessage *self = (PyFilMessage *)type->tp_alloc(type, 0);
+
+    if (self != NULL) {
+        waiterlist_init(self->waiters);
+    }
+
+    return self;
 }
 
 static int _message_init(PyFilMessage *self, PyObject *args, PyObject *kargs)
 {
     /* Returns -1 on error */
     return 0;
-}
-
-static WaiterList *_waiter_add(PyFilMessage *message, PyFilWaiter *waiter)
-{
-    WaiterList *waiterlist = malloc(sizeof(WaiterList));
-
-    if (waiterlist == NULL)
-        return NULL;
-    waiterlist->waiter = waiter;
-    waiterlist->next = NULL;
-    if ((waiterlist->prev = message->last_waiter) == NULL)
-        message->waiters = waiterlist;
-    else
-        waiterlist->prev->next = waiterlist;
-    message->last_waiter = waiterlist;
-    return waiterlist;
-}
-
-static PyFilWaiter *_waiter_remove(PyFilMessage *message, WaiterList *waiterlist)
-{
-    PyFilWaiter *waiter = waiterlist->waiter;
-
-    if (waiterlist->prev)
-        waiterlist->prev->next = waiterlist->next;
-    else
-        message->waiters = waiterlist->next;
-    if (waiterlist->next)
-        waiterlist->next->prev = waiterlist->prev;
-    else
-        message->last_waiter = waiterlist->prev;
-    free(waiterlist);
-    return waiter;
 }
 
 static void _message_dealloc(PyFilMessage *self)
@@ -113,7 +79,7 @@ static PyObject *_message_result(PyFilMessage *self)
 {
     Py_INCREF(self->result_or_exc_type);
 
-    if (self->exc_value)
+    if (self->is_exc)
     {
         Py_XINCREF(self->exc_value);
         Py_XINCREF(self->exc_tb);
@@ -128,7 +94,6 @@ static PyObject *_message_result(PyFilMessage *self)
 static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
 {
     PyFilWaiter *waiter;
-    WaiterList *waiterlist;
     int err;
 
     if (self->result_or_exc_type != NULL)
@@ -149,12 +114,7 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
         return NULL;
     }
 
-    waiterlist = _waiter_add(self, waiter);
-    if (waiterlist == NULL)
-    {
-        Py_DECREF(waiter);
-        return PyErr_NoMemory();
-    }
+    waiterlist_add_waiter_tail(self->waiters, waiter);
 
     self->tot_waiters++;
     err = fil_waiter_wait(waiter, ts);
@@ -162,7 +122,7 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
 
     if (err)
     {
-        _waiter_remove(self, waiterlist);
+        waiterlist_remove_waiter(waiter);
         Py_DECREF(waiter);
         return NULL;
     }
@@ -175,9 +135,6 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
 
 static int __message_send(PyFilMessage *self, PyObject *message)
 {
-    WaiterList *waiterlist;
-    PyFilWaiter *waiter;
-
     if (self->result_or_exc_type != NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Can only send once");
@@ -187,12 +144,7 @@ static int __message_send(PyFilMessage *self, PyObject *message)
     Py_INCREF(message);
     self->result_or_exc_type = message;
 
-    while((waiterlist = self->waiters) != NULL)
-    {
-        waiter = waiterlist->waiter;
-        _waiter_remove(self, waiterlist);
-        fil_waiter_signal(waiter, 0);
-    }
+    waiterlist_signal_all(self->waiters, 0);
 
     return 0;
 }
@@ -200,15 +152,13 @@ static int __message_send(PyFilMessage *self, PyObject *message)
 static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
                                     PyObject *exc_value, PyObject *exc_tb)
 {
-    WaiterList *waiterlist;
-    PyFilWaiter *waiter;
-
     if (self->result_or_exc_type != NULL)
     {
         PyErr_SetString(PyExc_RuntimeError, "Can only send once");
         return -1;
     }
 
+    self->is_exc = 1;
     Py_INCREF(exc_type);
     Py_XINCREF(exc_value);
     Py_XINCREF(exc_tb);
@@ -217,12 +167,7 @@ static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
     self->exc_value = exc_value;
     self->exc_tb = exc_tb;
 
-    while((waiterlist = self->waiters) != NULL)
-    {
-        waiter = waiterlist->waiter;
-        _waiter_remove(self, waiterlist);
-        fil_waiter_signal(waiter, 0);
-    }
+    waiterlist_signal_all(self->waiters, 0);
 
     return 0;
 }
