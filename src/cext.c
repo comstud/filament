@@ -45,6 +45,7 @@
 #include "fil_exceptions.h"
 #include "fil_iothread.h"
 #include "fil_io.h"
+#include "fil_queue.h"
 
 
 PyDoc_STRVAR(cext_sleep_doc, "Sleep!");
@@ -196,5 +197,6 @@ init_filament(void)
     fil_iothread_type_init(m);
     fil_io_init(m);
     fil_exceptions_init(m);
+    fil_queue_module_init(m);
 }
 

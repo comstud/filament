@@ -103,8 +103,10 @@ static inline void _waiterlist_signal_all(WaiterList *head)
 static inline void _waiterlist_signal_first(WaiterList *head)
 {
     WaiterList *wl = head->next;
-    _waiterlist_del(wl);
-    fil_waiter_signal(waiterlist_entry(wl));
+    if (wl != head) {
+        _waiterlist_del(wl);
+        fil_waiter_signal(waiterlist_entry(wl));
+    }
 }
 
 #endif /* __FIL_WAITER_H__ */

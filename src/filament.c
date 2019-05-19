@@ -207,6 +207,7 @@ static PyObject *_filament_main(PyFilament *self, PyObject *args)
 
 static PyMethodDef _filament_methods[] = {
     {"wait", (PyCFunction)_filament_wait, METH_VARARGS, filament_wait_doc},
+    {"join", (PyCFunction)_filament_wait, METH_VARARGS, filament_wait_doc},
     {"main", (PyCFunction)_filament_main, METH_NOARGS, filament_main_doc},
     { NULL, NULL }
 };

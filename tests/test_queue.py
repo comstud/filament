@@ -1,6 +1,7 @@
 import testtools
 
 from filament import queue
+from filament import pyqueue
 
 
 class _QueueTestMixIn(object):
@@ -32,7 +33,7 @@ class _QueueTestMixIn(object):
         self.assertTrue(self.queue.empty())
         self.assertFalse(self.queue.full())
         self.assertEqual(0, self.queue.qsize())
-        self.assertRaises(queue.Empty, self.queue.get, block=False)
+        self.assertRaises(self.q_module.Empty, self.queue.get, block=False)
 
     def test_empty_full_after_one_put(self):
         self.queue.put(1)
@@ -42,10 +43,12 @@ class _QueueTestMixIn(object):
 
 
 class LiteQueueTestCase(_QueueTestMixIn, testtools.TestCase):
-    q_type = queue.LiteQueue
+    q_module = pyqueue
+    q_type = pyqueue.LiteQueue
 
 
 class QueueTestCase(_QueueTestMixIn, testtools.TestCase):
+    q_module = queue
     q_type = queue.Queue
     q_maxsize = 10
 
@@ -53,11 +56,17 @@ class QueueTestCase(_QueueTestMixIn, testtools.TestCase):
         for x in range(10):
             self.queue.put(x)
         self.assertTrue(self.queue.full())
-        self.assertRaises(queue.Full, self.queue.put, 10, block=False)
+        self.assertRaises(self.q_module.Full, self.queue.put, 10, block=False)
+
+
+class PyQueueTestCase(QueueTestCase):
+    q_module = pyqueue
+    q_type = pyqueue.Queue
 
 
 class LifoQueueTestCase(_QueueTestMixIn, testtools.TestCase):
-    q_type = queue.LifoQueue
+    q_module = pyqueue
+    q_type = pyqueue.LifoQueue
 
     def setUp(self):
         super(LifoQueueTestCase, self).setUp()

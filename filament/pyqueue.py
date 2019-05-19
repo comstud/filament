@@ -1,18 +1,19 @@
 import collections
 import heapq
 
+try:
+    import Queue as _queue
+except ImportError:
+    import queue as _queue
+
 import filament
 
-
-class Empty(Exception):
-    pass
-
-
-class Full(Exception):
-    pass
-
+Empty = _queue.Empty
+Full = _queue.Full
 
 class LiteQueue(object):
+    __slots__ = ('getters', 'lock', 'not_empty_cond', 'queue')
+
     def __init__(self):
         self.getters = []
         self.lock = filament.lock.Lock()
@@ -68,6 +69,8 @@ class LiteQueue(object):
 
 
 class Queue(LiteQueue):
+    __slots__ = ('not_full_cond', 'tasks_done_cond', 'maxsize', 'unfinished_tasks')
+
     def __init__(self, maxsize=0):
         super(Queue, self).__init__()
         self.not_full_cond = filament.cond.Condition(lock=self.lock)
@@ -91,7 +94,7 @@ class Queue(LiteQueue):
     def _put_guts(self, item, block, timeout):
         if self.maxsize > 0 and len(self.queue) >= self.maxsize:
             if not block:
-                raise Full()
+                raise Full
             self.not_full_cond.wait(timeout=timeout)
         super(Queue, self)._put_guts(item, block, timeout)
         self.unfinished_tasks += 1
@@ -119,6 +122,8 @@ class Queue(LiteQueue):
 
 
 class PriorityQueue(Queue):
+    __slots__ = ('queue')
+
     def _init(self):
         self.queue = []
 
@@ -130,6 +135,8 @@ class PriorityQueue(Queue):
 
 
 class LifoQueue(Queue):
+    __slots__ = ('queue')
+
     def _init(self):
         self.queue = []
 
