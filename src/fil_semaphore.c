@@ -38,7 +38,6 @@
 typedef struct _pyfil_semaphore {
     PyObject_HEAD
     Py_ssize_t counter;
-    uint32_t tot_waiters;
     WaiterList waiters;
 } PyFilSemaphore;
 
@@ -58,8 +57,6 @@ static PyFilSemaphore *_semaphore_new(PyTypeObject *type, PyObject *args, PyObje
 
 static void _semaphore_dealloc(PyFilSemaphore *self)
 {
-    assert(self->tot_waiters == 0);
-    assert(self->waiters == NULL);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -99,9 +96,9 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
     PyFilWaiter *waiter;
     int err;
 
-    if ((sema->counter > 0) && !sema->tot_waiters)
+    /* If there are waiters, we should let them acquire before we do */
+    if ((sema->counter > 0) && waiterlist_empty(sema->waiters))
     {
-        /* If there are waiters, we should let them acquire before we do */
         sema->counter--;
         return 0;
     }
@@ -119,9 +116,7 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
 
     waiterlist_add_waiter_tail(sema->waiters, waiter);
 
-    sema->tot_waiters++;
     err = fil_waiter_wait(waiter, ts);
-    sema->tot_waiters--;
     if (err)
     {
         waiterlist_remove_waiter(waiter);
@@ -269,15 +264,15 @@ int fil_semaphore_type_init(PyObject *module)
                            (PyObject *)&_semaphore_type) != 0)
     {
         Py_DECREF((PyObject *)&_semaphore_type);
+        Py_DECREF(m);
         return -1;
     }
 
     if (PyModule_AddObject(module, "semaphore", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }

@@ -52,9 +52,9 @@ typedef struct _pyfil_queue {
 } PyFilQueue;
 
 static PyObject *_deque;
-static PyObject *_empty_tuple;
-static PyObject *EmptyError;
-static PyObject *FullError;
+static PyObject *_EmptyTuple;
+static PyObject *_EmptyError;
+static PyObject *_FullError;
 
 static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
@@ -96,7 +96,7 @@ static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     Py_XDECREF(self->tuple_deque);
     Py_XDECREF(self->tuple_deque_item);
 
-    self->deque = PyObject_Call(_deque, _empty_tuple, NULL);
+    self->deque = PyObject_Call(_deque, _EmptyTuple, NULL);
     if (self->deque == NULL) {
         return -1;
     }
@@ -184,13 +184,20 @@ static PyObject *_queue_get_nowait(PyFilQueue *self, PyObject *args)
 {
     PyObject *res;
    
-    res = PyObject_Call(self->popleft, _empty_tuple, NULL);
+    res = PyObject_Call(self->popleft, _EmptyTuple, NULL);
     if (res == NULL)
     {
-        /*
-         * FIXME: check for IndexError and raise queue.Empty
-         */
-        PyErr_SetNone(EmptyError);
+        PyObject *pt, *pv, *ptb;
+        PyErr_Fetch(&pt, &pv, &ptb);
+        if (!pt || PyErr_GivenExceptionMatches(pt, PyExc_IndexError))
+        {
+            Py_XDECREF(pt);
+            Py_XDECREF(pv);
+            Py_XDECREF(ptb);
+            PyErr_SetNone(_EmptyError);
+            return NULL;
+        }
+        PyErr_Restore(pt, pv, ptb);
         return NULL;
     }
 
@@ -288,7 +295,7 @@ static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *args)
     }
 
     if (__queue_full(self)) {
-        PyErr_SetNone(FullError);
+        PyErr_SetNone(_FullError);
         return NULL;
     }
 
@@ -321,7 +328,7 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     if (block != NULL && PyObject_Not(block))
     {
         if (__queue_full(self)) {
-            PyErr_SetNone(FullError);
+            PyErr_SetNone(_FullError);
             return NULL;
         }
         if (__queue_put(self, item) < 0)
@@ -441,48 +448,9 @@ static PyTypeObject _queue_type = {
 
 int fil_queue_module_init(PyObject *module)
 {
-    PyObject *m;
-
-    if ((EmptyError = PyErr_NewExceptionWithDoc(
-        "filament.queue.Empty",
-        "Queue is Empty.",
-        NULL, NULL)) == NULL)
-    {
-        return -1;
-    }
-
-    if ((FullError = PyErr_NewExceptionWithDoc(
-        "filament.queue.Full",
-        "Queue is Full.",
-        NULL, NULL)) == NULL)
-    {
-        return -1;
-    }
-
-    if (PyType_Ready(&_queue_type) < 0)
-        return -1;
-
-    if (_empty_tuple == NULL)
-    {
-        _empty_tuple = PyTuple_New(0);
-        if (_empty_tuple == NULL) {
-            return -1;
-        }
-    }
-
-    if (_deque == NULL)
-    {
-        PyObject *cm = PyImport_ImportModuleNoBlock("_collections");
-        if (cm == NULL)
-        {
-            return -1;
-        }
-        _deque = PyObject_GetAttrString(cm, "deque");
-        Py_DECREF(cm);
-        if (_deque == NULL) {
-            return -1;
-        }
-    }
+    PyObject *m = NULL;
+    PyObject *cm = NULL;
+    PyObject *qm = NULL;
 
     m = fil_create_module("filament.queue");
     if (m == NULL)
@@ -490,35 +458,84 @@ int fil_queue_module_init(PyObject *module)
         return -1;
     }
 
+    if (PyType_Ready(&_queue_type) < 0)
+    {
+        Py_DECREF(m);
+        return -1;
+    }
+
     Py_INCREF((PyObject *)&_queue_type);
     if (PyModule_AddObject(m, "Queue",
                            (PyObject *)&_queue_type) != 0)
     {
-        /* Can never go to zero */
         Py_DECREF((PyObject *)&_queue_type);
-        return -1;
+        goto failure;
     }
 
-    Py_INCREF(EmptyError);
-    if (PyModule_AddObject(m, "Empty", EmptyError) < 0)
+    _EmptyTuple = PyTuple_New(0);
+    if (_EmptyTuple == NULL)
     {
-        Py_DECREF((PyObject *)&_queue_type);
-        return -1;
+        goto failure;
     }
 
-    Py_INCREF(FullError);
-    if (PyModule_AddObject(m, "Full", FullError) < 0)
+    if ((cm = PyImport_ImportModuleNoBlock("_collections")) == NULL)
     {
-        Py_DECREF((PyObject *)&_queue_type);
-        return -1;
+        goto failure;
     }
 
+    if ((_deque = PyObject_GetAttrString(cm, "deque")) == NULL)
+    {
+        goto failure;
+    }
+
+    Py_CLEAR(cm);
+
+    if ((qm = PyImport_ImportModuleNoBlock("Queue")) == NULL)
+    {
+        goto failure;
+    }
+
+    _EmptyError = PyObject_GetAttrString(qm, "Empty");
+    _FullError = PyObject_GetAttrString(qm, "Full");
+
+    Py_CLEAR(qm);
+
+    if (_EmptyError == NULL || _FullError == NULL)
+    {
+        goto failure;
+    }
+
+    Py_INCREF(_EmptyError);
+    if (PyModule_AddObject(m, "Empty", _EmptyError) < 0)
+    {
+        Py_DECREF(_EmptyError);
+        goto failure;
+    }
+
+    Py_INCREF(_FullError);
+    if (PyModule_AddObject(m, "Full", _FullError) < 0)
+    {
+        Py_DECREF(_FullError);
+        goto failure;
+    }
+
+    /* steals reference */
     if (PyModule_AddObject(module, "queue", m) != 0)
     {
-        return -1;
+        goto failure;
     }
 
-    Py_INCREF(m);
-
     return 0;
+
+failure:
+
+    Py_CLEAR(_EmptyError);
+    Py_CLEAR(_FullError);
+    Py_CLEAR(_deque);
+    Py_CLEAR(_EmptyTuple);
+    Py_XDECREF(qm);
+    Py_XDECREF(cm);
+    Py_DECREF(m);
+
+    return -1;
 }

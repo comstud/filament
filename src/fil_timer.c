@@ -219,15 +219,15 @@ int fil_timer_type_init(PyObject *module)
     if (PyModule_AddObject(m, "Timer", (PyObject *)&_timer_type) != 0)
     {
         Py_DECREF((PyObject *)&_timer_type);
+        Py_DECREF(m);
         return -1;
     }
 
     if (PyModule_AddObject(module, "timer", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }

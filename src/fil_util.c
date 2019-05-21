@@ -126,12 +126,14 @@ PyObject *fil_create_module(char *name)
 
     m = PyModule_New(name);
     if (m == NULL)
+    {
         return NULL;
+    }
+
     if (PyDict_SetItemString(modules, name, m) != 0)
     {
         Py_DECREF(m);
         return NULL;
     }
-    Py_DECREF(m);
     return m;
 }

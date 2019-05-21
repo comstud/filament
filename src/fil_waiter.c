@@ -208,7 +208,9 @@ static PyObject *_waiter_wait(PyFilWaiter *self, PyObject *args, PyObject *kwarg
 
     err = __waiter_wait(self, ts);
     if (err)
+    {
         return NULL;
+    }
     Py_RETURN_NONE;
 }
 
@@ -280,21 +282,23 @@ int fil_waiter_type_init(PyObject *module)
 
     m = fil_create_module("filament.waiter");
     if (m == NULL)
+    {
         return -1;
+    }
 
     Py_INCREF((PyObject *)&_waiter_type);
     if (PyModule_AddObject(m, "Waiter", (PyObject *)&_waiter_type) != 0)
     {
         Py_DECREF((PyObject *)&_waiter_type);
+        Py_DECREF(m);
         return -1;
     }
 
     if (PyModule_AddObject(module, "waiter", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }

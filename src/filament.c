@@ -215,7 +215,7 @@ static PyMethodDef _filament_methods[] = {
 static PyTypeObject _filament_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type
                                                    value later */
-    "filament.filament.Filament",               /* tp_name */
+    "filament.Filament",                        /* tp_name */
     sizeof(PyFilament),                         /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_filament_dealloc,              /* tp_dealloc */
@@ -279,16 +279,16 @@ int filament_type_init(PyObject *module)
                            (PyObject *)&_filament_type) != 0)
     {
         Py_DECREF((PyObject *)&_filament_type);
+        /* Py_DECREF(m); */
         return -1;
     }
 
     /*
     if (PyModule_AddObject(module, "filament", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
     */
 
     return 0;

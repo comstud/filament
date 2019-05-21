@@ -293,7 +293,9 @@ int fil_cond_type_init(PyObject *module)
 
     m = fil_create_module("filament.cond");
     if (m == NULL)
+    {
         return -1;
+    }
 
     Py_INCREF((PyObject *)&_cond_type);
     if (PyModule_AddObject(m, "Condition",
@@ -301,15 +303,16 @@ int fil_cond_type_init(PyObject *module)
     {
         /* Can never go to zero */
         Py_DECREF((PyObject *)&_cond_type);
+        Py_DECREF(m);
         return -1;
     }
 
+    /* steals reference to 'm' */
     if (PyModule_AddObject(module, "cond", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }

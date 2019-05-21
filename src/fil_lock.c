@@ -423,28 +423,27 @@ int fil_lock_type_init(PyObject *module)
         return -1;
 
     Py_INCREF((PyObject *)&_lock_type);
-    Py_INCREF((PyObject *)&_rlock_type);
-
     if (PyModule_AddObject(m, "Lock", (PyObject *)&_lock_type) != 0)
     {
         Py_DECREF((PyObject *)&_lock_type);
-        Py_DECREF((PyObject *)&_rlock_type);
+        Py_DECREF(m);
         return -1;
     }
 
+    Py_INCREF((PyObject *)&_rlock_type);
     if (PyModule_AddObject(m, "RLock", (PyObject *)&_rlock_type) != 0)
     {
-        /* FIXME: remove Lock from module */
         Py_DECREF((PyObject *)&_rlock_type);
+        Py_DECREF(m);
         return -1;
     }
 
+    /* steals reference to 'm' */
     if (PyModule_AddObject(module, "lock", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }

@@ -294,7 +294,6 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
     self->greenlet = _create_greenlet(self);
     if (self->greenlet == NULL)
     {
-        /* FIXME: raise */
         return -1;
     }
 
@@ -591,17 +590,16 @@ int fil_scheduler_type_init(PyObject *module)
                            (PyObject *)&_scheduler_type) != 0)
     {
         Py_DECREF((PyObject *)&_scheduler_type);
+        Py_DECREF(m);
         return -1;
 
     }
 
     if (PyModule_AddObject(module, "scheduler", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
-
     }
-
-    Py_INCREF(m);
 
     return 0;
 }
@@ -611,11 +609,15 @@ PyFilScheduler *fil_scheduler_get(int create)
     PyFilScheduler *self = _scheduler_get();
 
     if ((self != NULL) || !create)
+    {
         return self;
+    }
 
     self = (PyFilScheduler *)_sched_new(&_scheduler_type, NULL, NULL);
     if (self == NULL)
+    {
         return NULL;
+    }
 
     if (_sched_init(self, NULL, NULL) < 0)
     {

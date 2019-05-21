@@ -774,11 +774,14 @@ int fil_iothread_type_init(PyObject *module)
                            (PyObject *)&_iothread_type) != 0)
     {
         Py_DECREF((PyObject *)&_iothread_type);
+        Py_DECREF(m);
         return -1;
     }
 
+    /* steals reference to 'm' */
     if (PyModule_AddObject(module, "iothread", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
 

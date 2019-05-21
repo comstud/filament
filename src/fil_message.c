@@ -295,15 +295,15 @@ int fil_message_type_init(PyObject *module)
     if (PyModule_AddObject(m, "Message", (PyObject *)&_message_type) != 0)
     {
         Py_DECREF((PyObject *)&_message_type);
+        Py_DECREF(m);
         return -1;
     }
 
     if (PyModule_AddObject(module, "message", m) != 0)
     {
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }

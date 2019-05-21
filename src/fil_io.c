@@ -57,8 +57,8 @@ static PyMemberDef _fdesc_members[] = {
 
 static PyTypeObject _fdesc_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type value later */
-    "filament.io.FDesc",                      /* tp_name */
-    sizeof(PyFilFDesc),                          /* tp_basicsize */
+    "filament.io.FDesc",                        /* tp_name */
+    sizeof(PyFilFDesc),                         /* tp_basicsize */
     0,                                          /* tp_itemsize */
     0,                                          /* tp_dealloc */
     0,                                          /* tp_print */
@@ -313,6 +313,7 @@ int fil_io_init(PyObject *module)
                            (PyObject *)&_fdesc_type) != 0)
     {
         Py_DECREF((PyObject *)&_fdesc_type);
+        Py_DECREF(m);
         return -1;
     }
 
@@ -323,17 +324,19 @@ int fil_io_init(PyObject *module)
     for(md=mds;md->ml_name;md++)
     {
         cf = PyCFunction_NewEx(md, (PyObject*)NULL, n);
+        /* steals reference to 'cf' */
         PyModule_AddObject(m, md->ml_name, cf);
     }
 
     Py_DECREF(n);
 
+    /* steals reference to 'm' */
     if (PyModule_AddObject(module, "io", m) != 0)
     {
+        Py_DECREF((PyObject *)&_fdesc_type);
+        Py_DECREF(m);
         return -1;
     }
-
-    Py_INCREF(m);
 
     return 0;
 }
