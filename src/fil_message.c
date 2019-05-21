@@ -70,7 +70,7 @@ static void _message_dealloc(PyFilMessage *self)
     Py_CLEAR(self->exc_value);
     Py_CLEAR(self->exc_tb);
     assert(self->tot_waiters == 0);
-    assert(self->waiters == NULL);
+    assert(waiterlist_empty(self->waiters));
 
     Py_TYPE(self)->tp_free((PyObject *)self);
 }

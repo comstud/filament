@@ -41,7 +41,7 @@ struct _pyfil_waiter {
     _waiterlist_add_tail(&(head), &((waiter)->waiter_list))
 
 #define waiterlist_remove_waiter(waiter) \
-    _waiterlist_del(&((waiter)->waiter_list))
+    _waiterlist_del(&((waiter)->waiter_list), 1)
 
 #define waiterlist_entry(cur) \
     (PyFilWaiter *)((char *)cur - offsetof(PyFilWaiter, waiter_list))
@@ -53,7 +53,7 @@ struct _pyfil_waiter {
     for(cur=(head).next,tmp=cur->next;cur != &(head);cur=tmp;tmp=cur->next)
 
 #define _waiterlist_iterate_and_remove(cur, head, tmp) \
-    for(cur=(head)->next,tmp=cur->next,_waiterlist_del(cur);cur != head;cur=tmp,tmp=cur->next)
+    for(cur=(head)->next,tmp=cur->next,_waiterlist_del(cur, 0);cur != head;cur=tmp,tmp=cur->next)
 
 #define waiterlist_iterate_and_remove(cur, head, tmp) \
     _waiterlist_iterate_and_remove(cur, &(head), tmp)
@@ -81,22 +81,29 @@ static inline void _waiterlist_add_tail(WaiterList *head, WaiterList *entry)
     entry->next = head;
     head->prev = entry;
     prev->next = entry;
+    Py_INCREF(waiterlist_entry(entry));
 }
 
-static inline void _waiterlist_del(WaiterList *entry)
+static inline void _waiterlist_del(WaiterList *entry, int decref)
 {
     WaiterList *next = entry->next;
     WaiterList *prev = entry->prev;
 
     next->prev = prev;
     prev->next = next;
+    if (decref)
+    {
+        Py_DECREF(waiterlist_entry(entry));
+    }
 }
 
 static inline void _waiterlist_signal_all(WaiterList *head)
 {
     WaiterList *wl, *tmp;
     _waiterlist_iterate_and_remove(wl, head, tmp) {
-        fil_waiter_signal(waiterlist_entry(wl));
+        PyFilWaiter *waiter = waiterlist_entry(wl);
+        fil_waiter_signal(waiter);
+        Py_DECREF(waiter);
     }
 }
 
@@ -104,8 +111,10 @@ static inline void _waiterlist_signal_first(WaiterList *head)
 {
     WaiterList *wl = head->next;
     if (wl != head) {
-        _waiterlist_del(wl);
-        fil_waiter_signal(waiterlist_entry(wl));
+        PyFilWaiter *waiter = waiterlist_entry(wl);
+        _waiterlist_del(wl, 0);
+        fil_waiter_signal(waiter);
+        Py_DECREF(waiter);
     }
 }
 

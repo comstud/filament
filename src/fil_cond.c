@@ -92,7 +92,7 @@ static int _cond_init(PyFilCond *self, PyObject *args, PyObject *kwargs)
 
 static void _cond_dealloc(PyFilCond *self)
 {
-    assert(self->waiters == NULL);
+    assert(waiterlist_empty(self->waiters));
     Py_XDECREF(self->lock);
     Py_XDECREF(self->verbose);
     Py_TYPE(self)->tp_free((PyObject *)self);

@@ -36,11 +36,13 @@ def _greenlet_include_dir():
                 return path
             path = os.path.join(path, 'greenlet')
 
+    python_part = _get_python_part()
+
     # Check venv first.
     venv = os.environ.get('VIRTUAL_ENV')
     if venv:
         gl_hdr_dir = os.path.join(venv, 'include', 'site',
-                                  _get_python_part())
+                                  python_part)
         for x in range(2):
             if _greenlet_header_exists(gl_hdr_dir):
                 return gl_hdr_dir
@@ -53,12 +55,12 @@ def _greenlet_include_dir():
         return gl_hdr_dir
 
     # Next best guess is it's in /usr/local/include/<python>/
-    gl_hdr_dir = os.path.join(os.path.sep,
-                              'usr',
-                              'local',
-                              'include',
-                              python_part)
-    if _greenlet_header_exists(gl_hdr_dir):
+    gl_hdr_dir = _search_dir(os.path.join(os.path.sep,
+                             'usr',
+                             'local',
+                             'include',
+                             python_part))
+    if gl_hdr_dir:
         return gl_hdr_dir
     raise RuntimeError('Not sure where the greenlet header is')
 

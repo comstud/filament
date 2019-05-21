@@ -58,6 +58,7 @@ static PyFilSemaphore *_semaphore_new(PyTypeObject *type, PyObject *args, PyObje
 static void _semaphore_dealloc(PyFilSemaphore *self)
 {
     Py_TYPE(self)->tp_free((PyObject *)self);
+    assert(waiterlist_empty(self->waiters));
 }
 
 static int _semaphore_init(PyFilSemaphore *self, PyObject *args, PyObject *kwargs)

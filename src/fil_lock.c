@@ -67,7 +67,7 @@ static int _lock_init(PyFilLock *self, PyObject *args, PyObject *kwargs)
 
 static void _lock_dealloc(PyFilLock *self)
 {
-    assert(self->waiters == NULL);
+    assert(waiterlist_empty(self->waiters));
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 

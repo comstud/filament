@@ -142,6 +142,8 @@ static void _queue_dealloc(PyFilQueue *self)
     Py_XDECREF(self->tuple_deque);
     Py_XDECREF(self->tuple_deque_item);
     Py_TYPE(self)->tp_free((PyObject *)self);
+    assert(waiterlist_empty(self->getters));
+    assert(waiterlist_empty(self->putters));
 }
 
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
@@ -287,14 +289,15 @@ static inline int __queue_put(PyFilQueue *self, PyObject *item)
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
 static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *args)
 {
-    PyObject *res, *item;
+    PyObject *item;
 
     if (!PyArg_ParseTuple(args, "O", &item))
     {
         return NULL;
     }
 
-    if (__queue_full(self)) {
+    if (__queue_full(self))
+    {
         PyErr_SetNone(_FullError);
         return NULL;
     }
@@ -304,7 +307,7 @@ static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *args)
         return NULL;
     }
 
-    return res;
+    Py_RETURN_NONE;
 }
 
 PyDoc_STRVAR(_queue_put_doc, "Put into queue.");
