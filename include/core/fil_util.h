@@ -27,6 +27,12 @@
 
 #include "core/filament.h"
 
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+#define FIL_IS_EAGAIN(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
+#else
+#define FIL_IS_EAGAIN(__x) ((__x) == EAGAIN)
+#endif
+
 #define FIL_MIN_NANOSECOND_WAIT 250000000L
 
 #define FIL_TIMESPEC_COMPARE(__x, __y, __cmp)                   \

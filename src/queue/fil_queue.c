@@ -464,6 +464,8 @@ initqueue(void)
         return;
     }
 
+    _EmptyTuple = fil_empty_tuple();
+
     m = Py_InitModule3("_filament.queue", _fil_queue_module_methods, _fil_queue_module_doc);
     if (m == NULL)
     {
@@ -473,12 +475,6 @@ initqueue(void)
     if (PyType_Ready(&_queue_type) < 0)
     {
         return;
-    }
-
-    _EmptyTuple = PyTuple_New(0);
-    if (_EmptyTuple == NULL)
-    {
-        goto failure;
     }
 
     if ((cm = PyImport_ImportModuleNoBlock("_collections")) == NULL)
@@ -537,7 +533,6 @@ failure:
     Py_CLEAR(_EmptyError);
     Py_CLEAR(_FullError);
     Py_CLEAR(_deque);
-    Py_CLEAR(_EmptyTuple);
     Py_XDECREF(qm);
     Py_XDECREF(cm);
 

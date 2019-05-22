@@ -141,6 +141,16 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts)
         }
 
         /* must be a timeout */
+        /* FIXME: hm, no. i believe we can get here if we receive
+         * a signal in the scheduler while in its cond_wait loop.
+         * if the signal causes a system exception, the scheduer
+         * will raise it in the scheduler's parent greenthread,
+         * but that may not be in this one. the exception is
+         * otherwise is nuked, so we wouldn't see it here.
+         *
+         * I believe this is what caused me to see this exception
+         * when I ^C'd a socket server while blocked in a recv()
+         */
         PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
 
         return ETIMEDOUT;

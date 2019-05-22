@@ -119,7 +119,7 @@ PyDoc_STRVAR(_os_read_doc, "os.read() compatible method.");
 static PyObject *_os_read(PyObject *self, PyObject *args)
 {
     int fd;
-    ssize_t result;
+    ssize_t result = -1;
     size_t size;
     PyFilIOThread *iothr;
 
@@ -145,8 +145,11 @@ static PyObject *_os_read(PyObject *self, PyObject *args)
     }
     else
     {
-        iothr = fil_iothread_get();
-        result = fil_iothread_read(iothr, fd, PyString_AsString(buffer), size, NULL, NULL);
+        if ((iothr = fil_iothread_get()) != NULL)
+        {
+            result = fil_iothread_read(iothr, fd, PyString_AsString(buffer), size, NULL, NULL);
+            Py_DECREF(iothr);
+        }
     }
 
     if (result < 0)
@@ -166,7 +169,7 @@ PyDoc_STRVAR(_os_write_doc, "os.write() compatible method.");
 static PyObject *_os_write(PyObject *self, PyObject *args)
 {
     int fd;
-    ssize_t result;
+    ssize_t result = -1;
     ssize_t len;
     PyFilIOThread *iothr;
     Py_buffer pbuf;
@@ -186,8 +189,11 @@ static PyObject *_os_write(PyObject *self, PyObject *args)
     }
     else
     {
-        iothr = fil_iothread_get();
-        result = fil_iothread_write(iothr, fd, pbuf.buf, len, NULL, NULL);
+        if ((iothr = fil_iothread_get()) != NULL)
+        {
+            result = fil_iothread_write(iothr, fd, pbuf.buf, len, NULL, NULL);
+            Py_DECREF(iothr);
+        }
     }
 
     PyBuffer_Release(&pbuf);
@@ -229,9 +235,15 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
         Py_RETURN_NONE;
     }
 
-    iothr = fil_iothread_get();
+    if ((iothr = fil_iothread_get()) == NULL)
+    {
+        return NULL;
+    }
 
     err = fil_iothread_read_ready(iothr, fd, ts, NULL);
+
+    Py_DECREF(iothr);
+
     if (err)
     {
         return NULL;
@@ -269,9 +281,15 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
         Py_RETURN_NONE;
     }
 
-    iothr = fil_iothread_get();
+    if ((iothr = fil_iothread_get()) == NULL)
+    {
+        return NULL;
+    }
 
     err = fil_iothread_write_ready(iothr, fd, ts, NULL);
+
+    Py_DECREF(iothr);
+
     if (err)
     {
         return NULL;

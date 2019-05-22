@@ -301,7 +301,10 @@ static void _handle_exception(PyFilScheduler *self)
     if (PyErr_GivenExceptionMatches(exc_type,
                                     self->system_exceptions))
     {
-        /* Raise these in our parent */
+        /* 
+         * Raise these in our parent. This immediately switches
+         * to the parent.
+         */
         PyGreenlet_Throw(self->greenlet->parent, exc_type, val, tb);
 #if 0
         /* Throw() automatically switches */
@@ -310,6 +313,9 @@ static void _handle_exception(PyFilScheduler *self)
     }
 
     /* Squash other exceptions */
+    fprintf(stderr, "Squashing exc in greenlet: ");
+    PyObject_Print(val, stderr, 0);
+    fprintf(stderr, "\n");
     Py_DECREF(exc_type);
     Py_XDECREF(val);
     Py_XDECREF(tb);
@@ -511,7 +517,7 @@ static PyTypeObject _scheduler_type = {
 
 /****************/
 
-PyAPI_FUNC(PyFilScheduler *)fil_scheduler_get(int create)
+PyFilScheduler *fil_scheduler_get(int create)
 {
     PyFilScheduler *self = _scheduler_get();
 
@@ -541,9 +547,9 @@ int fil_scheduler_add_event(PyFilScheduler *sched, struct timespec *ts,
    return _scheduler_add_event(sched, ts, flags, cb, cb_arg);
 }
 
-void fil_scheduler_switch(PyFilScheduler *sched)
+int fil_scheduler_switch(PyFilScheduler *sched)
 {
-    _greenlet_switch(sched->greenlet);
+    return _greenlet_switch(sched->greenlet);
 }
 
 void fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet)

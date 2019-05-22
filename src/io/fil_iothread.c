@@ -33,12 +33,6 @@
 
 PyTypeObject *PyFilIOThread_Type = NULL;
 
-#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
-#define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
-#else
-#define WOULDBLOCK_ERRNO(__x) ((__x) == EAGAIN)
-#endif
-
 typedef struct _pyfil_iothread
 {
     PyObject_HEAD
@@ -206,7 +200,7 @@ static int _read_processor(evutil_socket_t fd, struct _read_info *ri)
     ri->result = read(fd, ri->buffer, ri->buf_sz);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -222,7 +216,7 @@ static int _write_processor(evutil_socket_t fd, struct _write_info *wi)
     wi->result = write(fd, wi->buffer, wi->buf_sz);
     if (wi->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -238,7 +232,7 @@ static int _accept_processor(evutil_socket_t fd, struct _accept_info *ai)
     ai->result = accept(fd, ai->address, ai->address_len);
     if (ai->result < 0)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -255,7 +249,7 @@ static int _connect_processor(evutil_socket_t fd, struct _connect_info *ci)
     socklen_t res_size = sizeof(res);
 
     getsockopt(fd, SOL_SOCKET, SO_ERROR, &res, &res_size);
-    if (res == EISCONN)
+    if (res == 0 || res == EISCONN)
     {
         ci->result = 0;
     }
@@ -272,7 +266,7 @@ static int _recv_processor(evutil_socket_t fd, struct _recv_info *ri)
     ri->result = recv(fd, ri->buffer, ri->buf_sz, ri->flags);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -289,7 +283,7 @@ static int _recvfrom_processor(evutil_socket_t fd, struct _recvfrom_info *ri)
                           ri->address, ri->address_len);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -305,7 +299,7 @@ static int _recvmsg_processor(evutil_socket_t fd, struct _recvmsg_info *ri)
     ri->result = recvmsg(fd, ri->message, ri->flags);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -321,7 +315,7 @@ static int _send_processor(evutil_socket_t fd, struct _send_info *ri)
     ri->result = send(fd, ri->buffer, ri->buf_sz, ri->flags);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -338,7 +332,7 @@ static int _sendto_processor(evutil_socket_t fd, struct _sendto_info *ri)
                         ri->address, ri->address_len);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -354,7 +348,7 @@ static int _sendmsg_processor(evutil_socket_t fd, struct _sendmsg_info *ri)
     ri->result = sendmsg(fd, ri->message, ri->flags);
     if (ri->result == -1)
     {
-        if (WOULDBLOCK_ERRNO(errno))
+        if (FIL_IS_EAGAIN(errno))
         {
             return -1;
         }
@@ -371,6 +365,8 @@ static void _iothread_event_cb(evutil_socket_t fd, short what, void *arg)
     PyFilIOThread *iothr;
 
     pthread_mutex_lock(&(ecbi->ecbi_lock));
+
+    assert(!(ecbi->flags & IOTHR_ECBI_FLAGS_DONE));
 
     if (!(ecbi->flags & IOTHR_ECBI_FLAGS_WAITING))
     {
@@ -760,26 +756,27 @@ static void _event_log_cb(int severity, const char *msg)
 
 PyFilIOThread *fil_iothread_get(void)
 {
-    PyFilIOThread *self;
-
-    if (_IOThreadObj != NULL)
+    if (_IOThreadObj == NULL)
     {
-        Py_INCREF(_IOThreadObj);
-        return _IOThreadObj;
+        PyFilIOThread *self;
+
+        self = (PyFilIOThread *)_iothread_new(&_iothread_type, NULL, NULL);
+        if (self == NULL)
+        {
+            return NULL;
+        }
+
+        if (_iothread_init(self, NULL, NULL) < 0)
+        {
+            Py_DECREF(self);
+            return NULL;
+        }
+
+        _IOThreadObj = self;
     }
 
-    self = (PyFilIOThread *)_iothread_new(&_iothread_type, NULL, NULL);
-    if (self == NULL)
-        return NULL;
-
-    if (_iothread_init(self, NULL, NULL) < 0)
-    {
-        Py_DECREF(self);
-        return NULL;
-    }
-
-    _IOThreadObj = self;
-    return self;
+    Py_INCREF(_IOThreadObj);
+    return _IOThreadObj;
 }
 
 int fil_iothread_read_ready(PyFilIOThread *iothr, int fd,

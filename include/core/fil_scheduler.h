@@ -58,7 +58,7 @@ typedef struct _pyfilcore_capi PyFilCore_CAPIObject;
 int fil_scheduler_init(PyObject *module, PyFilCore_CAPIObject *capi);
 PyFilScheduler *fil_scheduler_get(int create);
 int fil_scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint32_t event_flags, fil_event_cb_t cb, void *cb_arg);
-void fil_scheduler_switch(PyFilScheduler *sched);
+int fil_scheduler_switch(PyFilScheduler *sched);
 void fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
 PyGreenlet *fil_scheduler_greenlet(PyFilScheduler *sched);
 
@@ -66,7 +66,7 @@ PyGreenlet *fil_scheduler_greenlet(PyFilScheduler *sched);
 
 PyFilScheduler *(*fil_scheduler_get)(int create);
 static int (*fil_scheduler_add_event)(PyFilScheduler *sched, struct timespec *ts, uint32_t event_flags, fil_event_cb_t cb, void *cb_arg);
-static void (*fil_scheduler_switch)(PyFilScheduler *sched);
+static int (*fil_scheduler_switch)(PyFilScheduler *sched);
 static void (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
 static PyGreenlet *(*fil_scheduler_greenlet)(PyFilScheduler *sched);
 

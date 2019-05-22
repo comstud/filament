@@ -1,6 +1,6 @@
 """_socket replacement that cooperates with Filaments."""
 
-import _socket as _orig_socket
+import socket as _orig_socket
 
 from filament import io as _fil_io
 from filament import patcher

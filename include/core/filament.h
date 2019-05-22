@@ -36,7 +36,7 @@ typedef struct _pyfilcore_capi
     /* scheduler */
     PyFilScheduler *(*fil_scheduler_get)(int create);
     int (*fil_scheduler_add_event)(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg);
-    void (*fil_scheduler_switch)(PyFilScheduler *sched);
+    int (*fil_scheduler_switch)(PyFilScheduler *sched);
     void (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
     PyGreenlet *(*fil_scheduler_greenlet)(PyFilScheduler *sched);
 } PyFilCore_CAPIObject;
