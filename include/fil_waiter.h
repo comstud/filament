@@ -6,115 +6,275 @@
 #include <stddef.h>
 #include <pthread.h>
 #include <greenlet.h>
+#include "fil_exceptions.h"
 #include "fil_scheduler.h"
+#include "fil_util.h"
 
-static inline void _workaround_unused_greenlet_api(void) { (void)_PyGreenlet_API; }
+typedef struct _fil_waiter FilWaiter;
+typedef struct _fil_waiterlist FilWaiterList;
 
-typedef struct _pyfil_waiter PyFilWaiter;
-typedef struct _waiterlist WaiterList;
-
-int fil_waiter_type_init(PyObject *module);
-PyFilWaiter *fil_waiter_alloc(void);
-int fil_waiter_wait(PyFilWaiter *waiter, struct timespec *ts);
-void fil_waiter_signal(PyFilWaiter *waiter);
-
-struct _waiterlist {
-    WaiterList *prev;
-    WaiterList *next;
+struct _fil_waiterlist {
+    FilWaiterList *prev;
+    FilWaiterList *next;
 };
 
-struct _pyfil_waiter {
-    PyObject_HEAD
+struct _fil_waiter {
     PyFilScheduler *sched;
     PyGreenlet *gl;
+#define fil_waiter_set_signaled(waiter) (waiter)->flags |= FIL_WAITER_FLAGS_SIGNALED
+#define fil_waiter_signaled(waiter) ((waiter)->flags & FIL_WAITER_FLAGS_SIGNALED)
+#define fil_waiter_set_waiting(waiter) (waiter)->flags |= FIL_WAITER_FLAGS_WAITING
+#define fil_waiter_waiting(waiter)  ((waiter)->flags & FIL_WAITER_FLAGS_WAITING)
+    #define FIL_WAITER_FLAGS_SIGNALED   0x001
+    #define FIL_WAITER_FLAGS_WAITING    0x002
+    unsigned int flags;
+    unsigned int refcnt;
     pthread_mutex_t waiter_lock;
     pthread_cond_t waiter_cond;
-    int signaled;
-
-    WaiterList waiter_list;
+    FilWaiterList waiter_list;
 };
 
-#define waiterlist_init(head) \
-    _waiterlist_init(&(head))
+static inline FilWaiter *fil_waiter_alloc(void)
+{
+    FilWaiter *waiter = malloc(sizeof(FilWaiter));
+    if (waiter == NULL) {
+        PyErr_SetString(PyExc_MemoryError, "failed to alloc FilWaiter");
+    } else {
+        waiter->sched = NULL;
+        waiter->gl = NULL;
+        waiter->flags = 0;
+        waiter->refcnt = 1;
+        pthread_mutex_init(&(waiter->waiter_lock), NULL);
+        pthread_cond_init(&(waiter->waiter_cond), NULL);
+    }
 
-#define waiterlist_add_waiter_tail(head, waiter) \
-    _waiterlist_add_tail(&(head), &((waiter)->waiter_list))
+    return waiter;
+}
 
-#define waiterlist_remove_waiter(waiter) \
-    _waiterlist_del(&((waiter)->waiter_list), 1)
+static inline void fil_waiter_decref(FilWaiter *waiter)
+{
+    if (--waiter->refcnt == 0) {
+        Py_CLEAR(waiter->gl);
+        pthread_mutex_destroy(&(waiter->waiter_lock));
+        pthread_cond_destroy(&(waiter->waiter_cond));
+        free(waiter);
+    }
+}
 
-#define waiterlist_entry(cur) \
-    (PyFilWaiter *)((char *)cur - offsetof(PyFilWaiter, waiter_list))
 
-#define waiterlist_iterate(cur, head) \
-    for(cur=(head).next;cur != &(head);cur=cur->next)
+static inline void _fil_waiter_handle_timeout(PyFilScheduler *sched, FilWaiter *waiter)
+{
+    if (waiter->gl)
+    {
+        fil_scheduler_gl_switch(sched, NULL, waiter->gl);
+    }
+    fil_waiter_decref(waiter);
+}
 
-#define waiterlist_iterate_safe(cur, head, tmp) \
-    for(cur=(head).next,tmp=cur->next;cur != &(head);cur=tmp;tmp=cur->next)
+static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts)
+{
+    if (fil_waiter_signaled(waiter))
+    {
+        return 0;
+    }
 
-#define _waiterlist_iterate_and_remove(cur, head, tmp) \
-    for(cur=(head)->next,tmp=cur->next,_waiterlist_del(cur, 0);cur != head;cur=tmp,tmp=cur->next)
+    fil_waiter_set_waiting(waiter);
 
-#define waiterlist_iterate_and_remove(cur, head, tmp) \
-    _waiterlist_iterate_and_remove(cur, &(head), tmp)
+    waiter->sched = fil_scheduler_get(0);
+    if (waiter->sched == NULL)
+    {
+        PyThreadState *thr_state;
+        int err;
 
-#define waiterlist_signal_all(head) \
-    _waiterlist_signal_all(&(head))
+        for(;;)
+        {
+            thr_state = PyEval_SaveThread();
+            pthread_mutex_lock(&(waiter->waiter_lock));
 
-#define waiterlist_signal_first(head) \
-    _waiterlist_signal_first(&(head))
+            /* race with GIL unlocked? */
+            if (fil_waiter_signaled(waiter))
+            {
+                pthread_mutex_unlock(&(waiter->waiter_lock));
+                PyEval_RestoreThread(thr_state);
+                break;
+            }
 
-#define waiterlist_empty(head) \
-    (head.next == &(head))
+            err = fil_pthread_cond_wait_min(&(waiter->waiter_cond),
+                                            &(waiter->waiter_lock), ts);
 
-static inline void _waiterlist_init(WaiterList *list)
+            pthread_mutex_unlock(&(waiter->waiter_lock));
+            PyEval_RestoreThread(thr_state);
+
+            if (fil_waiter_signaled(waiter))
+            {
+                break;
+            }
+
+            if (err == ETIMEDOUT)
+            {
+                PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
+                return err;
+            }
+
+            /* check signals here so we don't lock up forever */
+            if (PyErr_CheckSignals())
+            {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
+
+    waiter->gl = PyGreenlet_GetCurrent();
+
+    if (ts != NULL)
+    {
+        waiter->refcnt++;
+        fil_scheduler_add_event(waiter->sched, ts, 0,
+                                (fil_event_cb_t)_fil_waiter_handle_timeout, waiter);
+    }
+
+    fil_scheduler_switch(waiter->sched);
+
+    Py_CLEAR(waiter->gl);
+
+    if (!fil_waiter_signaled(waiter))
+    {
+        if (PyErr_Occurred())
+        {
+            return -1;
+        }
+
+        /* must be a timeout */
+        PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
+
+        return ETIMEDOUT;
+    }
+
+    return 0;
+}
+
+static inline void fil_waiter_signal(FilWaiter *waiter)
+{
+    if (fil_waiter_signaled(waiter))
+    {
+        return;
+    }
+
+    fil_waiter_set_signaled(waiter);
+
+    if (!fil_waiter_waiting(waiter))
+    {
+        return;
+    }
+
+    if (waiter->sched == NULL)
+    {
+        /* We don't necessarily need to release the GIL but this
+         * might be better to wake up other threads sooner
+         */
+        PyThreadState *thr_state = PyEval_SaveThread();
+
+        pthread_mutex_lock(&(waiter->waiter_lock));
+        pthread_cond_signal(&(waiter->waiter_cond));
+        pthread_mutex_unlock(&(waiter->waiter_lock));
+
+        PyEval_RestoreThread(thr_state);
+        return;
+    }
+
+    if (waiter->gl != NULL)
+    {
+        fil_scheduler_gl_switch(waiter->sched, NULL, waiter->gl);
+    }
+
+    return;
+}
+
+#define _fil_waiterlist_empty(waiter_list) ((waiter_list)->next == (waiter_list))
+
+#define fil_waiterlist_init(head) \
+    _fil_waiterlist_init(&(head))
+
+#define fil_waiterlist_entry(cur) \
+    (FilWaiter *)((char *)cur - offsetof(FilWaiter, waiter_list))
+
+#define fil_waiterlist_empty(waiter_list) ((waiter_list).next == &(waiter_list))
+
+#define fil_waiterlist_wait(waiter_list, ts) _fil_waiterlist_wait(&(waiter_list), ts)
+#define fil_waiterlist_signal_first(waiter_list) _fil_waiterlist_signal_first(&(waiter_list))
+#define fil_waiterlist_signal_all(waiter_list) _fil_waiterlist_signal_all(&(waiter_list))
+
+static inline void _fil_waiterlist_init(FilWaiterList *list)
 {
     list->next = list;
     list->prev = list;
 }
 
-static inline void _waiterlist_add_tail(WaiterList *head, WaiterList *entry)
+static inline void _fil_waiterlist_add(FilWaiterList *head, FilWaiter *waiter)
 {
-    WaiterList *prev = head->prev;
+    FilWaiterList *prev = head->prev;
+    FilWaiterList *entry = &(waiter->waiter_list);
 
     entry->prev = prev;
     entry->next = head;
     head->prev = entry;
     prev->next = entry;
-    Py_INCREF(waiterlist_entry(entry));
 }
 
-static inline void _waiterlist_del(WaiterList *entry, int decref)
+static inline void _fil_waiterlist_del(FilWaiterList *entry)
 {
-    WaiterList *next = entry->next;
-    WaiterList *prev = entry->prev;
+    FilWaiterList *next = entry->next;
+    FilWaiterList *prev = entry->prev;
 
     next->prev = prev;
     prev->next = next;
-    if (decref)
+}
+
+static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timespec *ts)
+{
+    int err;
+    FilWaiter *waiter = fil_waiter_alloc();
+
+    if (waiter == NULL) {
+        return -1;
+    }
+
+    _fil_waiterlist_add(waiter_list, waiter);
+
+    err = fil_waiter_wait(waiter, ts);
+
+    if (!fil_waiter_signaled(waiter))
     {
-        Py_DECREF(waiterlist_entry(entry));
+        _fil_waiterlist_del(&(waiter->waiter_list));
+    }
+
+    fil_waiter_decref(waiter);
+
+    return err;
+}
+
+static inline void __fil_waiterlist_signal_first(FilWaiterList *waiter_list)
+{
+    FilWaiterList *wl = waiter_list->next;
+    _fil_waiterlist_del(wl);
+    fil_waiter_signal(fil_waiterlist_entry(wl));
+}
+
+static inline void _fil_waiterlist_signal_all(FilWaiterList *waiter_list)
+{
+    while (!_fil_waiterlist_empty(waiter_list))
+    {
+        __fil_waiterlist_signal_first(waiter_list);
     }
 }
 
-static inline void _waiterlist_signal_all(WaiterList *head)
+static inline void _fil_waiterlist_signal_first(FilWaiterList *waiter_list)
 {
-    WaiterList *wl, *tmp;
-    _waiterlist_iterate_and_remove(wl, head, tmp) {
-        PyFilWaiter *waiter = waiterlist_entry(wl);
-        fil_waiter_signal(waiter);
-        Py_DECREF(waiter);
-    }
-}
-
-static inline void _waiterlist_signal_first(WaiterList *head)
-{
-    WaiterList *wl = head->next;
-    if (wl != head) {
-        PyFilWaiter *waiter = waiterlist_entry(wl);
-        _waiterlist_del(wl, 0);
-        fil_waiter_signal(waiter);
-        Py_DECREF(waiter);
+    if (!_fil_waiterlist_empty(waiter_list))
+    {
+        __fil_waiterlist_signal_first(waiter_list);
     }
 }
 

@@ -34,7 +34,6 @@
 #include <sys/time.h>
 #include <pthread.h>
 #include "filament.h"
-#include "fil_waiter.h"
 #include "fil_lock.h"
 #include "fil_cond.h"
 #include "fil_scheduler.h"
@@ -84,17 +83,30 @@ static PyObject *cext_sleep(PyObject *_self, PyObject *args)
         pthread_mutex_init(&l, NULL);
         pthread_cond_init(&c, NULL);
         pthread_mutex_lock(&l);
-        while ((err != ETIMEDOUT) && (err != ETIME))
+
+        for(;;)
         {
-            err = pthread_cond_timedwait(&c, &l, ts);
+            err = fil_pthread_cond_wait_min(&c, &l, ts);
+            if (err == ETIMEDOUT || PyErr_CheckSignals())
+            {
+                break;
+            }
         }
 
         pthread_mutex_unlock(&l);
         pthread_mutex_destroy(&l);
         pthread_cond_destroy(&c);
         Py_END_ALLOW_THREADS
-        
-        Py_RETURN_NONE;
+
+        if (err == ETIMEDOUT)
+        {
+            Py_RETURN_NONE;
+        }
+        else
+        {
+            /* exception from signal handler */
+            return NULL;
+        }
     }
 
     current_gl = PyGreenlet_GetCurrent();
@@ -185,9 +197,10 @@ init_filament(void)
     PyGreenlet_Import();
     m = Py_InitModule3("_filament", cext_methods, cext_doc);
     if (m == NULL)
+    {
         return;
+    }
     filament_type_init(m);
-    fil_waiter_type_init(m);
     fil_lock_type_init(m);
     fil_cond_type_init(m);
     fil_message_type_init(m);

@@ -38,7 +38,7 @@
 typedef struct _pyfil_lock {
     PyObject_HEAD
     int locked;
-    WaiterList waiters;
+    FilWaiterList waiters;
 } PyFilLock;
 
 typedef struct _pyfil_rlock {
@@ -54,7 +54,7 @@ static PyFilLock *_lock_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 
     if (self != NULL)
     {
-        waiterlist_init(self->waiters);
+        fil_waiterlist_init(self->waiters);
     }
 
     return self;
@@ -67,15 +67,13 @@ static int _lock_init(PyFilLock *self, PyObject *args, PyObject *kwargs)
 
 static void _lock_dealloc(PyFilLock *self)
 {
-    assert(waiterlist_empty(self->waiters));
+    assert(fil_waiterlist_empty(self->waiters));
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
 {
-    PyFilWaiter *waiter;
-
-    if (!lock->locked && waiterlist_empty(lock->waiters))
+    if (!lock->locked && fil_waiterlist_empty(lock->waiters))
     {
         lock->locked = 1;
         return 0;
@@ -86,26 +84,13 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
         return 1;
     }
 
-    waiter = fil_waiter_alloc();
-    if (waiter == NULL)
-    {
-        return -1;
-    }
-
-    waiterlist_add_waiter_tail(lock->waiters, waiter);
-
-    int err = fil_waiter_wait(waiter, ts);
+    int err = fil_waiterlist_wait(lock->waiters, ts);
     if (err)
     {
-        waiterlist_remove_waiter(waiter);
-        Py_DECREF(waiter);
         return -1;
     }
 
     assert(lock->locked == 1);
-
-    /* signal cleaned waiterlist up */
-    Py_DECREF(waiter);
 
     return 0;
 }
@@ -118,7 +103,7 @@ static int __lock_release(PyFilLock *lock)
         return -1;
     }
 
-    if (waiterlist_empty(lock->waiters))
+    if (fil_waiterlist_empty(lock->waiters))
     {
         lock->locked = 0;
         return 0;
@@ -128,17 +113,16 @@ static int __lock_release(PyFilLock *lock)
      * going to grab it anyway.  This prevents some races without
      * additional work to resolve them.
      */
-    waiterlist_signal_first(lock->waiters);
+    fil_waiterlist_signal_first(lock->waiters);
     return 0;
 }
 
 static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
 {
-    PyFilWaiter *waiter;
     uint64_t owner;
 
     owner = fil_get_ident();
-    if (!lock->lock.locked && waiterlist_empty(lock->lock.waiters))
+    if (!lock->lock.locked && fil_waiterlist_empty(lock->lock.waiters))
     {
         lock->lock.locked = 1;
         lock->owner = owner;
@@ -157,28 +141,15 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
         return 1;
     }
 
-    waiter = fil_waiter_alloc();
-    if (waiter == NULL)
-    {
-        return -1;
-    }
-
-    waiterlist_add_waiter_tail(lock->lock.waiters, waiter);
-
-    int err = fil_waiter_wait(waiter, ts);
+    int err = fil_waiterlist_wait(lock->lock.waiters, ts);
     if (err)
     {
-        waiterlist_remove_waiter(waiter);
-        Py_DECREF(waiter);
         return -1;
     }
 
     assert(lock->lock.locked == 1);
     lock->owner = owner;
     lock->count = 1;
-
-    /* signal cleaned waiterlist up */
-    Py_DECREF(waiter);
 
     return 0;
 }
@@ -207,7 +178,7 @@ static int __rlock_release(PyFilRLock *lock)
 
     lock->owner = 0;
 
-    if (waiterlist_empty(lock->lock.waiters))
+    if (fil_waiterlist_empty(lock->lock.waiters))
     {
         lock->lock.locked = 0;
         return 0;
@@ -217,7 +188,7 @@ static int __rlock_release(PyFilRLock *lock)
      * going to grab it anyway.  This prevents some races without
      * additional work to resolve them.
      */
-    waiterlist_signal_first(lock->lock.waiters);
+    fil_waiterlist_signal_first(lock->lock.waiters);
     return 0;
 }
 

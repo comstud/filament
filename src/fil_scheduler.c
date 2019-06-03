@@ -386,24 +386,15 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
                                          &wait_time);
         if (ready_events == NULL)
         {
-            if (wait_time == NULL)
-            {
-                err = pthread_cond_wait(&(self->sched_cond),
-                                        &(self->sched_lock));
-            }
-            else
-            {
-                err = pthread_cond_timedwait(&(self->sched_cond),
-                                             &(self->sched_lock),
-                                             wait_time);
-            }
-
+            err = fil_pthread_cond_wait_min(&(self->sched_cond),
+                                            &(self->sched_lock),
+                                            wait_time);
             if (err == EINTR)
             {
                 pthread_mutex_unlock(&(self->sched_lock));
                 PyEval_RestoreThread(self->thread_state);
                 self->thread_state = NULL;
-                if (PyErr_Occurred() != NULL)
+                if (PyErr_Occurred() != NULL || PyErr_CheckSignals())
                 {
                     _handle_exception(self);
                 }
@@ -434,7 +425,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
                 
                 event->cb(self, event->cb_arg);
 
-                if (PyErr_Occurred() != NULL)
+                if (PyErr_Occurred() != NULL || PyErr_CheckSignals())
                 {
                     _handle_exception(self);
                 }

@@ -43,13 +43,12 @@ typedef struct _pyfil_queue {
     PyObject *append;
     PyObject *popleft;
     PyObject *len;
-    PyObject *tuple_deque;
     PyObject *tuple_deque_item;
 
     long queue_size;
     long queue_entries;
-    WaiterList getters;
-    WaiterList putters;
+    FilWaiterList getters;
+    FilWaiterList putters;
 } PyFilQueue;
 
 static PyObject *_deque;
@@ -63,9 +62,15 @@ static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 
     if (self != NULL)
     {
+        self->deque = NULL;
+        self->append = NULL;
+        self->popleft = NULL;
+        self->len = NULL;
+        self->tuple_deque_item = NULL;
         self->queue_size = -1;
-        waiterlist_init(self->getters);
-        waiterlist_init(self->putters);
+        self->queue_entries = 0;
+        fil_waiterlist_init(self->getters);
+        fil_waiterlist_init(self->putters);
     }
 
     return self;
@@ -76,6 +81,7 @@ static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     long maxsize = 0;
 
     static char *keywords[] = {"maxsize", NULL};
+    PyObject *deque = NULL, *append = NULL, *popleft = NULL, *len = NULL;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|l",
                                      keywords,
@@ -90,61 +96,51 @@ static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
     self->queue_size = maxsize;
 
-    Py_XDECREF(self->deque);
-    Py_XDECREF(self->append);
-    Py_XDECREF(self->popleft);
-    Py_XDECREF(self->len);
-    Py_XDECREF(self->tuple_deque);
-    Py_XDECREF(self->tuple_deque_item);
-
-    self->deque = PyObject_Call(_deque, _EmptyTuple, NULL);
-    if (self->deque == NULL) {
-        return -1;
+    if (((deque = PyObject_Call(_deque, _EmptyTuple, NULL)) == NULL) ||
+        ((append = PyObject_GetAttrString(deque, "append")) == NULL) ||
+        ((popleft = PyObject_GetAttrString(deque, "popleft")) == NULL) ||
+        ((len = PyObject_GetAttrString(deque, "__len__")) == NULL))
+    {
+        goto failure;
     }
 
-    self->append = PyObject_GetAttrString(self->deque, "append");
-    if (self->append == NULL) {
-        return -1;
+    if (self->tuple_deque_item == NULL)
+    {
+        self->tuple_deque_item = PyTuple_New(1);
+        if (self->tuple_deque_item == NULL)
+        {
+            goto failure;
+        }
+        Py_INCREF(Py_None);
+        PyTuple_SET_ITEM(self->tuple_deque_item, 0, Py_None);
     }
 
-    self->popleft = PyObject_GetAttrString(self->deque, "popleft");
-    if (self->popleft == NULL) {
-        return -1;
-    }
-
-    self->len = PyObject_GetAttrString(self->deque, "__len__");
-    if (self->len == NULL) {
-        return -1;
-    }
-
-    /*
-    self->tuple_deque = PyTuple_Pack(1, self->deque);
-    if (self->tuple_deque == NULL) {
-        return -1;
-    }
-    */
-
-    self->tuple_deque_item = PyTuple_New(1);
-    if (self->tuple_deque_item == NULL) {
-        return -1;
-    }
-    Py_INCREF(Py_None);
-    PyTuple_SET_ITEM(self->tuple_deque_item, 0, Py_None);
+    Py_XSETREF(self->deque, deque);
+    Py_XSETREF(self->append, append);
+    Py_XSETREF(self->popleft, popleft);
+    Py_XSETREF(self->len, len);
 
     return 0;
+
+failure:
+    Py_XDECREF(len);
+    Py_XDECREF(popleft);
+    Py_XDECREF(append);
+    Py_XDECREF(deque);
+
+    return -1;
 }
 
 static void _queue_dealloc(PyFilQueue *self)
 {
-    Py_XDECREF(self->deque);
-    Py_XDECREF(self->append);
-    Py_XDECREF(self->popleft);
+    assert(fil_waiterlist_empty(self->getters));
+    assert(fil_waiterlist_empty(self->putters));
     Py_XDECREF(self->len);
-    Py_XDECREF(self->tuple_deque);
+    Py_XDECREF(self->popleft);
+    Py_XDECREF(self->append);
+    Py_XDECREF(self->deque);
     Py_XDECREF(self->tuple_deque_item);
     Py_TYPE(self)->tp_free((PyObject *)self);
-    assert(waiterlist_empty(self->getters));
-    assert(waiterlist_empty(self->putters));
 }
 
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
@@ -205,7 +201,7 @@ static PyObject *_queue_get_nowait(PyFilQueue *self, PyObject *args)
     }
 
     self->queue_entries--;
-    waiterlist_signal_first(self->putters);
+    fil_waiterlist_signal_first(self->putters);
 
     return res;
 }
@@ -215,7 +211,6 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"block", "timeout", NULL};
     PyObject *block = NULL, *timeout = NULL;
-    PyFilWaiter *waiter;
     int err;
     struct timespec tsbuf, *ts = NULL;
 
@@ -239,14 +234,7 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
     while(!self->queue_entries)
     {
-        waiter = fil_waiter_alloc();
-        if (waiter == NULL)
-        {
-            return NULL;
-        }
-
-        waiterlist_add_waiter_tail(self->getters, waiter);
-        err = fil_waiter_wait(waiter, ts);
+        err = fil_waiterlist_wait(self->getters, ts);
         if (err)
         {
             PyObject *pt, *pv, *ptb;
@@ -262,11 +250,8 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
             {
                 PyErr_Restore(pt, pv, ptb);
             }
-            waiterlist_remove_waiter(waiter);
-            Py_DECREF(waiter);
             return NULL;
         }
-        Py_DECREF(waiter);
     }
 
     return _queue_get_nowait(self, NULL);
@@ -292,7 +277,7 @@ static inline int __queue_put(PyFilQueue *self, PyObject *item)
     Py_DECREF(res);
 
     self->queue_entries++;
-    waiterlist_signal_first(self->getters);
+    fil_waiterlist_signal_first(self->getters);
 
     Py_INCREF(Py_None);
     PyTuple_SetItem(self->tuple_deque_item, 0, Py_None);
@@ -328,7 +313,6 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"item", "block", "timeout", NULL};
     PyObject *item = NULL, *block = NULL, *timeout = NULL;
-    PyFilWaiter *waiter;
     int err;
     struct timespec tsbuf, *ts = NULL;
 
@@ -361,14 +345,7 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
     while(__queue_full(self))
     {
-        waiter = fil_waiter_alloc();
-        if (waiter == NULL)
-        {
-            return NULL;
-        }
-
-        waiterlist_add_waiter_tail(self->putters, waiter);
-        err = fil_waiter_wait(waiter, ts);
+        err = fil_waiterlist_wait(self->putters, ts);
         if (err)
         {
             PyObject *pt, *pv, *ptb;
@@ -384,17 +361,15 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
             {
                 PyErr_Restore(pt, pv, ptb);
             }
-            waiterlist_remove_waiter(waiter);
-            Py_DECREF(waiter);
             return NULL;
         }
-        Py_DECREF(waiter);
     }
 
     if (__queue_put(self, item) < 0)
     {
         return NULL;
     }
+
     Py_RETURN_NONE;
 }
 
@@ -479,6 +454,8 @@ int fil_queue_module_init(PyObject *module)
     PyObject *m = NULL;
     PyObject *cm = NULL;
     PyObject *qm = NULL;
+
+    PyGreenlet_Import();
 
     m = fil_create_module("filament.queue");
     if (m == NULL)

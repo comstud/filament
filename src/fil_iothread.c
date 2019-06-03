@@ -165,7 +165,7 @@ struct _event_cb_info
 {
     pthread_mutex_t ecbi_lock;
     pthread_cond_t ecbi_cond;
-    PyFilWaiter *waiter;
+    FilWaiter *waiter;
     struct event *event;
 #define IOTHR_ECBI_FLAGS_WAITING  0x00000001
 #define IOTHR_ECBI_FLAGS_TIMEOUT  0x00000002
@@ -621,7 +621,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
                              struct timespec *timeout)
 {
     struct event *ev;
-    PyFilWaiter *waiter;
+    FilWaiter *waiter;
     PyThreadState *ts;
     struct timeval tv_buf;
     struct timeval *tv = NULL;
@@ -675,7 +675,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
     {
         PyEval_RestoreThread(ts);
 
-        Py_DECREF(waiter);
+        fil_waiter_decref(waiter);
         /* FIXME(comstud): Better exception? */
         PyErr_SetString(PyExc_RuntimeError,
                         "Couldn't add new libevent event");
@@ -697,7 +697,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
 
         PyEval_RestoreThread(ts);
 
-        Py_DECREF(waiter);
+        fil_waiter_decref(waiter);
 
         /* FIXME(comstud): Use errno_save to add to this string */
         (void)errno_save;
@@ -716,7 +716,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
         pthread_mutex_unlock(&(ecbi->ecbi_lock));
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
-        Py_DECREF(waiter);
+        fil_waiter_decref(waiter);
         PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
         return 1;
     }
@@ -726,7 +726,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
         pthread_mutex_unlock(&(ecbi->ecbi_lock));
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
-        Py_DECREF(waiter);
+        fil_waiter_decref(waiter);
         return 0;
     }
 
@@ -742,7 +742,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
     pthread_mutex_unlock(&(ecbi->ecbi_lock));
     pthread_mutex_destroy(&(ecbi->ecbi_lock));
     pthread_cond_destroy(&(ecbi->ecbi_cond));
-    Py_DECREF(waiter);
+    fil_waiter_decref(waiter);
 
     if (PyErr_Occurred() == NULL)
     {
@@ -761,6 +761,8 @@ static void _event_log_cb(int severity, const char *msg)
 int fil_iothread_type_init(PyObject *module)
 {
     PyObject *m;
+
+    PyGreenlet_Import();
 
     if (PyType_Ready(&_iothread_type) < 0)
         return -1;

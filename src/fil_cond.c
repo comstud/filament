@@ -40,7 +40,7 @@ typedef struct _pyfil_cond {
     PyObject_HEAD
     PyObject *lock;
     PyObject *verbose;
-    WaiterList waiters;
+    FilWaiterList waiters;
 } PyFilCond;
 
 
@@ -50,7 +50,7 @@ static PyFilCond *_cond_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 
     if (self != NULL)
     {
-        waiterlist_init(self->waiters);
+        fil_waiterlist_init(self->waiters);
     }
 
     return self;
@@ -83,58 +83,45 @@ static int _cond_init(PyFilCond *self, PyObject *args, PyObject *kwargs)
         Py_INCREF(lock);
     }
 
-    self->lock = lock;
     Py_XINCREF(verbose);
-    self->verbose = verbose;
+
+    Py_XSETREF(self->lock, lock);
+    Py_XSETREF(self->verbose, verbose);
 
     return 0;
 }
 
 static void _cond_dealloc(PyFilCond *self)
 {
-    assert(waiterlist_empty(self->waiters));
-    Py_XDECREF(self->lock);
-    Py_XDECREF(self->verbose);
+    assert(fil_waiterlist_empty(self->waiters));
+    Py_CLEAR(self->lock);
+    Py_CLEAR(self->verbose);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static int __cond_wait(PyFilCond *cond, struct timespec *ts)
 {
-    PyFilWaiter *waiter;
     PyObject *result;
-
-    waiter = fil_waiter_alloc();
-    if (waiter == NULL)
-    {
-        return -1;
-    }
-
-    waiterlist_add_waiter_tail(cond->waiters, waiter);
+    int err;
 
     result = PyObject_CallMethod(cond->lock, "release", NULL);
     Py_XDECREF(result);
     if (result == NULL)
     {
-        waiterlist_remove_waiter(waiter);
         return -1;
     }
 
-    int err = fil_waiter_wait(waiter, ts);
+    err = fil_waiterlist_wait(cond->waiters, ts);
     if (err)
     {
         PyObject *exc_type, *exc_value, *exc_tb;
-
-        waiterlist_remove_waiter(waiter);
-        Py_DECREF(waiter);
         PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+
         result = PyObject_CallMethod(cond->lock, "acquire", NULL);
         Py_XDECREF(result);
         PyErr_Restore(exc_type, exc_value, exc_tb);
         return -1;
     }
-
-    /* notify cleaned waiterlist up */
-    Py_DECREF(waiter);
 
     result = PyObject_CallMethod(cond->lock, "acquire", NULL);
     Py_XDECREF(result);
@@ -148,12 +135,11 @@ static int __cond_notify(PyFilCond *cond, int num)
 
     for(;(num < 0) || (count < num);count++)
     {
-        if (waiterlist_empty(cond->waiters))
+        if (fil_waiterlist_empty(cond->waiters))
         {
             return 0;
         }
-
-        waiterlist_signal_first(cond->waiters);
+        fil_waiterlist_signal_first(cond->waiters);
     }
 
     return 0;

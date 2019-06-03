@@ -30,6 +30,45 @@
 #include "fil_util.h"
 #include "fil_scheduler.h"
 
+/*
+ * block for a minimum amount of time and simulate an EINTR
+ * if the real timeout has not been reached. This allows us to
+ * check for exceptions on signals (like KeyboardInterrupt) within
+ * a reasonable amount of time and not hang the process.
+ */
+int fil_pthread_cond_wait_min(pthread_cond_t *cond, pthread_mutex_t *mutex, struct timespec *ts)
+{
+    struct timeval t;
+    struct timespec ts_buf;
+    struct timespec *tsptr = &ts_buf;
+    int err;
+
+    gettimeofday(&t, NULL);
+    if (t.tv_usec >= 750000)
+    {
+        t.tv_sec++;
+        t.tv_usec -= 750000;
+    } else {
+        t.tv_usec += 250000;
+    }
+
+    ts_buf.tv_sec = t.tv_sec;
+    ts_buf.tv_nsec = t.tv_usec * 1000;
+
+    if (ts != NULL && ((ts_buf.tv_sec > ts->tv_sec) ||
+            (ts_buf.tv_sec == ts->tv_sec && ts_buf.tv_nsec > ts->tv_nsec)))
+    {
+        tsptr = ts;
+    }
+
+    err = pthread_cond_timedwait(cond, mutex, tsptr);
+    if (err == ETIMEDOUT && tsptr != ts)
+    {
+        err = EINTR;
+    }
+
+    return err;
+}
 
 int fil_timeoutobj_to_timespec(PyObject *timeoutobj,
                                struct timespec *ts_buf,

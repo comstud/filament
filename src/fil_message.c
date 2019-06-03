@@ -38,7 +38,7 @@ typedef struct _pyfil_message {
     PyObject_HEAD
     uint32_t tot_waiters;
 
-    WaiterList waiters;
+    FilWaiterList waiters;
 
     PyObject *result_or_exc_type;
     int is_exc;
@@ -52,7 +52,7 @@ static PyFilMessage *_message_new(PyTypeObject *type, PyObject *args, PyObject *
     PyFilMessage *self = (PyFilMessage *)type->tp_alloc(type, 0);
 
     if (self != NULL) {
-        waiterlist_init(self->waiters);
+        fil_waiterlist_init(self->waiters);
     }
 
     return self;
@@ -70,7 +70,7 @@ static void _message_dealloc(PyFilMessage *self)
     Py_CLEAR(self->exc_value);
     Py_CLEAR(self->exc_tb);
     assert(self->tot_waiters == 0);
-    assert(waiterlist_empty(self->waiters));
+    assert(fil_waiterlist_empty(self->waiters));
 
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
@@ -93,7 +93,6 @@ static PyObject *_message_result(PyFilMessage *self)
 
 static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
 {
-    PyFilWaiter *waiter;
     int err;
 
     if (self->result_or_exc_type != NULL)
@@ -108,27 +107,14 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
         return NULL;
     }
 
-    waiter = fil_waiter_alloc();
-    if (waiter == NULL)
-    {
-        return NULL;
-    }
-
-    waiterlist_add_waiter_tail(self->waiters, waiter);
-
     self->tot_waiters++;
-    err = fil_waiter_wait(waiter, ts);
+    err = fil_waiterlist_wait(self->waiters, ts);
     self->tot_waiters--;
 
     if (err)
     {
-        waiterlist_remove_waiter(waiter);
-        Py_DECREF(waiter);
         return NULL;
     }
-
-    /* waiter was removed from list when sending */
-    Py_DECREF(waiter);
 
     return _message_result(self);
 }
@@ -144,7 +130,7 @@ static int __message_send(PyFilMessage *self, PyObject *message)
     Py_INCREF(message);
     self->result_or_exc_type = message;
 
-    waiterlist_signal_all(self->waiters);
+    fil_waiterlist_signal_all(self->waiters);
 
     return 0;
 }
@@ -167,7 +153,7 @@ static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
     self->exc_value = exc_value;
     self->exc_tb = exc_tb;
 
-    waiterlist_signal_all(self->waiters);
+    fil_waiterlist_signal_all(self->waiters);
 
     return 0;
 }
