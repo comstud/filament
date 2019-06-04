@@ -34,6 +34,7 @@
 #include "fil_lock.h"
 #include "fil_util.h"
 #include "fil_waiter.h"
+#include "fil_exceptions.h"
 
 typedef struct _pyfil_queue {
     PyObject_HEAD
@@ -163,7 +164,7 @@ static PyObject *_queue_empty(PyFilQueue *self, PyObject *args)
 static inline int __queue_full(PyFilQueue *self)
 {
     /* full if 1 more entry would overflow the count */
-    if (1 + self->queue_entries < 0) {
+    if (1 + self->queue_entries < self->queue_entries) {
         return 1;
     }
     else if (self->queue_size == -1)
@@ -248,7 +249,19 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         err = fil_waiter_wait(waiter, ts);
         if (err)
         {
-            /* XXX check timeout */
+            PyObject *pt, *pv, *ptb;
+            PyErr_Fetch(&pt, &pv, &ptb);
+            if (!pt || PyErr_GivenExceptionMatches(pt, PyFil_TimeoutExc))
+            {
+                Py_XDECREF(pt);
+                Py_XDECREF(pv);
+                Py_XDECREF(ptb);
+                PyErr_SetNone(_EmptyError);
+            }
+            else
+            {
+                PyErr_Restore(pt, pv, ptb);
+            }
             waiterlist_remove_waiter(waiter);
             Py_DECREF(waiter);
             return NULL;
@@ -358,7 +371,19 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         err = fil_waiter_wait(waiter, ts);
         if (err)
         {
-            /* XXX check timeout */
+            PyObject *pt, *pv, *ptb;
+            PyErr_Fetch(&pt, &pv, &ptb);
+            if (!pt || PyErr_GivenExceptionMatches(pt, PyFil_TimeoutExc))
+            {
+                Py_XDECREF(pt);
+                Py_XDECREF(pv);
+                Py_XDECREF(ptb);
+                PyErr_SetNone(_EmptyError);
+            }
+            else
+            {
+                PyErr_Restore(pt, pv, ptb);
+            }
             waiterlist_remove_waiter(waiter);
             Py_DECREF(waiter);
             return NULL;
