@@ -174,7 +174,7 @@ static PyObject *_message_wait(PyFilMessage *self, PyObject *args, PyObject *kwa
         return NULL;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }

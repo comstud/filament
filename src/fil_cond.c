@@ -161,7 +161,7 @@ static PyObject *_cond_wait(PyFilCond *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }

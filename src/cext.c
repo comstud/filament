@@ -61,7 +61,7 @@ static PyObject *cext_sleep(PyObject *_self, PyObject *args)
         return NULL;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }
@@ -78,8 +78,10 @@ static PyObject *cext_sleep(PyObject *_self, PyObject *args)
         pthread_mutex_t l;
         pthread_cond_t c;
         int err = 0;
+        PyThreadState *thr_state;
 
-        Py_BEGIN_ALLOW_THREADS
+        thr_state = PyEval_SaveThread();
+
         pthread_mutex_init(&l, NULL);
         pthread_cond_init(&c, NULL);
         pthread_mutex_lock(&l);
@@ -87,16 +89,18 @@ static PyObject *cext_sleep(PyObject *_self, PyObject *args)
         for(;;)
         {
             err = fil_pthread_cond_wait_min(&c, &l, ts);
+            PyEval_RestoreThread(thr_state);
             if (err == ETIMEDOUT || PyErr_CheckSignals())
             {
                 break;
             }
+
+            thr_state = PyEval_SaveThread();
         }
 
         pthread_mutex_unlock(&l);
         pthread_mutex_destroy(&l);
         pthread_cond_destroy(&c);
-        Py_END_ALLOW_THREADS
 
         if (err == ETIMEDOUT)
         {

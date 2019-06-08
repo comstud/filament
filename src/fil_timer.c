@@ -97,9 +97,10 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
 
     timeout = PyTuple_GET_ITEM(args, 0);
 
-    err = fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts);
-    if (err)
+    if ((err = fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts)) < 0)
+    {
         return -1;
+    }
 
     method = PyTuple_GET_ITEM(args, 1);
     method_args = PyTuple_GetSlice(args, 2, args_len);

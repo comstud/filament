@@ -227,7 +227,7 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
         return NULL;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }
@@ -267,7 +267,7 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
         return NULL;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }

@@ -227,7 +227,7 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return _queue_get_nowait(self, NULL);
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }
@@ -338,7 +338,7 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         Py_RETURN_NONE;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }

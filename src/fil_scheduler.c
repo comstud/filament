@@ -41,7 +41,7 @@ struct _event;
 typedef struct _event
 {
 #define EVENT_COMPARE(__x, __y, __cmp)                 \
-     TIMESPEC_COMPARE(&(__x)->ts, &(__y)->ts, __cmp)
+     FIL_TIMESPEC_COMPARE(&(__x)->ts, &(__y)->ts, __cmp)
     struct timespec ts;
     uint32_t flags; /* defined in fil_scheduler.h */
     fil_event_cb_t cb;
@@ -106,7 +106,7 @@ static inline Event *_get_ready_events(EventList *elist, struct timespec **next_
 
     _timespec_now(&now);
     for(event=cur_events;event;event=event->next)
-        if (TIMESPEC_COMPARE(&(event->ts), &now, >))
+        if (FIL_TIMESPEC_COMPARE(&(event->ts), &now, >))
             break;
     if (event == cur_events)
     {

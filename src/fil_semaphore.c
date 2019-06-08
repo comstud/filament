@@ -155,7 +155,7 @@ static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *args, PyObje
         return NULL;
     }
 
-    if (fil_timeoutobj_to_timespec(timeout, &tsbuf, &ts) < 0)
+    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
     }
