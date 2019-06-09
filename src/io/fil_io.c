@@ -25,13 +25,16 @@
 
 #define __FIL_BUILDING_IO__
 #include "core/filament.h"
-#include "io/fil_iothread.h"
+#include "io/fil_io.h"
 
 #ifdef EWOULDBLOCK
 #define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
 #else
 #define WOULDBLOCK_ERRNO(__x) ((__x) == EAGAIN)
 #endif
+
+static PyFilIO_CAPIObject _PY_FIL_IO_API_STORAGE;
+PyFilIO_CAPIObject *_PY_FIL_IO_API = &_PY_FIL_IO_API_STORAGE;
 
 typedef struct _pyfil_fdesc
 {
@@ -287,13 +290,13 @@ static PyMethodDef _fil_io_module_methods[] = {
 };
 
 PyMODINIT_FUNC
-ioinit(void)
+initio(void)
 {
-    PyObject *m;
+    PyObject *m, *capsule;
 
     PyFilCore_Import();
 
-    m = Py_InitModule3("_filament.io", _fil_io_module_methods, _fil_io_module_doc);
+    m = Py_InitModule3(FILAMENT_IO_MODULE_NAME, _fil_io_module_methods, _fil_io_module_doc);
     if (m == NULL)
     {
         return;
@@ -310,6 +313,17 @@ ioinit(void)
                            (PyObject *)&_fdesc_type) != 0)
     {
         Py_DECREF((PyObject *)&_fdesc_type);
+        return;
+    }
+
+    if (fil_iothread_init(m) < 0)
+    {
+        return;
+    }
+
+    capsule = PyCapsule_New(_PY_FIL_IO_API, FILAMENT_IO_CAPSULE_NAME, NULL);
+    if (PyModule_AddObject(m, FILAMENT_IO_CAPI_NAME, capsule) != 0)
+    {
         return;
     }
 

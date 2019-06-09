@@ -25,11 +25,13 @@
 
 #define __FIL_BUILDING_IO__
 #include "core/filament.h"
-#include "io/fil_iothread.h"
+#include "io/fil_io.h"
 #include <fcntl.h>
 #include <event2/event.h>
 #include <event2/util.h>
 #include <event2/thread.h>
+
+PyTypeObject *PyFilIOThread_Type = NULL;
 
 #if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
 #define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
@@ -1101,7 +1103,7 @@ ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd,
     return -1;
 }
 
-int fil_iothread_init(PyObject *module, PyFilCore_CAPIObject *capi)
+int fil_iothread_init(PyObject *module)
 {
     evthread_use_pthreads();
     event_set_log_callback(_event_log_cb);
@@ -1119,6 +1121,10 @@ int fil_iothread_init(PyObject *module, PyFilCore_CAPIObject *capi)
         Py_DECREF((PyObject *)&_iothread_type);
         return -1;
     }
+
+    PyFilIOThread_Type = &_iothread_type;
+
+    FIL_COPY_IO_API();
 
     return 0;
 }
