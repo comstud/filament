@@ -31,7 +31,7 @@
 #include <event2/util.h>
 #include <event2/thread.h>
 
-#ifdef EWOULDBLOCK
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
 #define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
 #else
 #define WOULDBLOCK_ERRNO(__x) ((__x) == EAGAIN)
@@ -608,7 +608,8 @@ static PyTypeObject _iothread_type = {
 
 static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
                              struct _event_cb_info *ecbi,
-                             struct timespec *timeout)
+                             struct timespec *timeout,
+                             PyObject *timeout_exc)
 {
     struct event *ev;
     FilWaiter *waiter;
@@ -707,7 +708,14 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
         fil_waiter_decref(waiter);
-        PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
+        if (timeout_exc == NULL)
+        {
+            PyErr_SetString(PyFil_TimeoutExc, "timed out");
+        }
+        else
+        {
+            PyErr_SetString(timeout_exc, "timed out");
+        }
         return 1;
     }
 
@@ -773,13 +781,14 @@ PyFilIOThread *fil_iothread_get(void)
 }
 
 int fil_iothread_read_ready(PyFilIOThread *iothr, int fd,
-                            struct timespec *timeout)
+                            struct timespec *timeout,
+                            PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     int err;
 
     ecbi.processor = NULL;
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         return 0;
@@ -789,13 +798,14 @@ int fil_iothread_read_ready(PyFilIOThread *iothr, int fd,
 }
 
 int fil_iothread_write_ready(PyFilIOThread *iothr, int fd,
-                             struct timespec *timeout)
+                            struct timespec *timeout,
+                            PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     int err;
 
     ecbi.processor = NULL;
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         return 0;
@@ -805,7 +815,8 @@ int fil_iothread_write_ready(PyFilIOThread *iothr, int fd,
 }
 
 ssize_t fil_iothread_read(PyFilIOThread *iothr, int fd, void *buffer,
-                          size_t buf_sz, struct timespec *timeout)
+                          size_t buf_sz, struct timespec *timeout,
+                            PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -816,7 +827,7 @@ ssize_t fil_iothread_read(PyFilIOThread *iothr, int fd, void *buffer,
     ecbi.processor = (event_processor_t)_read_processor;
     ecbi.processor_arg = &(ecbi.read_info);
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.read_info.errn;
@@ -831,7 +842,8 @@ ssize_t fil_iothread_read(PyFilIOThread *iothr, int fd, void *buffer,
 }
 
 ssize_t fil_iothread_write(PyFilIOThread *iothr, int fd, void *buffer,
-                           size_t buf_sz, struct timespec *timeout)
+                           size_t buf_sz, struct timespec *timeout,
+                           PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -842,7 +854,7 @@ ssize_t fil_iothread_write(PyFilIOThread *iothr, int fd, void *buffer,
     ecbi.processor = (event_processor_t)_write_processor;
     ecbi.processor_arg = &(ecbi.write_info);
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.write_info.errn;
@@ -858,7 +870,8 @@ ssize_t fil_iothread_write(PyFilIOThread *iothr, int fd, void *buffer,
 
 int fil_iothread_accept(PyFilIOThread *iothr, int fd,
                         struct sockaddr *address, socklen_t *address_len,
-                        struct timespec *timeout)
+                        struct timespec *timeout,
+                        PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     int result;
@@ -867,7 +880,7 @@ int fil_iothread_accept(PyFilIOThread *iothr, int fd,
     ecbi.processor = (event_processor_t)_accept_processor;
     ecbi.processor_arg = &(ecbi.accept_info);
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.accept_info.errn;
@@ -883,7 +896,8 @@ int fil_iothread_accept(PyFilIOThread *iothr, int fd,
 
 int fil_iothread_connect(PyFilIOThread *iothr, int fd,
                          struct sockaddr *address, socklen_t address_len,
-                         struct timespec *timeout)
+                         struct timespec *timeout,
+                         PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     int result;
@@ -892,7 +906,7 @@ int fil_iothread_connect(PyFilIOThread *iothr, int fd,
     ecbi.processor = (event_processor_t)_connect_processor;
     ecbi.processor_arg = &(ecbi.connect_info);
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.connect_info.errn;
@@ -908,7 +922,8 @@ int fil_iothread_connect(PyFilIOThread *iothr, int fd,
 
 ssize_t fil_iothread_recv(PyFilIOThread *iothr, int fd, void *buffer,
                           size_t buf_sz, int flags,
-                          struct timespec *timeout)
+                          struct timespec *timeout,
+                          PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -920,7 +935,7 @@ ssize_t fil_iothread_recv(PyFilIOThread *iothr, int fd, void *buffer,
     ecbi.processor = (event_processor_t)_recv_processor;
     ecbi.processor_arg = &(ecbi.recv_info);
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.recv_info.errn;
@@ -938,7 +953,8 @@ ssize_t fil_iothread_recvfrom(PyFilIOThread *iothr, int fd, void *buffer,
                               size_t buf_sz, int flags,
                               struct sockaddr *address,
                               socklen_t *address_len,
-                              struct timespec *timeout)
+                              struct timespec *timeout,
+                              PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -952,7 +968,7 @@ ssize_t fil_iothread_recvfrom(PyFilIOThread *iothr, int fd, void *buffer,
     ecbi.processor = (event_processor_t)_recvfrom_processor;
     ecbi.processor_arg = &(ecbi.recvfrom_info);
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.recvfrom_info.errn;
@@ -968,7 +984,8 @@ ssize_t fil_iothread_recvfrom(PyFilIOThread *iothr, int fd, void *buffer,
 
 ssize_t fil_iothread_recvmsg(PyFilIOThread *iothr, int fd,
                              struct msghdr *message, int flags,
-                             struct timespec *timeout)
+                             struct timespec *timeout,
+                             PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -979,7 +996,7 @@ ssize_t fil_iothread_recvmsg(PyFilIOThread *iothr, int fd,
     ecbi.processor = (event_processor_t)_recvmsg_processor;
     ecbi.processor_arg = &(ecbi.recvmsg_info);
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.recvmsg_info.errn;
@@ -995,7 +1012,8 @@ ssize_t fil_iothread_recvmsg(PyFilIOThread *iothr, int fd,
 
 ssize_t fil_iothread_send(PyFilIOThread *iothr, int fd, void *buffer,
                           size_t buf_sz, int flags,
-                          struct timespec *timeout)
+                          struct timespec *timeout,
+                          PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -1007,7 +1025,7 @@ ssize_t fil_iothread_send(PyFilIOThread *iothr, int fd, void *buffer,
     ecbi.processor = (event_processor_t)_send_processor;
     ecbi.processor_arg = &(ecbi.send_info);
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.send_info.errn;
@@ -1025,7 +1043,9 @@ ssize_t fil_iothread_sendto(PyFilIOThread *iothr, int fd, void *buffer,
                             size_t buf_sz, int flags,
                             struct sockaddr *address,
                             socklen_t address_len,
-                            struct timespec *timeout)
+                            struct timespec *timeout,
+                            PyObject *timeout_exc)
+
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -1039,7 +1059,7 @@ ssize_t fil_iothread_sendto(PyFilIOThread *iothr, int fd, void *buffer,
     ecbi.processor = (event_processor_t)_sendto_processor;
     ecbi.processor_arg = &(ecbi.sendto_info);
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.sendto_info.errn;
@@ -1055,7 +1075,8 @@ ssize_t fil_iothread_sendto(PyFilIOThread *iothr, int fd, void *buffer,
 
 ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd,
                              struct msghdr *message,
-                             int flags, struct timespec *timeout)
+                             int flags, struct timespec *timeout,
+                             PyObject *timeout_exc)
 {
     struct _event_cb_info ecbi;
     ssize_t result;
@@ -1066,7 +1087,7 @@ ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd,
     ecbi.processor = (event_processor_t)_sendmsg_processor;
     ecbi.processor_arg = &(ecbi.sendmsg_info);
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout);
+    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
     if (err == 0)
     {
         err = ecbi.sendmsg_info.errn;
