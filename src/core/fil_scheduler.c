@@ -1,18 +1,18 @@
-/* 
+/*
  * The MIT License (MIT): http://opensource.org/licenses/mit-license.php
- * 
- * Copyright (c) 2013-2014, Chris Behrens
- * 
+ *
+ * Copyright (c) 2013-2019, Chris Behrens
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -23,51 +23,9 @@
  *
  */
 
-#include <Python.h>
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include "fil_scheduler.h"
-#include "fil_util.h"
-
-
-struct _event;
-
-/* FIXME: Convert Events to a priority queue */
-typedef struct _event
-{
-#define EVENT_COMPARE(__x, __y, __cmp)                 \
-     FIL_TIMESPEC_COMPARE(&(__x)->ts, &(__y)->ts, __cmp)
-    struct timespec ts;
-    uint32_t flags; /* defined in fil_scheduler.h */
-    fil_event_cb_t cb;
-    void *cb_arg;
-    struct _event *prev;
-    struct _event *next;
-} Event;
-
-typedef struct _eventlist
-{
-    Event *head;
-    Event *tail;
-} EventList;
-
-typedef struct _pyfil_scheduler
-{
-    PyObject_HEAD
-    PyGreenlet *greenlet;
-    PyThreadState *thread_state;
-    pthread_mutex_t sched_lock;
-    pthread_cond_t sched_cond;
-    EventList events;
-    PyObject *system_exceptions;
-    int running;
-    int aborting;
-} PyFilScheduler;
+#define __FIL_CORE__
+#include "core/filament.h"
+#include "core/fil_util.h"
 
 /****************/
 
@@ -79,21 +37,12 @@ static pthread_key_t _scheduler_key = 0;
 
 /****************/
 
-static inline void _timespec_now(struct timespec *ts)
-{
-    struct timeval tv;
-
-    gettimeofday(&tv, NULL);
-    ts->tv_sec = tv.tv_sec;
-    ts->tv_nsec = tv.tv_usec * 1000;
-}
-
-static inline Event *_get_ready_events(EventList *elist, struct timespec **next_run_ret)
+static inline FilSchedEvent *_get_ready_events(FilSchedEventList *elist, struct timespec **next_run_ret)
 {
     /* Extract events that we can run out of 'elist' and keep
      * the list as 'cur_events'.
      */
-    Event *cur_events = elist->head;
+    FilSchedEvent *cur_events = elist->head;
 
     if (cur_events == NULL)
     {
@@ -102,9 +51,9 @@ static inline Event *_get_ready_events(EventList *elist, struct timespec **next_
     }
 
     struct timespec now;
-    Event *event;
+    FilSchedEvent *event;
 
-    _timespec_now(&now);
+    fil_timespec_now(&now);
     for(event=cur_events;event;event=event->next)
         if (FIL_TIMESPEC_COMPARE(&(event->ts), &now, >))
             break;
@@ -141,8 +90,8 @@ static void _scheduler_key_delete(void *sched)
 
 static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg)
 {
-    EventList *elist = &sched->events;
-    Event *event;
+    FilSchedEventList *elist = &sched->events;
+    FilSchedEvent *event;
 
     event = malloc(sizeof(*event));
     if (event == NULL)
@@ -162,12 +111,12 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     {
         event->ts = *ts;
     }
-    
+
     pthread_mutex_lock(&(sched->sched_lock));
 
     /* FIXME: Convert to a priority queue */
     if (elist->head == NULL ||
-        EVENT_COMPARE(event, elist->head, <))
+        FIL_EVENT_COMPARE(event, elist->head, <))
     {
         event->prev = NULL;
         if ((event->next = elist->head) == NULL)
@@ -182,7 +131,7 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     }
 
     /* See if we can just add to the end of the list */
-    if (EVENT_COMPARE(event, elist->tail, >=))
+    if (FIL_EVENT_COMPARE(event, elist->tail, >=))
     {
         event->next = NULL;
         event->prev = elist->tail;
@@ -194,10 +143,10 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
         return 0;
     }
 
-    Event *cur_event = elist->head;
+    FilSchedEvent *cur_event = elist->head;
 
     /* Find event we should insert AFTER */
-    while (cur_event->next && EVENT_COMPARE(event, cur_event->next, >=))
+    while (cur_event->next && FIL_EVENT_COMPARE(event, cur_event->next, >=))
     {
         cur_event = cur_event->next;
     }
@@ -371,8 +320,8 @@ PyDoc_STRVAR(sched_main_doc, "Main entrypoint for the Scheduler greenlet.");
 static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
 {
     struct timespec *wait_time;
-    Event *event;
-    Event *ready_events;
+    FilSchedEvent *event;
+    FilSchedEvent *ready_events;
     int err;
 
     /* Allow other threads to run. */
@@ -410,7 +359,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
         while((event = ready_events) != NULL)
         {
             ready_events = event->next;
-            if (event->flags & EVENT_FLAGS_DONTBLOCK_THREADS)
+            if (event->flags & FIL_SCHED_EVENT_FLAGS_DONTBLOCK_THREADS)
             {
                 /* FIXME(comstud): Probably should allow a way for
                  * event callbacks to return a failure that can be
@@ -422,7 +371,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
             {
                 PyEval_RestoreThread(self->thread_state);
                 self->thread_state = NULL;
-                
+
                 event->cb(self, event->cb_arg);
 
                 if (PyErr_Occurred() != NULL || PyErr_CheckSignals())
@@ -479,6 +428,7 @@ static PyObject *_sched_abort(PyFilScheduler *self, PyObject *args)
     Py_BEGIN_ALLOW_THREADS
     pthread_mutex_lock(&(self->sched_lock));
     self->aborting = 1;
+    /* FIXME: don't use the same cond here and below */
     pthread_cond_signal(&(self->sched_cond));
     while (self->running)
     {
@@ -520,7 +470,7 @@ static PyMethodDef _sched_methods[] = {
 static PyTypeObject _scheduler_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type
                                                    value later */
-    "filament.scheduler.Scheduler",             /* tp_name */
+    "filament.Scheduler",                       /* tp_name */
     sizeof(PyFilScheduler),                     /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_sched_dealloc,                 /* tp_dealloc */
@@ -562,40 +512,7 @@ static PyTypeObject _scheduler_type = {
 
 /****************/
 
-int fil_scheduler_type_init(PyObject *module)
-{
-    PyObject *m;
-
-    pthread_key_create(&_scheduler_key, _scheduler_key_delete);
-    PyGreenlet_Import();
-    if (PyType_Ready(&_scheduler_type) < 0)
-        return -1;
-    m = fil_create_module("filament.scheduler");
-    if (m == NULL)
-    {
-        return -1;
-    }
-
-    Py_INCREF((PyObject *)&_scheduler_type);
-    if (PyModule_AddObject(m, "Scheduler",
-                           (PyObject *)&_scheduler_type) != 0)
-    {
-        Py_DECREF((PyObject *)&_scheduler_type);
-        Py_DECREF(m);
-        return -1;
-
-    }
-
-    if (PyModule_AddObject(module, "scheduler", m) != 0)
-    {
-        Py_DECREF(m);
-        return -1;
-    }
-
-    return 0;
-}
-
-PyFilScheduler *fil_scheduler_get(int create)
+PyAPI_FUNC(PyFilScheduler *)fil_scheduler_get(int create)
 {
     PyFilScheduler *self = _scheduler_get();
 
@@ -641,4 +558,32 @@ void fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreen
 PyGreenlet *fil_scheduler_greenlet(PyFilScheduler *sched)
 {
     return sched->greenlet;
+}
+
+int fil_scheduler_init(PyObject *module, PyFilCore_CAPIObject *capi)
+{
+    pthread_key_create(&_scheduler_key, _scheduler_key_delete);
+    PyGreenlet_Import();
+
+    if (PyType_Ready(&_scheduler_type) < 0)
+    {
+        return -1;
+    }
+
+    Py_INCREF((PyObject *)&_scheduler_type);
+    if (PyModule_AddObject(module, "Scheduler",
+                           (PyObject *)&_scheduler_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_scheduler_type);
+        return -1;
+
+    }
+
+    capi->fil_scheduler_get = fil_scheduler_get;
+    capi->fil_scheduler_add_event = fil_scheduler_add_event;
+    capi->fil_scheduler_switch = fil_scheduler_switch;
+    capi->fil_scheduler_gl_switch = fil_scheduler_gl_switch;
+    capi->fil_scheduler_greenlet = fil_scheduler_greenlet;
+
+    return 0;
 }

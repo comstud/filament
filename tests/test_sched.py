@@ -6,7 +6,7 @@ import filament
 class SchedulerTestCase(testtools.TestCase):
     def setUp(self):
         super(SchedulerTestCase, self).setUp()
-        self.sched = filament.scheduler.Scheduler()
+        self.sched = filament.Scheduler()
 
         def _nuke_scheduler():
             self.sched.abort()

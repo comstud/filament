@@ -23,20 +23,13 @@
  *
  */
 
-#include <Python.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include "fil_message.h"
-#include "fil_waiter.h"
-#include "fil_util.h"
+#define __FIL_CORE__
+#include "core/filament.h"
+#include "core/fil_waiter.h"
+#include "core/fil_util.h"
 
 typedef struct _pyfil_message {
     PyObject_HEAD
-    uint32_t tot_waiters;
 
     FilWaiterList waiters;
 
@@ -69,7 +62,6 @@ static void _message_dealloc(PyFilMessage *self)
     Py_CLEAR(self->result_or_exc_type);
     Py_CLEAR(self->exc_value);
     Py_CLEAR(self->exc_tb);
-    assert(self->tot_waiters == 0);
     assert(fil_waiterlist_empty(self->waiters));
 
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -100,17 +92,7 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
         return _message_result(self);
     }
 
-    if (self->tot_waiters == (uint32_t)-1)
-    {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "Maximum number of waiters reached");
-        return NULL;
-    }
-
-    self->tot_waiters++;
     err = fil_waiterlist_wait(self->waiters, ts);
-    self->tot_waiters--;
-
     if (err)
     {
         return NULL;
@@ -169,7 +151,7 @@ static PyObject *_message_wait(PyFilMessage *self, PyObject *args, PyObject *kwa
     PyObject *timeout = NULL;
     static char *keywords[] = {"timeout", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O", keywords, &timeout))
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O:wait", keywords, &timeout))
     {
         return NULL;
     }
@@ -183,17 +165,13 @@ static PyObject *_message_wait(PyFilMessage *self, PyObject *args, PyObject *kwa
 }
 
 
-PyDoc_STRVAR(_message_send_doc, "Send a message to a message.");
-static PyObject *_message_send(PyFilMessage *self, PyObject *args)
+PyDoc_STRVAR(_message_send_doc, "Send an object.");
+static PyObject *_message_send(PyFilMessage *self, PyObject *message)
 {
-    PyObject *message;
-
-    if (!PyArg_ParseTuple(args, "O", &message))
-        return NULL;
-
     if (__message_send(self, message) < 0)
+    {
         return NULL;
-
+    }
     Py_RETURN_NONE;
 }
 
@@ -204,7 +182,7 @@ static PyObject *_message_send_exception(PyFilMessage *self, PyObject *args)
     PyObject *exc_value;
     PyObject *exc_tb;
 
-    if (!PyArg_ParseTuple(args, "OOO", &exc_type, &exc_value, &exc_tb))
+    if (!PyArg_ParseTuple(args, "OOO:send_exception", &exc_type, &exc_value, &exc_tb))
         return NULL;
 
     if (__message_send_exception(self, exc_type, exc_value, exc_tb) < 0)
@@ -215,7 +193,7 @@ static PyObject *_message_send_exception(PyFilMessage *self, PyObject *args)
 
 static PyMethodDef _message_methods[] = {
     {"wait", (PyCFunction)_message_wait, METH_VARARGS|METH_KEYWORDS, _message_wait_doc},
-    {"send", (PyCFunction)_message_send, METH_VARARGS, _message_send_doc},
+    {"send", (PyCFunction)_message_send, METH_O, _message_send_doc},
     {"send_exception", (PyCFunction)_message_send_exception, METH_VARARGS, _message_send_exc_doc},
     { NULL, NULL }
 };
@@ -265,35 +243,6 @@ static PyTypeObject _message_type = {
 
 /****************/
 
-int fil_message_type_init(PyObject *module)
-{
-    PyObject *m;
-
-    PyGreenlet_Import();
-    if (PyType_Ready(&_message_type) < 0)
-        return -1;
-
-    m = fil_create_module("filament.message");
-    if (m == NULL)
-        return -1;
-
-    Py_INCREF((PyObject *)&_message_type);
-    if (PyModule_AddObject(m, "Message", (PyObject *)&_message_type) != 0)
-    {
-        Py_DECREF((PyObject *)&_message_type);
-        Py_DECREF(m);
-        return -1;
-    }
-
-    if (PyModule_AddObject(module, "message", m) != 0)
-    {
-        Py_DECREF(m);
-        return -1;
-    }
-
-    return 0;
-}
-
 PyFilMessage *fil_message_alloc(void)
 {
     PyFilMessage *self;
@@ -324,5 +273,23 @@ int fil_message_send_exception(PyFilMessage *message, PyObject *exc_type,
 PyObject *fil_message_wait(PyFilMessage *message, struct timespec *ts)
 {
     return __message_wait(message, ts);
+}
+
+int fil_message_init(PyObject *module, PyFilCore_CAPIObject *capi)
+{
+    PyGreenlet_Import();
+    if (PyType_Ready(&_message_type) < 0)
+    {
+        return -1;
+    }
+
+    Py_INCREF((PyObject *)&_message_type);
+    if (PyModule_AddObject(module, "Message", (PyObject *)&_message_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_message_type);
+        return -1;
+    }
+
+    return 0;
 }
 

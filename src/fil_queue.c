@@ -30,11 +30,9 @@
 #include <sys/time.h>
 #include <pthread.h>
 #include <errno.h>
-#include "fil_cond.h"
-#include "fil_lock.h"
-#include "fil_util.h"
-#include "fil_waiter.h"
-#include "fil_exceptions.h"
+#include "core/filament.h"
+#include "core/fil_util.h"
+#include "core/fil_waiter.h"
 
 typedef struct _pyfil_queue {
     PyObject_HEAD
@@ -446,35 +444,35 @@ static PyTypeObject _queue_type = {
     PyObject_Del,                               /* tp_free */
 };
 
+PyDoc_STRVAR(_fil_queue_module_doc, "Filament _filament module.");
+static PyMethodDef _fil_queue_module_methods[] = {
+    { NULL, },
+};
 
 /****************/
 
-int fil_queue_module_init(PyObject *module)
+PyMODINIT_FUNC
+initqueue(void)
 {
     PyObject *m = NULL;
     PyObject *cm = NULL;
     PyObject *qm = NULL;
 
     PyGreenlet_Import();
+    if (PyFilCore_Import() < 0)
+    {
+        return;
+    }
 
-    m = fil_create_module("filament.queue");
+    m = Py_InitModule3("_filament.queue", _fil_queue_module_methods, _fil_queue_module_doc);
     if (m == NULL)
     {
-        return -1;
+        return;
     }
 
     if (PyType_Ready(&_queue_type) < 0)
     {
-        Py_DECREF(m);
-        return -1;
-    }
-
-    Py_INCREF((PyObject *)&_queue_type);
-    if (PyModule_AddObject(m, "Queue",
-                           (PyObject *)&_queue_type) != 0)
-    {
-        Py_DECREF((PyObject *)&_queue_type);
-        goto failure;
+        return;
     }
 
     _EmptyTuple = PyTuple_New(0);
@@ -524,13 +522,15 @@ int fil_queue_module_init(PyObject *module)
         goto failure;
     }
 
-    /* steals reference */
-    if (PyModule_AddObject(module, "queue", m) != 0)
+    Py_INCREF((PyObject *)&_queue_type);
+    if (PyModule_AddObject(m, "Queue",
+                           (PyObject *)&_queue_type) != 0)
     {
+        Py_DECREF((PyObject *)&_queue_type);
         goto failure;
     }
 
-    return 0;
+    return;
 
 failure:
 
@@ -540,7 +540,6 @@ failure:
     Py_CLEAR(_EmptyTuple);
     Py_XDECREF(qm);
     Py_XDECREF(cm);
-    Py_DECREF(m);
 
-    return -1;
+    return;
 }

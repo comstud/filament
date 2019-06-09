@@ -1,14 +1,10 @@
 #ifndef __FIL_WAITER_H__
 #define __FIL_WAITER_H__
 
-#include <Python.h>
-#include <sys/time.h>
+#include "core/fil_exceptions.h"
+#include "core/fil_scheduler.h"
+#include "core/fil_util.h"
 #include <stddef.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include "fil_exceptions.h"
-#include "fil_scheduler.h"
-#include "fil_util.h"
 
 typedef struct _fil_waiter FilWaiter;
 typedef struct _fil_waiterlist FilWaiterList;

@@ -102,18 +102,32 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
         return -1;
     }
 
-    method = PyTuple_GET_ITEM(args, 1);
-    method_args = PyTuple_GetSlice(args, 2, args_len);
-    if (method_args == NULL)
+    /*
+     * go ahead and create a scheduler, if we need to. Timer doesn't
+     * work without one.
+     */
+    sched = fil_scheduler_get(1);
+    if (sched == NULL)
     {
         return -1;
     }
 
-    sched = fil_scheduler_get(0);
-    if (sched == NULL)
+    method = PyTuple_GET_ITEM(args, 1);
+    if (!PyCallable_Check(method))
     {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "Timer() does not work without filaments");
+        PyErr_SetString(PyExc_TypeError, "Timer() 2nd argument should be a callable");
+        return -1;
+    }
+
+    if (self->func != NULL)
+    {
+        PyErr_SetString(PyExc_TypeError, "Timer() already initialized");
+        return -1;
+    }
+
+    method_args = PyTuple_GetSlice(args, 2, args_len);
+    if (method_args == NULL)
+    {
         return -1;
     }
 
