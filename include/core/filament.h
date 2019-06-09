@@ -44,9 +44,11 @@ static PyTypeObject *PyFilament_Type;
 
 static PyFilament *(*filament_alloc)(PyObject *method, PyObject *args, PyObject *kwargs);
 
-static int PyFilCore_Import(void)
+static inline int PyFilCore_Import(void)
 {
     PyObject *m;
+
+    PyGreenlet_Import();
 
     if (_PY_FIL_CORE_API != NULL)
     {

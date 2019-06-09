@@ -23,17 +23,10 @@
  *
  */
 
-#include <Python.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include <errno.h>
-#include "fil_lock.h"
-#include "fil_util.h"
-#include "fil_waiter.h"
+#include "core/filament.h"
+#include "core/fil_util.h"
+#include "core/fil_waiter.h"
+#include "locking/fil_lock.h"
 
 typedef struct _pyfil_lock {
     PyObject_HEAD
@@ -379,46 +372,6 @@ static PyTypeObject _rlock_type = {
 
 /****************/
 
-int fil_lock_type_init(PyObject *module)
-{
-    PyObject *m;
-
-    PyGreenlet_Import();
-    if (PyType_Ready(&_lock_type) < 0)
-        return -1;
-    if (PyType_Ready(&_rlock_type) < 0)
-        return -1;
-
-    m = fil_create_module("filament.lock");
-    if (m == NULL)
-        return -1;
-
-    Py_INCREF((PyObject *)&_lock_type);
-    if (PyModule_AddObject(m, "Lock", (PyObject *)&_lock_type) != 0)
-    {
-        Py_DECREF((PyObject *)&_lock_type);
-        Py_DECREF(m);
-        return -1;
-    }
-
-    Py_INCREF((PyObject *)&_rlock_type);
-    if (PyModule_AddObject(m, "RLock", (PyObject *)&_rlock_type) != 0)
-    {
-        Py_DECREF((PyObject *)&_rlock_type);
-        Py_DECREF(m);
-        return -1;
-    }
-
-    /* steals reference to 'm' */
-    if (PyModule_AddObject(module, "lock", m) != 0)
-    {
-        Py_DECREF(m);
-        return -1;
-    }
-
-    return 0;
-}
-
 PyFilLock *fil_lock_alloc(void)
 {
     return _lock_new(&_lock_type, NULL, NULL);
@@ -447,4 +400,34 @@ int fil_lock_release(PyFilLock *lock)
 int fil_rlock_release(PyFilRLock *rlock)
 {
     return __rlock_release(rlock);
+}
+
+int fil_lock_type_init(PyObject *module)
+{
+    PyFilCore_Import();
+
+    if (PyType_Ready(&_lock_type) < 0)
+    {
+        return -1;
+    }
+    if (PyType_Ready(&_rlock_type) < 0)
+    {
+        return -1;
+    }
+
+    Py_INCREF((PyObject *)&_lock_type);
+    if (PyModule_AddObject(module, "Lock", (PyObject *)&_lock_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_lock_type);
+        return -1;
+    }
+
+    Py_INCREF((PyObject *)&_rlock_type);
+    if (PyModule_AddObject(module, "RLock", (PyObject *)&_rlock_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_rlock_type);
+        return -1;
+    }
+
+    return 0;
 }

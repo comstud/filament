@@ -23,18 +23,11 @@
  *
  */
 
-#include <Python.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include <errno.h>
-#include "fil_cond.h"
-#include "fil_lock.h"
-#include "fil_util.h"
-#include "fil_waiter.h"
+#include "core/filament.h"
+#include "core/fil_util.h"
+#include "core/fil_waiter.h"
+#include "locking/fil_cond.h"
+#include "locking/fil_lock.h"
 
 typedef struct _pyfil_cond {
     PyObject_HEAD
@@ -271,32 +264,18 @@ static PyTypeObject _cond_type = {
 
 int fil_cond_type_init(PyObject *module)
 {
-    PyObject *m;
+    PyFilCore_Import();
 
-    PyGreenlet_Import();
     if (PyType_Ready(&_cond_type) < 0)
-        return -1;
-
-    m = fil_create_module("filament.cond");
-    if (m == NULL)
     {
         return -1;
     }
 
     Py_INCREF((PyObject *)&_cond_type);
-    if (PyModule_AddObject(m, "Condition",
+    if (PyModule_AddObject(module, "Condition",
                            (PyObject *)&_cond_type) != 0)
     {
-        /* Can never go to zero */
         Py_DECREF((PyObject *)&_cond_type);
-        Py_DECREF(m);
-        return -1;
-    }
-
-    /* steals reference to 'm' */
-    if (PyModule_AddObject(module, "cond", m) != 0)
-    {
-        Py_DECREF(m);
         return -1;
     }
 

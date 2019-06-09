@@ -1,5 +1,5 @@
-#ifndef __FIL_LOCK_H__
-#define __FIL_LOCK_H__
+#ifndef __FIL_LOCKING_LOCK_H__
+#define __FIL_LOCKING_LOCK_H__
 
 #include <Python.h>
 #include <sys/time.h>
@@ -17,4 +17,4 @@ PyFilRLock *fil_rlock_alloc(void);
 int fil_rlock_acquire(PyFilRLock *rlock, int blocking, struct timespec *ts);
 int fil_rlock_release(PyFilRLock *rlock);
 
-#endif /* __FIL_LOCK_H__ */
+#endif /* __FIL_LOCKING_LOCK_H__ */

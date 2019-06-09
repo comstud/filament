@@ -23,24 +23,16 @@
  *
  */
 
-#include <Python.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include <errno.h>
-#include "fil_semaphore.h"
-#include "fil_waiter.h"
-#include "fil_util.h"
+#include "core/filament.h"
+#include "core/fil_util.h"
+#include "core/fil_waiter.h"
+#include "locking/fil_semaphore.h"
 
 typedef struct _pyfil_semaphore {
     PyObject_HEAD
     Py_ssize_t counter;
     FilWaiterList waiters;
 } PyFilSemaphore;
-
 
 static PyFilSemaphore *_semaphore_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
@@ -230,28 +222,18 @@ static PyTypeObject _semaphore_type = {
 
 int fil_semaphore_type_init(PyObject *module)
 {
-    PyObject *m;
+    PyFilCore_Import();
 
-    PyGreenlet_Import();
     if (PyType_Ready(&_semaphore_type) < 0)
-        return -1;
-
-    m = fil_create_module("filament.semaphore");
-    if (m == NULL)
-        return -1;
-
-    Py_INCREF((PyObject *)&_semaphore_type);
-    if (PyModule_AddObject(m, "Semaphore",
-                           (PyObject *)&_semaphore_type) != 0)
     {
-        Py_DECREF((PyObject *)&_semaphore_type);
-        Py_DECREF(m);
         return -1;
     }
 
-    if (PyModule_AddObject(module, "semaphore", m) != 0)
+    Py_INCREF((PyObject *)&_semaphore_type);
+    if (PyModule_AddObject(module, "Semaphore",
+                           (PyObject *)&_semaphore_type) != 0)
     {
-        Py_DECREF(m);
+        Py_DECREF((PyObject *)&_semaphore_type);
         return -1;
     }
 
