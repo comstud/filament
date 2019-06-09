@@ -23,19 +23,9 @@
  *
  */
 
-#include <Python.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
-#include <greenlet.h>
-#include <errno.h>
-#include "fil_scheduler.h"
-#include "fil_timer.h"
-#include "fil_util.h"
-#include "fil_exceptions.h"
-
+#include "core/filament.h"
+#include "core/fil_util.h"
+#include "timer/fil_timer.h"
 
 typedef struct _pyfil_timer {
     PyObject_HEAD
@@ -215,34 +205,35 @@ static PyTypeObject _timer_type = {
     PyObject_Del,                               /* tp_free */
 };
 
+PyDoc_STRVAR(_fil_timer_module_doc, "Filament _filament.timer module.");
+static PyMethodDef _fil_timer_module_methods[] = {
+    { NULL, },
+};
 
-/****************/
-
-int fil_timer_type_init(PyObject *module)
+PyMODINIT_FUNC
+inittimer(void)
 {
     PyObject *m;
 
-    PyGreenlet_Import();
-    if (PyType_Ready(&_timer_type) < 0)
-        return -1;
+    PyFilCore_Import();
 
-    m = fil_create_module("filament.timer");
+    m = Py_InitModule3("_filament.timer", _fil_timer_module_methods, _fil_timer_module_doc);
     if (m == NULL)
-        return -1;
+    {
+        return;
+    }
+
+    if (PyType_Ready(&_timer_type) < 0)
+    {
+        return;
+    }
 
     Py_INCREF((PyObject *)&_timer_type);
     if (PyModule_AddObject(m, "Timer", (PyObject *)&_timer_type) != 0)
     {
         Py_DECREF((PyObject *)&_timer_type);
-        Py_DECREF(m);
-        return -1;
+        return;
     }
 
-    if (PyModule_AddObject(module, "timer", m) != 0)
-    {
-        Py_DECREF(m);
-        return -1;
-    }
-
-    return 0;
+    return;
 }
