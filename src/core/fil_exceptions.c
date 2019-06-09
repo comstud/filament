@@ -23,7 +23,7 @@
  *
  */
 
-#define __FIL_CORE__
+#define __FIL_BUILDING_CORE__
 #include "core/filament.h"
 
 PyObject *PyFil_TimeoutExc;

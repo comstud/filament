@@ -23,29 +23,19 @@
  *
  */
 
-#include <Python.h>
-
+#define __FIL_BUILDING_IO__
+#include "core/filament.h"
+#include "io/fil_iothread.h"
 #include <fcntl.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <time.h>
-#include <pthread.h>
 #include <event2/event.h>
 #include <event2/util.h>
 #include <event2/thread.h>
-#include "fil_iothread.h"
-#include "fil_waiter.h"
-#include "fil_exceptions.h"
-#include "fil_util.h"
-
 
 #ifdef EWOULDBLOCK
 #define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
 #else
 #define WOULDBLOCK_ERRNO(__x) ((__x) == EAGAIN)
 #endif
-
 
 typedef struct _pyfil_iothread
 {
@@ -758,41 +748,6 @@ static void _event_log_cb(int severity, const char *msg)
     (void)0;
 }
 
-int fil_iothread_type_init(PyObject *module)
-{
-    PyObject *m;
-
-    PyGreenlet_Import();
-
-    if (PyType_Ready(&_iothread_type) < 0)
-        return -1;
-
-    m = fil_create_module("filament.iothread");
-    if (m == NULL)
-        return -1;
-
-    Py_INCREF((PyObject *)&_iothread_type);
-    if (PyModule_AddObject(m, "IOThread",
-                           (PyObject *)&_iothread_type) != 0)
-    {
-        Py_DECREF((PyObject *)&_iothread_type);
-        Py_DECREF(m);
-        return -1;
-    }
-
-    /* steals reference to 'm' */
-    if (PyModule_AddObject(module, "iothread", m) != 0)
-    {
-        Py_DECREF(m);
-        return -1;
-    }
-
-    evthread_use_pthreads();
-    event_set_log_callback(_event_log_cb);
-
-    return 0;
-}
-
 PyFilIOThread *fil_iothread_get(void)
 {
     PyFilIOThread *self;
@@ -1123,4 +1078,26 @@ ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd,
     }
 
     return -1;
+}
+
+int fil_iothread_init(PyObject *module, PyFilCore_CAPIObject *capi)
+{
+    evthread_use_pthreads();
+    event_set_log_callback(_event_log_cb);
+    PyFilCore_Import();
+
+    if (PyType_Ready(&_iothread_type) < 0)
+    {
+        return -1;
+    }
+
+    Py_INCREF((PyObject *)&_iothread_type);
+    if (PyModule_AddObject(module, "IOThread",
+                           (PyObject *)&_iothread_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_iothread_type);
+        return -1;
+    }
+
+    return 0;
 }

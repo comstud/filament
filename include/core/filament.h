@@ -2,13 +2,23 @@
 #define __FIL_CORE_FILAMENT_H__
 
 #include <Python.h>
+#include <structmember.h>
+#include <longintrepr.h>
 #include <greenlet.h>
+
+#include <errno.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <pthread.h>
+#include <time.h>
+#include <unistd.h>
 #include "core/fil_exceptions.h"
 #include "core/fil_message.h"
 #include "core/fil_scheduler.h"
+#include "core/fil_util.h"
+#include "core/fil_waiter.h"
 
 #define FILAMENT_CORE_MODULE_NAME "_filament.core"
 #define FILAMENT_CORE_CAPI_NAME "CAPI"
@@ -31,7 +41,7 @@ typedef struct _pyfilcore_capi
     PyGreenlet *(*fil_scheduler_greenlet)(PyFilScheduler *sched);
 } PyFilCore_CAPIObject;
 
-#ifdef __FIL_CORE__
+#ifdef __FIL_BUILDING_CORE__
 
 extern PyTypeObject *PyFilament_Type;
 PyFilament *filament_alloc(PyObject *method, PyObject *args, PyObject *kwargs);

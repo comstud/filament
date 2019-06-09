@@ -23,26 +23,15 @@
  *
  */
 
-#include <Python.h>
-#include <structmember.h>
-#include <longintrepr.h>
-
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <time.h>
-#include "fil_iothread.h"
-#include "fil_exceptions.h"
-#include "fil_util.h"
-
+#define __FIL_BUILDING_IO__
+#include "core/filament.h"
+#include "io/fil_iothread.h"
 
 #ifdef EWOULDBLOCK
 #define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
 #else
 #define WOULDBLOCK_ERRNO(__x) ((__x) == EAGAIN)
 #endif
-
 
 typedef struct _pyfil_fdesc
 {
@@ -288,55 +277,41 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
     Py_RETURN_NONE;
 }
 
-int fil_io_init(PyObject *module)
+PyDoc_STRVAR(_fil_io_module_doc, "Filament _filament.io module");
+static PyMethodDef _fil_io_module_methods[] = {
+    { "os_read", (PyCFunction)_os_read, METH_VARARGS, _os_read_doc},
+    { "os_write", (PyCFunction)_os_write, METH_VARARGS, _os_write_doc},
+    { "fd_wait_read_ready", (PyCFunction)_fd_wait_read_ready, METH_VARARGS|METH_KEYWORDS, _fd_wait_read_ready_doc},
+    { "fd_wait_write_ready", (PyCFunction)_fd_wait_write_ready, METH_VARARGS|METH_KEYWORDS, _fd_wait_write_ready_doc},
+    { NULL }
+};
+
+PyMODINIT_FUNC
+ioinit(void)
 {
     PyObject *m;
-    /* This needs to not fall out of scope */
-    static PyMethodDef mds[] = {
-        {"os_read", (PyCFunction)_os_read, METH_VARARGS, _os_read_doc},
-        {"os_write", (PyCFunction)_os_write, METH_VARARGS, _os_write_doc},
-        {"fd_wait_read_ready", (PyCFunction)_fd_wait_read_ready, METH_VARARGS|METH_KEYWORDS, _fd_wait_read_ready_doc},
-        {"fd_wait_write_ready", (PyCFunction)_fd_wait_write_ready, METH_VARARGS|METH_KEYWORDS, _fd_wait_write_ready_doc},
-        { NULL }
-    };
+
+    PyFilCore_Import();
+
+    m = Py_InitModule3("_filament.io", _fil_io_module_methods, _fil_io_module_doc);
+    if (m == NULL)
+    {
+        return;
+    }
 
     _fdesc_type.tp_base = &PyLong_Type;
     if (PyType_Ready(&_fdesc_type) < 0)
-        return -1;
-
-    m = fil_create_module("filament.io");
-    if (m == NULL)
-        return -1;
+    {
+        return;
+    }
 
     Py_INCREF((PyObject *)&_fdesc_type);
     if (PyModule_AddObject(m, "FDesc",
                            (PyObject *)&_fdesc_type) != 0)
     {
         Py_DECREF((PyObject *)&_fdesc_type);
-        Py_DECREF(m);
-        return -1;
+        return;
     }
 
-    PyObject *n = PyString_FromString("filament.io");
-    PyMethodDef *md;
-    PyObject *cf;
-
-    for(md=mds;md->ml_name;md++)
-    {
-        cf = PyCFunction_NewEx(md, (PyObject*)NULL, n);
-        /* steals reference to 'cf' */
-        PyModule_AddObject(m, md->ml_name, cf);
-    }
-
-    Py_DECREF(n);
-
-    /* steals reference to 'm' */
-    if (PyModule_AddObject(module, "io", m) != 0)
-    {
-        Py_DECREF((PyObject *)&_fdesc_type);
-        Py_DECREF(m);
-        return -1;
-    }
-
-    return 0;
+    return;
 }

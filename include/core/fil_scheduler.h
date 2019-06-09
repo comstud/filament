@@ -1,11 +1,6 @@
 #ifndef __FIL_CORE_FIL_SCHEDULER_H__
 #define __FIL_CORE_FIL_SCHEDULER_H__
 
-#include <Python.h>
-#include <greenlet.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <pthread.h>
 #include "core/filament.h"
 
 typedef struct _pyfil_scheduler PyFilScheduler;
@@ -56,7 +51,7 @@ typedef struct _pyfil_scheduler
     int aborting;
 } PyFilScheduler;
 
-#ifdef __FIL_CORE__
+#ifdef __FIL_BUILDING_CORE__
 
 typedef struct _pyfilcore_capi PyFilCore_CAPIObject;
 

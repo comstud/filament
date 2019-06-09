@@ -1,14 +1,11 @@
-#ifndef __FIL_IOTHREAD_H__
-#define __FIL_IOTHREAD_H__
+#ifndef __FIL_IO_IOTHREAD_H__
+#define __FIL_IO_IOTHREAD_H__
 
-#include <Python.h>
-#include <sys/time.h>
-#include <sys/types.h>
+#include "core/filament.h"
 #include <sys/socket.h>
 
 typedef struct _pyfil_iothread PyFilIOThread;
 
-int fil_iothread_type_init(PyObject *module);
 PyFilIOThread *fil_iothread_get(void);
 
 int fil_iothread_read_ready(PyFilIOThread *iothr, int fd, struct timespec *timeout);
@@ -28,4 +25,10 @@ ssize_t fil_iothread_send(PyFilIOThread *iothr, int fd, void *buffer, size_t buf
 ssize_t fil_iothread_sendto(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t address_len, struct timespec *timeout);
 ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout);
 
-#endif /* __FIL_IOTHREAD_H__ */
+#ifdef __FIL_BUILDING_IO__
+
+int fil_iothread_init(PyObject *module, PyFilCore_CAPIObject *capi);
+
+#endif
+
+#endif /* __FIL_IO_IOTHREAD_H__ */

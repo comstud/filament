@@ -1,9 +1,7 @@
 #ifndef __FIL_WAITER_H__
 #define __FIL_WAITER_H__
 
-#include "core/fil_exceptions.h"
-#include "core/fil_scheduler.h"
-#include "core/fil_util.h"
+#include "core/filament.h"
 #include <stddef.h>
 
 typedef struct _fil_waiter FilWaiter;

@@ -1,12 +1,11 @@
 #ifndef __FIL_CORE_MESSAGE_H__
 #define __FIL_CORE_MESSAGE_H__
 
-#include <Python.h>
-#include <sys/time.h>
+#include "core/filament.h"
 
 typedef struct _pyfil_message PyFilMessage;
 
-#ifdef __FIL_CORE__
+#ifdef __FIL_BUILDING_CORE__
 
 typedef struct _pyfilcore_capi PyFilCore_CAPIObject;
 

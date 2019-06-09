@@ -23,8 +23,8 @@
  *
  */
 
+#define __FIL_BUILDING_TIMER__
 #include "core/filament.h"
-#include "core/fil_util.h"
 #include "timer/fil_timer.h"
 
 typedef struct _pyfil_timer {

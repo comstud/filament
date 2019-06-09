@@ -23,8 +23,8 @@
  *
  */
 
-#include <Python.h>
-
+#define __FIL_BUILDING_LOCKING__
+#include "core/filament.h"
 #include "locking/fil_cond.h"
 #include "locking/fil_lock.h"
 #include "locking/fil_semaphore.h"

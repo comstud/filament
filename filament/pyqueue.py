@@ -7,6 +7,7 @@ except ImportError:
     import queue as _queue
 
 import filament
+from filament import locking
 
 Empty = _queue.Empty
 Full = _queue.Full
@@ -16,8 +17,8 @@ class LiteQueue(object):
 
     def __init__(self):
         self.getters = []
-        self.lock = filament.lock.Lock()
-        self.not_empty_cond = filament.cond.Condition(lock=self.lock)
+        self.lock = locking.Lock()
+        self.not_empty_cond = locking.Condition(lock=self.lock)
         self._init()
 
     def _init(self):
@@ -73,8 +74,8 @@ class Queue(LiteQueue):
 
     def __init__(self, maxsize=0):
         super(Queue, self).__init__()
-        self.not_full_cond = filament.cond.Condition(lock=self.lock)
-        self.tasks_done_cond = filament.cond.Condition(lock=self.lock)
+        self.not_full_cond = locking.Condition(lock=self.lock)
+        self.tasks_done_cond = locking.Condition(lock=self.lock)
         self.maxsize = maxsize
         self.unfinished_tasks = 0
 

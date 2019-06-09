@@ -23,9 +23,8 @@
  *
  */
 
+#define __FIL_BUILDING_LOCKING__
 #include "core/filament.h"
-#include "core/fil_util.h"
-#include "core/fil_waiter.h"
 #include "locking/fil_semaphore.h"
 
 typedef struct _pyfil_semaphore {

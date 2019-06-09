@@ -25,12 +25,7 @@
 #ifndef __FIL_UTIL_H__
 #define __FIL_UTIL_H__
 
-
-#include <Python.h>
-#include <greenlet.h>
-#include <sys/time.h>
-#include <time.h>
-#include <pthread.h>
+#include "core/filament.h"
 
 #define FIL_MIN_NANOSECOND_WAIT 250000000L
 

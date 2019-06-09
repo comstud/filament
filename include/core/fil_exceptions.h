@@ -1,7 +1,7 @@
 #ifndef __FIL_CORE_FIL_EXCEPTIONS_H__
 #define __FIL_CORE_FIL_EXCEPTIONS_H__
 
-#ifdef __FIL_CORE__
+#ifdef __FIL_BUILDING_CORE__
 
 typedef struct _pyfilcore_capi PyFilCore_CAPIObject;
 
