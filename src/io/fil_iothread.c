@@ -786,16 +786,25 @@ int fil_iothread_read_ready(PyFilIOThread *iothr, int fd,
                             struct timespec *timeout,
                             PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     int err;
 
-    ecbi.processor = NULL;
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
+
+    ecbi->processor = NULL;
+    err = _iothread_process(iothr, fd, EV_READ, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
+        free(ecbi);
         return 0;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -803,16 +812,25 @@ int fil_iothread_write_ready(PyFilIOThread *iothr, int fd,
                             struct timespec *timeout,
                             PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     int err;
 
-    ecbi.processor = NULL;
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
+
+    ecbi->processor = NULL;
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
+        free(ecbi);
         return 0;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -820,26 +838,35 @@ ssize_t fil_iothread_read(PyFilIOThread *iothr, int fd, void *buffer,
                           size_t buf_sz, struct timespec *timeout,
                             PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.read_info.buffer = buffer;
-    ecbi.read_info.buf_sz = buf_sz;
-    ecbi.processor = (event_processor_t)_read_processor;
-    ecbi.processor_arg = &(ecbi.read_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
+    ecbi->read_info.buffer = buffer;
+    ecbi->read_info.buf_sz = buf_sz;
+    ecbi->processor = (event_processor_t)_read_processor;
+    ecbi->processor_arg = &(ecbi->read_info);
+
+    err = _iothread_process(iothr, fd, EV_READ, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.read_info.errn;
-        result = ecbi.read_info.result;
+        err = ecbi->read_info.errn;
+        result = ecbi->read_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -847,26 +874,35 @@ ssize_t fil_iothread_write(PyFilIOThread *iothr, int fd, void *buffer,
                            size_t buf_sz, struct timespec *timeout,
                            PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.write_info.buffer = buffer;
-    ecbi.write_info.buf_sz = buf_sz;
-    ecbi.processor = (event_processor_t)_write_processor;
-    ecbi.processor_arg = &(ecbi.write_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi->write_info.buffer = buffer;
+    ecbi->write_info.buf_sz = buf_sz;
+    ecbi->processor = (event_processor_t)_write_processor;
+    ecbi->processor_arg = &(ecbi->write_info);
+
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.write_info.errn;
-        result = ecbi.write_info.result;
+        err = ecbi->write_info.errn;
+        result = ecbi->write_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -875,24 +911,33 @@ int fil_iothread_accept(PyFilIOThread *iothr, int fd,
                         struct timespec *timeout,
                         PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     int result;
     int err;
 
-    ecbi.processor = (event_processor_t)_accept_processor;
-    ecbi.processor_arg = &(ecbi.accept_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi->processor = (event_processor_t)_accept_processor;
+    ecbi->processor_arg = &(ecbi->accept_info);
+
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.accept_info.errn;
-        result = ecbi.accept_info.result;
+        err = ecbi->accept_info.errn;
+        result = ecbi->accept_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -901,24 +946,33 @@ int fil_iothread_connect(PyFilIOThread *iothr, int fd,
                          struct timespec *timeout,
                          PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     int result;
     int err;
 
-    ecbi.processor = (event_processor_t)_connect_processor;
-    ecbi.processor_arg = &(ecbi.connect_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi->processor = (event_processor_t)_connect_processor;
+    ecbi->processor_arg = &(ecbi->connect_info);
+
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.connect_info.errn;
-        result = ecbi.connect_info.result;
+        err = ecbi->connect_info.errn;
+        result = ecbi->connect_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -927,27 +981,36 @@ ssize_t fil_iothread_recv(PyFilIOThread *iothr, int fd, void *buffer,
                           struct timespec *timeout,
                           PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.recv_info.buffer = buffer;
-    ecbi.recv_info.buf_sz = buf_sz;
-    ecbi.recv_info.flags = flags;
-    ecbi.processor = (event_processor_t)_recv_processor;
-    ecbi.processor_arg = &(ecbi.recv_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
+    ecbi->recv_info.buffer = buffer;
+    ecbi->recv_info.buf_sz = buf_sz;
+    ecbi->recv_info.flags = flags;
+    ecbi->processor = (event_processor_t)_recv_processor;
+    ecbi->processor_arg = &(ecbi->recv_info);
+
+    err = _iothread_process(iothr, fd, EV_READ, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.recv_info.errn;
-        result = ecbi.recv_info.result;
+        err = ecbi->recv_info.errn;
+        result = ecbi->recv_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -958,29 +1021,38 @@ ssize_t fil_iothread_recvfrom(PyFilIOThread *iothr, int fd, void *buffer,
                               struct timespec *timeout,
                               PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.recvfrom_info.buffer = buffer;
-    ecbi.recvfrom_info.buf_sz = buf_sz;
-    ecbi.recvfrom_info.flags = flags;
-    ecbi.recvfrom_info.address = address;
-    ecbi.recvfrom_info.address_len = address_len;
-    ecbi.processor = (event_processor_t)_recvfrom_processor;
-    ecbi.processor_arg = &(ecbi.recvfrom_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
+    ecbi->recvfrom_info.buffer = buffer;
+    ecbi->recvfrom_info.buf_sz = buf_sz;
+    ecbi->recvfrom_info.flags = flags;
+    ecbi->recvfrom_info.address = address;
+    ecbi->recvfrom_info.address_len = address_len;
+    ecbi->processor = (event_processor_t)_recvfrom_processor;
+    ecbi->processor_arg = &(ecbi->recvfrom_info);
+
+    err = _iothread_process(iothr, fd, EV_READ, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.recvfrom_info.errn;
-        result = ecbi.recvfrom_info.result;
+        err = ecbi->recvfrom_info.errn;
+        result = ecbi->recvfrom_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -989,26 +1061,35 @@ ssize_t fil_iothread_recvmsg(PyFilIOThread *iothr, int fd,
                              struct timespec *timeout,
                              PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.recvmsg_info.message = message;
-    ecbi.recvmsg_info.flags = flags;
-    ecbi.processor = (event_processor_t)_recvmsg_processor;
-    ecbi.processor_arg = &(ecbi.recvmsg_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_READ, &ecbi, timeout, timeout_exc);
+    ecbi->recvmsg_info.message = message;
+    ecbi->recvmsg_info.flags = flags;
+    ecbi->processor = (event_processor_t)_recvmsg_processor;
+    ecbi->processor_arg = &(ecbi->recvmsg_info);
+
+    err = _iothread_process(iothr, fd, EV_READ, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.recvmsg_info.errn;
-        result = ecbi.recvmsg_info.result;
+        err = ecbi->recvmsg_info.errn;
+        result = ecbi->recvmsg_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -1017,27 +1098,36 @@ ssize_t fil_iothread_send(PyFilIOThread *iothr, int fd, void *buffer,
                           struct timespec *timeout,
                           PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.send_info.buffer = buffer;
-    ecbi.send_info.buf_sz = buf_sz;
-    ecbi.send_info.flags = flags;
-    ecbi.processor = (event_processor_t)_send_processor;
-    ecbi.processor_arg = &(ecbi.send_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi->send_info.buffer = buffer;
+    ecbi->send_info.buf_sz = buf_sz;
+    ecbi->send_info.flags = flags;
+    ecbi->processor = (event_processor_t)_send_processor;
+    ecbi->processor_arg = &(ecbi->send_info);
+
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.send_info.errn;
-        result = ecbi.send_info.result;
+        err = ecbi->send_info.errn;
+        result = ecbi->send_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -1049,29 +1139,38 @@ ssize_t fil_iothread_sendto(PyFilIOThread *iothr, int fd, void *buffer,
                             PyObject *timeout_exc)
 
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.sendto_info.buffer = buffer;
-    ecbi.sendto_info.buf_sz = buf_sz;
-    ecbi.sendto_info.flags = flags;
-    ecbi.sendto_info.address = address;
-    ecbi.sendto_info.address_len = address_len;
-    ecbi.processor = (event_processor_t)_sendto_processor;
-    ecbi.processor_arg = &(ecbi.sendto_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi->sendto_info.buffer = buffer;
+    ecbi->sendto_info.buf_sz = buf_sz;
+    ecbi->sendto_info.flags = flags;
+    ecbi->sendto_info.address = address;
+    ecbi->sendto_info.address_len = address_len;
+    ecbi->processor = (event_processor_t)_sendto_processor;
+    ecbi->processor_arg = &(ecbi->sendto_info);
+
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.sendto_info.errn;
-        result = ecbi.sendto_info.result;
+        err = ecbi->sendto_info.errn;
+        result = ecbi->sendto_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
@@ -1080,26 +1179,35 @@ ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd,
                              int flags, struct timespec *timeout,
                              PyObject *timeout_exc)
 {
-    struct _event_cb_info ecbi;
+    struct _event_cb_info *ecbi;
     ssize_t result;
     int err;
 
-    ecbi.sendmsg_info.message = message;
-    ecbi.sendmsg_info.flags = flags;
-    ecbi.processor = (event_processor_t)_sendmsg_processor;
-    ecbi.processor_arg = &(ecbi.sendmsg_info);
+    ecbi = malloc(sizeof(*ecbi));
+    if (ecbi == NULL)
+    {
+        PyErr_NoMemory();
+        return -1;
+    }
 
-    err = _iothread_process(iothr, fd, EV_WRITE, &ecbi, timeout, timeout_exc);
+    ecbi->sendmsg_info.message = message;
+    ecbi->sendmsg_info.flags = flags;
+    ecbi->processor = (event_processor_t)_sendmsg_processor;
+    ecbi->processor_arg = &(ecbi->sendmsg_info);
+
+    err = _iothread_process(iothr, fd, EV_WRITE, ecbi, timeout, timeout_exc);
     if (err == 0)
     {
-        err = ecbi.sendmsg_info.errn;
-        result = ecbi.sendmsg_info.result;
+        err = ecbi->sendmsg_info.errn;
+        result = ecbi->sendmsg_info.result;
+        free(ecbi);
 
         if (result == -1)
             errno = err;
         return result;
     }
 
+    free(ecbi);
     return -1;
 }
 
