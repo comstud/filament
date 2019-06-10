@@ -431,7 +431,7 @@ static PyTypeObject _queue_type = {
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     _queue_methods,                             /* tp_methods */
-    0,
+    0,                                          /* tp_members */
     0,                                          /* tp_getset */
     0,                                          /* tp_base */
     0,                                          /* tp_dict */

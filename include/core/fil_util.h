@@ -58,6 +58,39 @@ static inline void fil_timespec_now(struct timespec *ts_buf)
     ts_buf->tv_nsec = t.tv_usec * 1000;
 }
 
+static inline int fil_double_from_timeout_obj(PyObject *timeoutobj, double *dbl)
+{
+    if (dbl == NULL)
+    {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "double from timeout_obj called with NULL return value");
+        return -1;
+    }
+    if (timeoutobj == Py_None || timeoutobj == NULL)
+    {
+        *dbl = -1.0;
+        return 0;
+    }
+
+    if (!PyNumber_Check(timeoutobj))
+    {
+        return -1;
+    }
+
+    *dbl = PyFloat_AsDouble(timeoutobj);
+    if (*dbl < 0)
+    {
+        if (!PyErr_Occurred())
+        {
+            PyErr_SetString(PyExc_ValueError,
+                "timeout must be positive or None");
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
 static inline int _fil_ts_from_double(double timeout, struct timespec *ts_buf, struct timespec **ts_ret)
 {
     long sec;
@@ -113,27 +146,8 @@ static inline int fil_timespec_from_pyobj_interval(PyObject *timeoutobj, struct 
 {
     double timeout;
 
-    if (timeoutobj == Py_None || timeoutobj == NULL)
+    if (fil_double_from_timeout_obj(timeoutobj, &timeout) < 0)
     {
-        *ts_ret = NULL;
-        return 0;
-    }
-
-    if (!PyNumber_Check(timeoutobj))
-    {
-        return -1;
-    }
-
-    timeout = PyFloat_AsDouble(timeoutobj);
-    if (timeout < 0 && PyErr_Occurred())
-    {
-        return -1;
-    }
-
-    if (timeout < 0)
-    {
-        PyErr_SetString(PyExc_ValueError,
-                        "timeout must be positive or None");
         return -1;
     }
 

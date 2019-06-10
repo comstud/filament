@@ -232,7 +232,7 @@ static PyTypeObject _fil_filament_type = {
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     _fil_filament_methods,                      /* tp_methods */
-    0,
+    0,                                          /* tp_members */
     0,                                          /* tp_getset */
     0,                                          /* tp_base */
     0,                                          /* tp_dict */
@@ -372,6 +372,13 @@ static PyFilament *_fil_spawn(PyObject *_self, PyObject *args, PyObject *kwargs)
     }
 
     method = PyTuple_GET_ITEM(args, 0);
+    if (!PyCallable_Check(method))
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "spawn() first argument should be a callable");
+        return NULL;
+    }
+
     method_args = PyTuple_GetSlice(args, 1, args_len);
     if (method_args == NULL)
     {

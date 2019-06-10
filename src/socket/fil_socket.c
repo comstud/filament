@@ -28,6 +28,9 @@
 #include "io/fil_io.h"
 #include "socket/fil_socket.h"
 
+#define FIL_SOCKET_MODULE_NAME "_filament.socket"
+#define FIL_DEFAULT_RESOLVER_CLASS "filament.thrpool_resolver"
+
 #ifdef MS_WINDOWS
 typedef SOCKET SOCKET_T;
 #       ifdef MS_WIN64
@@ -210,8 +213,67 @@ typedef struct _pyfil_socket {
 } PyFilSocket;
 
 static PyObject *_SOCK_MODULE, *_SOCK_CLASS, *_SOCK_ERROR, *_SOCK_HERROR, *_SOCK_TIMEOUT, *_SOCK_FILEOBJ;
+static PyObject *_OUR_MODULE;
 static PyObject *_EMPTY_TUPLE;
 static PyTypeObject *_PYFIL_SOCK_TYPE;
+static PyObject *_RESOLVER, *_RESOLVER_METHOD_LIST;
+/* these get copied in when module is loaded */
+static char *_RESOLVER_METHOD_NAMES[] = {
+    "gethostbyname",
+    "gethostbyname_ex",
+    "gethostbyaddr",
+    "getaddrinfo",
+    "getnameinfo",
+    NULL,
+};
+#define _NUM_RESOLVER_METHODS ((sizeof(_RESOLVER_METHOD_NAMES) / sizeof(char *)) - 1)
+static PyObject *_RESOLVER_METHODS[_NUM_RESOLVER_METHODS];
+
+static inline int _copy_resolver_methods(PyObject *resolver)
+{
+    PyObject *fn;
+    char **meth_name_ptr = _RESOLVER_METHOD_NAMES;
+    PyObject **meth_ptr = _RESOLVER_METHODS;
+
+    for(; *meth_name_ptr; meth_name_ptr++, meth_ptr++)
+    {
+        fn = PyObject_GetAttrString(resolver, *meth_name_ptr);
+        /* shouldn't fail as we verify they exist before _copy is called */
+        if (fn == NULL)
+        {
+            return -1;
+        }
+
+        Py_XSETREF(*meth_ptr, fn);
+    }
+
+    return 0;
+}
+
+static inline void _clear_resolver_methods(void)
+{
+    int i;
+
+    for(i = 0; i < _NUM_RESOLVER_METHODS; i++)
+    {
+        Py_CLEAR(_RESOLVER_METHODS[i]);
+    }
+}
+
+static inline int _check_resolver_methods(PyObject *resolver)
+{
+    char **meth_name_ptr = _RESOLVER_METHOD_NAMES;
+
+    for(; *meth_name_ptr ; meth_name_ptr++)
+    {
+        if (!PyObject_HasAttrString(resolver, *meth_name_ptr))
+        {
+            PyErr_Format(PyExc_TypeError, "resolver class is missing function '%s'", *meth_name_ptr);
+            return -1;
+        }
+    }
+    return 0;
+}
 
 static inline int _exc_socket_error_errno(int *err_ret)
 {
@@ -1309,20 +1371,149 @@ static PyTypeObject _sock_type = {
     PyObject_Del,                               /* tp_free */
 };
 
+PyDoc_STRVAR(_socket_fil_set_resolver_doc,
+"fil_set_resolver(resolver) -> None\n\
+\n\
+Set the async resolver class to use.");
+static PyObject *_socket_fil_set_resolver(PyObject *self, PyObject *arg)
+{
+    if (_check_resolver_methods(arg))
+    {
+        return NULL;
+    }
+    if (_copy_resolver_methods(arg))
+    {
+        return NULL;
+    }
+    Py_INCREF(arg);
+    Py_XSETREF(_RESOLVER, arg);
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(_socket_fil_resolver_method_list_doc,
+"fil_resolver_method_list() -> list\n\
+\n\
+Returns the list of methods proxied to the resolver class.");
+static PyObject *_socket_fil_resolver_method_list(PyObject *self)
+{
+    return Py_INCREF(_RESOLVER_METHOD_LIST), _RESOLVER_METHOD_LIST;
+}
+
+/* doc strings set dynamically */
+static PyObject *_socket_resolver_proxy_fn(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    /* we init the proxy methods with 'self' being the idx encoded in a CVoidPtr obj */
+    long idx = (long)PyCObject_AsVoidPtr(self);
+
+    if (idx < 0 || idx >= _NUM_RESOLVER_METHODS)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "internal error: fil resolver proxy idx out of range");
+        return NULL;
+    }
+    return PyObject_Call(_RESOLVER_METHODS[idx], args, kwargs);
+}
+
+static PyMethodDef _fil_resolver_proxy_methods[_NUM_RESOLVER_METHODS];
+
 PyDoc_STRVAR(_fil_socket_module_doc, "Filament _filament.socket module.");
 static PyMethodDef _fil_socket_module_methods[] = {
+    /* The above _fil_resolver_proxy_methods also get set on import */
+    { "fil_set_resolver", (PyCFunction)_socket_fil_set_resolver, METH_O, _socket_fil_set_resolver_doc },
+    { "fil_resolver_method_list", (PyCFunction)_socket_fil_resolver_method_list, METH_NOARGS, _socket_fil_resolver_method_list_doc },
     { NULL, },
 };
+
+static int _init_resolver_proxy_fns(PyObject *module, char *mod_name_str)
+{
+    char **meth_name_ptr = _RESOLVER_METHOD_NAMES;
+    PyObject **meth_ptr = _RESOLVER_METHODS;
+    PyMethodDef *mdef = _fil_resolver_proxy_methods;
+    PyObject *mod_name;
+    PyObject *fn;
+    PyObject *doc;
+    PyObject *res_idx;
+    char *doc_str;
+    long idx;
+    int res = 0;
+
+    mod_name = PyString_FromString(mod_name_str);
+    if (mod_name == NULL)
+    {
+        return -1;
+    }
+
+    for(idx = 0; *meth_name_ptr; mdef++, meth_name_ptr++, meth_ptr++, idx++)
+    {
+        doc_str = NULL;
+        doc = PyObject_GetAttrString(*meth_ptr, "__doc__");
+        if (doc != NULL && PyString_Check(doc))
+        {
+            doc_str = strdup(PyString_AS_STRING(doc));
+        }
+
+        Py_XDECREF(doc);
+
+        mdef->ml_name = *meth_name_ptr;
+        mdef->ml_meth = (PyCFunction)_socket_resolver_proxy_fn;
+        mdef->ml_flags = METH_VARARGS | METH_KEYWORDS;
+        mdef->ml_doc = doc_str ? doc_str : "<doc unavailable>";
+
+        res_idx = PyCObject_FromVoidPtr((void *)idx, NULL);
+        if (res_idx == NULL)
+        {
+            res = -1;
+            break;
+        }
+
+        fn = PyCFunction_NewEx(mdef, res_idx, mod_name);
+
+        Py_DECREF(res_idx);
+
+        if (fn == NULL)
+        {
+            res = -1;
+            break;
+        }
+
+        res = PyModule_AddObject(module, *meth_name_ptr, fn);
+        if (res)
+        {
+            Py_DECREF(fn);
+            break;
+        }
+    }
+
+    Py_DECREF(mod_name);
+
+    return res;
+}
 
 PyMODINIT_FUNC
 initsocket(void)
 {
     PyObject *m;
+    int i;
 
     PyFilCore_Import();
     PyFilIO_Import();
 
     _EMPTY_TUPLE = fil_empty_tuple();
+
+    _RESOLVER_METHOD_LIST = PyList_New(_NUM_RESOLVER_METHODS);
+    if (_RESOLVER_METHOD_LIST == NULL)
+    {
+        return;
+    }
+    for(i = 0;i < _NUM_RESOLVER_METHODS;i++)
+    {
+        PyObject *str = PyString_FromString(_RESOLVER_METHOD_NAMES[i]);
+        if (str == NULL)
+        {
+            Py_CLEAR(_RESOLVER_METHOD_LIST);
+            return;
+        }
+        PyList_SET_ITEM(_RESOLVER_METHOD_LIST, i, str);
+    }
 
     if (_SOCK_MODULE == NULL &&
         (_SOCK_MODULE = PyImport_ImportModuleNoBlock("socket")) == NULL)
@@ -1367,7 +1558,7 @@ initsocket(void)
 
     _PYFIL_SOCK_TYPE = &_sock_type;
 
-    m = Py_InitModule3("_filament.socket", _fil_socket_module_methods, _fil_socket_module_doc);
+    _OUR_MODULE = m = Py_InitModule3(FIL_SOCKET_MODULE_NAME, _fil_socket_module_methods, _fil_socket_module_doc);
     if (m == NULL)
     {
         return;
@@ -1378,6 +1569,52 @@ initsocket(void)
     {
         Py_DECREF((PyObject *)&_sock_type);
         return;
+    }
+
+    if (_RESOLVER == NULL)
+    {
+        PyObject *rm;
+        char *ptr;
+
+        ptr = getenv("FILAMENT_RESOLVER_MODULE");
+        if (ptr == NULL)
+        {
+            ptr = FIL_DEFAULT_RESOLVER_CLASS;
+        }
+
+        if ((rm = PyImport_ImportModuleNoBlock(ptr)) == NULL)
+        {
+            return;
+        }
+
+        _RESOLVER = PyObject_CallMethod(rm, "get_resolver", "");
+        Py_DECREF(rm);
+
+        if (_RESOLVER == NULL)
+        {
+            return;
+        }
+
+        if (_check_resolver_methods(_RESOLVER))
+        {
+            _clear_resolver_methods();
+            Py_CLEAR(_RESOLVER);
+            return;
+        }
+
+        if (_copy_resolver_methods(_RESOLVER))
+        {
+            _clear_resolver_methods();
+            Py_CLEAR(_RESOLVER);
+            return;
+        }
+
+        if (_init_resolver_proxy_fns(m, FIL_SOCKET_MODULE_NAME))
+        {
+            _clear_resolver_methods();
+            Py_CLEAR(_RESOLVER);
+            return;
+        }
     }
 
     return;

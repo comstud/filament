@@ -17,6 +17,7 @@
 #include "core/fil_exceptions.h"
 #include "core/fil_message.h"
 #include "core/fil_scheduler.h"
+#include "core/fil_thrpool.h"
 #include "core/fil_util.h"
 #include "core/fil_waiter.h"
 

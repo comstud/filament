@@ -248,8 +248,7 @@ static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timesp
     _fil_waiterlist_add(waiter_list, waiter);
 
     err = fil_waiter_wait(waiter, ts);
-
-    if (!fil_waiter_signaled(waiter))
+    if (err)
     {
         _fil_waiterlist_del(&(waiter->waiter_list));
     }

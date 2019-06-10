@@ -588,7 +588,7 @@ static PyTypeObject _iothread_type = {
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     _iothread_methods,                          /* tp_methods */
-    0,
+    0,                                          /* tp_members */
     0,                                          /* tp_getset */
     0,                                          /* tp_base */
     0,                                          /* tp_dict */
@@ -1210,9 +1210,11 @@ ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd,
 
 int fil_iothread_init(PyObject *module)
 {
+    PyFilCore_Import();
+    PyEval_InitThreads();
+
     evthread_use_pthreads();
     event_set_log_callback(_event_log_cb);
-    PyFilCore_Import();
 
     if (PyType_Ready(&_iothread_type) < 0)
     {

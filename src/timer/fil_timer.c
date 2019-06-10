@@ -192,7 +192,7 @@ static PyTypeObject _timer_type = {
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     _timer_methods,                             /* tp_methods */
-    0,
+    0,                                          /* tp_members */
     0,                                          /* tp_getset */
     0,                                          /* tp_base */
     0,                                          /* tp_dict */
