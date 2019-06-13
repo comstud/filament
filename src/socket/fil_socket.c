@@ -67,8 +67,8 @@ static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *arg)           \
             return NULL;                                                    \
         }                                                                   \
     }                                                                       \
-    Py_INCREF(arg);                                                         \
     args = PyTuple_New(1);                                                  \
+    Py_INCREF(arg);                                                         \
     PyTuple_SET_ITEM(args, 0, arg);                                         \
     res = PyObject_Call(self->_sock_ ## NAME, args, NULL);                  \
     Py_DECREF(args);                                                        \
@@ -114,6 +114,7 @@ static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *arg)           \
         Py_DECREF(attr);                                                    \
         return NULL;                                                        \
     }                                                                       \
+    Py_INCREF(arg);                                                         \
     PyTuple_SET_ITEM(args, 0, arg);                                         \
     res = PyObject_Call(attr, args, NULL);                                  \
     Py_DECREF(attr);                                                        \
@@ -212,7 +213,7 @@ typedef struct _pyfil_socket {
     double timeout;
 } PyFilSocket;
 
-static PyObject *_SOCK_MODULE, *_SOCK_CLASS, *_SOCK_ERROR, *_SOCK_HERROR, *_SOCK_TIMEOUT, *_SOCK_FILEOBJ;
+static PyObject *_SOCK_MODULE, *_SOCK_CLASS, *_SOCK_ERROR, *_SOCK_HERROR, *_SOCK_TIMEOUT;
 static PyObject *_OUR_MODULE;
 static PyObject *_EMPTY_TUPLE;
 static PyTypeObject *_PYFIL_SOCK_TYPE;
@@ -405,6 +406,7 @@ static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
         return -1;
     }
 
+    Py_INCREF(_sock);
     Py_XSETREF(self->_sock, _sock);
     self->_sock_fd = fileno;
     self->timeout = timeout;
@@ -451,6 +453,8 @@ static int _sock_init(PyFilSocket *self, PyObject *args, PyObject *kwargs)
         Py_DECREF(_sock);
         return -1;
     }
+
+    Py_DECREF(_sock);
 
     self->family = family;
     self->type = type;
@@ -504,11 +508,9 @@ static PyObject *_sock_accept_real(PyFilSocket *self)
     sock->type = self->type;
     sock->proto = self->proto;
 
-    /* Keep reference from being added to 'sock */
-    Py_INCREF(_sock);
+    /* steals reference, even on failure */
     if (PyTuple_SetItem(res, 0, (PyObject *)sock) < 0)
     {
-        /* sock will have been DECREF'd for us */
         Py_DECREF(res);
         return NULL;
     }
@@ -784,42 +786,6 @@ SIO_KEEPALIVE_VALS:  'option' is a tuple of (onoff, timeout, interval).");
 FIL_CPROXY_VARG(ioctl)
 
 #endif
-
-PyDoc_STRVAR(_sock_makefile_doc,
-"makefile([mode[, buffersize]]) -> file object\n\
-\n\
-Return a regular file object corresponding to the socket.\n\
-The mode and buffersize arguments are as for the built-in open() function.");
-
-static PyObject *_sock_makefile(PyFilSocket *self, PyObject *args)
-{
-    int arg_sz = PyTuple_GET_SIZE(args);
-    PyObject *nargs;
-    PyObject *item;
-    int i;
-
-    nargs = PyTuple_New(1 + arg_sz);
-    if (nargs == NULL)
-    {
-        return NULL;
-    }
-
-    Py_INCREF(self);
-    PyTuple_SET_ITEM(nargs, 0, (PyObject *)self);
-
-    for(i=0;i<arg_sz;i++)
-    {
-        item = PyTuple_GET_ITEM(args, i);
-        Py_INCREF(item);
-        PyTuple_SET_ITEM(nargs, i + 1, item);
-    }
-
-    item = PyObject_Call(_SOCK_FILEOBJ, nargs, NULL);
-
-    Py_DECREF(nargs);
-
-    return item;
-}
 
 static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, int flags)
 {
@@ -1306,7 +1272,9 @@ static PyMethodDef _sock_methods[] = {
     { "ioctl", (PyCFunction)_sock_ioctl, METH_VARARGS, _sock_ioctl_doc },
 #endif
     { "listen", (PyCFunction)_sock_listen, METH_O, _sock_listen_doc },
-    { "makefile", (PyCFunction)_sock_makefile, METH_VARARGS, _sock_makefile_doc },
+    /* No 'makefile'. Doesn't exist in py3 here, and py2 ignores it in favor
+     * of the one in socket.py
+     */
     { "recv", (PyCFunction)_sock_recv, METH_VARARGS, _sock_recv_doc },
     { "recv_into", (PyCFunction)_sock_recv_into, METH_VARARGS|METH_KEYWORDS, _sock_recv_into_doc },
     { "recvfrom", (PyCFunction)_sock_recvfrom, METH_VARARGS, _sock_recvfrom_doc },
@@ -1515,8 +1483,9 @@ initsocket(void)
         PyList_SET_ITEM(_RESOLVER_METHOD_LIST, i, str);
     }
 
+    /* We wrap the internal socket */
     if (_SOCK_MODULE == NULL &&
-        (_SOCK_MODULE = PyImport_ImportModuleNoBlock("socket")) == NULL)
+        (_SOCK_MODULE = PyImport_ImportModuleNoBlock("_socket")) == NULL)
     {
         return;
     }
@@ -1545,12 +1514,6 @@ initsocket(void)
         return;
     }
 
-    if (_SOCK_FILEOBJ == NULL &&
-        (_SOCK_FILEOBJ = PyObject_GetAttrString(_SOCK_MODULE, "_fileobject")) == NULL)
-    {
-        return;
-    }
-
     if (PyType_Ready(&_sock_type) < 0)
     {
         return;
@@ -1566,6 +1529,20 @@ initsocket(void)
 
     Py_INCREF((PyObject *)&_sock_type);
     if (PyModule_AddObject(m, "Socket", (PyObject *)&_sock_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_sock_type);
+        return;
+    }
+
+    Py_INCREF((PyObject *)&_sock_type);
+    if (PyModule_AddObject(m, "socket", (PyObject *)&_sock_type) != 0)
+    {
+        Py_DECREF((PyObject *)&_sock_type);
+        return;
+    }
+
+    Py_INCREF((PyObject *)&_sock_type);
+    if (PyModule_AddObject(m, "SocketType", (PyObject *)&_sock_type) != 0)
     {
         Py_DECREF((PyObject *)&_sock_type);
         return;
@@ -1616,6 +1593,9 @@ initsocket(void)
             return;
         }
     }
+
+    /* Now copy everything we don't have from original module */
+    PyDict_Merge(PyModule_GetDict(m), PyModule_GetDict(_SOCK_MODULE), 0);
 
     return;
 }

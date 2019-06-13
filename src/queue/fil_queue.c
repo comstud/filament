@@ -260,7 +260,7 @@ static inline int __queue_put(PyFilQueue *self, PyObject *item)
     PyObject *res;
 
     Py_INCREF(item);
-    if (PyTuple_SetItem(self->tuple_deque_item, 0, item) == -1)
+    if (PyTuple_SetItem(self->tuple_deque_item, 0, item) < 0)
     {
         /* reference is removed even on error */
         return -1;
@@ -278,7 +278,10 @@ static inline int __queue_put(PyFilQueue *self, PyObject *item)
     fil_waiterlist_signal_first(self->getters);
 
     Py_INCREF(Py_None);
-    PyTuple_SetItem(self->tuple_deque_item, 0, Py_None);
+    if (PyTuple_SetItem(self->tuple_deque_item, 0, Py_None) < 0)
+    {
+        return -1;
+    }
     return 0;
 }
 

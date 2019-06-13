@@ -290,6 +290,30 @@ static PyObject *_sched_fil_switch(PyFilScheduler *self, PyObject *args)
     Py_RETURN_NONE;
 }
 
+/*
+ * FIXME
+ *
+ * _fil_filament_main() will propagate exceptions back to
+ * the scheduler. this is so that things like ^C, etc can
+ * be raised back to the scheduler's parent greenthread,
+ * which will likely cause an exit.
+ *
+ * If it's not a 'system exception', we just forget about
+ * it here, because the _fil_filament_main() will also
+ * send the exception back to whoever might be waiting
+ * for the thread to finish.
+ *
+ * But, I think we will want to dump a traceback to stderr
+ * when no one is waiting on the thread, but I'm not sure
+ * we can really detect that. Maybe we only do it if we
+ * have a filament.spawn() that doesn't return a Filament.
+ * 
+ * In any case, we're also called here from paths where
+ * an exception may have been raised outside of a Filament,
+ * but we can't really tell. Perhaps some of this logic
+ * needs to be moved or copied to _greenlet_switch() after
+ * things are switched back.
+ */
 static void _handle_exception(PyFilScheduler *self)
 {
     PyObject *exc_type, *val, *tb;
@@ -310,12 +334,40 @@ static void _handle_exception(PyFilScheduler *self)
         /* Throw() automatically switches */
         _greenlet_switch(self->greenlet->parent);
 #endif
+        Py_DECREF(exc_type);
+        Py_XDECREF(val);
+        Py_XDECREF(tb);
+        return;
     }
 
     /* Squash other exceptions */
-    fprintf(stderr, "Squashing exc in greenlet: ");
-    PyObject_Print(val, stderr, 0);
-    fprintf(stderr, "\n");
+#if 0
+    {
+    PyObject *res;
+    fprintf(stderr, "Squashing exception in greenlet:\n");
+    fprintf(stderr, "--------------------------------\n");
+    res = fil_format_exception(exc_type, val, tb);
+    if (res == NULL)
+    {
+        /* shouldn't happen -- blah */
+        PyErr_Clear();
+        PyObject_Print(exc_type, stderr, 0);
+        printf("\n");
+        PyObject_Print(val, stderr, 0);
+        printf("\n");
+        PyObject_Print(tb, stderr, 0);
+        printf("\n");
+        fprintf(stderr, "--------------------------------\n");
+    }
+    else
+    {
+        PyObject_Print(res, stderr, 0);
+        printf("\n");
+        fprintf(stderr, "--------------------------------\n");
+        Py_DECREF(res);
+    }
+    }
+#endif
     Py_DECREF(exc_type);
     Py_XDECREF(val);
     Py_XDECREF(tb);

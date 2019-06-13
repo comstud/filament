@@ -151,6 +151,12 @@ static inline int fil_timespec_from_pyobj_interval(PyObject *timeoutobj, struct 
         return -1;
     }
 
+    if (timeout < 0.0)
+    {
+        *ts_ret = NULL;
+        return 0;
+    }
+
     return _fil_ts_from_double(timeout, ts_buf, ts_ret);
 }
 
@@ -240,6 +246,40 @@ static inline PyObject *fil_empty_tuple(void)
         _FIL_EMPTY_TUPLE = PyTuple_New(0);
     }
     return _FIL_EMPTY_TUPLE;
+}
+
+static inline PyObject *fil_format_exception(PyObject *exc_type, PyObject *exc_value, PyObject *exc_tb)
+{
+    PyObject *tb_mod;
+    PyObject *format_exc;
+    PyObject *res;
+
+    tb_mod = PyImport_ImportModuleNoBlock("traceback");
+    if (tb_mod == NULL)
+    {
+        return NULL;
+    }
+
+    format_exc = PyObject_GetAttrString(tb_mod, "format_exception");
+
+    Py_DECREF(tb_mod);
+
+    if (format_exc == NULL)
+    {
+        return NULL;
+    }
+
+    if (!PyCallable_Check(format_exc))
+    {
+        Py_DECREF(format_exc);
+        PyErr_SetString(PyExc_RuntimeError, "traceback.format_exception not callable");
+        return NULL;
+    }
+
+    res = PyObject_CallFunctionObjArgs(format_exc, exc_type, exc_value, exc_tb, NULL);
+
+    Py_DECREF(format_exc);
+    return res;
 }
 
 #endif /* __FIL_UTIL_H__ */
