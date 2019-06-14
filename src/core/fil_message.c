@@ -90,7 +90,7 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
         return _message_result(self);
     }
 
-    err = fil_waiterlist_wait(self->waiters, ts);
+    err = fil_waiterlist_wait(self->waiters, ts, NULL);
     if (err)
     {
         return NULL;

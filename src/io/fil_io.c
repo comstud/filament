@@ -89,30 +89,9 @@ static PyTypeObject _fdesc_type = {
     PyObject_Del,                               /* tp_free */
 };
 
-static int _act_nonblock(PyObject *fd_obj)
+static inline int _act_nonblock(PyObject *fd_obj)
 {
-    int act_nonblock = 1;
-    PyObject *sock;
-    PyObject *result;
-
-    if ((Py_TYPE(fd_obj) == &_fdesc_type) &&
-            ((sock = ((PyFilFDesc *)fd_obj)->sock) != NULL))
-    {
-        result = PyObject_GetAttrString(sock, "_act_nonblocking");
-
-        if ((result != NULL) && PyBool_Check(result))
-        {
-            act_nonblock = (result == Py_True);
-        }
-        else
-        {
-            PyErr_Clear();
-        }
-
-        Py_XDECREF(result);
-    }
-
-    return act_nonblock;
+    return 0;
 }
 
 PyDoc_STRVAR(_os_read_doc, "os.read() compatible method.");
@@ -206,21 +185,115 @@ static PyObject *_os_write(PyObject *self, PyObject *args)
     return PyInt_FromSsize_t(result);
 }
 
+PyDoc_STRVAR(_abstimeout_from_timeout_doc, "return a tuple of (sec, nsec) suitable for abstimeout= arguments");
+static PyObject *_abstimeout_from_timeout(PyObject *self, PyObject *arg)
+{
+    struct timespec tsbuf, *ts;
+    PyObject *res, *sec, *nsec;
+
+    if (fil_timespec_from_pyobj_interval(arg, &tsbuf, &ts) < 0)
+    {
+        return NULL;
+    }
+
+    if (ts == NULL)
+    {
+        Py_RETURN_NONE;
+    }
+
+    res = PyTuple_New(2);
+    if (res == NULL)
+    {
+        return NULL;
+    }
+
+    sec = PyLong_FromLong(ts->tv_sec);
+    if (sec == NULL)
+    {
+        Py_DECREF(res);
+        return NULL;
+    }
+
+    nsec = PyLong_FromLong(ts->tv_nsec);
+    if (nsec == NULL)
+    {
+        Py_DECREF(sec);
+        Py_DECREF(res);
+        return NULL;
+    }
+
+    if (PyTuple_SET_ITEM(res, 0, sec) < 0)
+    {
+        Py_DECREF(nsec);
+        Py_DECREF(res);
+        return NULL;
+    }
+
+    if (PyTuple_SET_ITEM(res, 1, nsec) < 0)
+    {
+        Py_DECREF(res);
+        return NULL;
+    }
+
+    return res;
+}
+
+static int _timespec_from_abstimeout(PyObject *abstimeout, struct timespec *tsbuf, struct timespec **ts)
+{
+    long sec = -1, nsec = -1;
+
+    if (abstimeout == NULL || abstimeout == Py_None)
+    {
+        /* leave untouched */
+        return 1;
+    }
+
+    if (!PyTuple_Check(abstimeout) || PyTuple_GET_SIZE(abstimeout) != 2)
+    {
+        PyErr_SetString(PyExc_TypeError, "expected a tuple returned from abstimeout_from_timeout()");
+        return -1;
+    }
+
+    if ((sec = PyLong_AsLong(PyTuple_GET_ITEM(abstimeout, 0))) < 0 && PyErr_Occurred())
+    {
+        return -1;
+    }
+
+    if ((nsec = PyLong_AsLong(PyTuple_GET_ITEM(abstimeout, 1))) < 0 && PyErr_Occurred())
+    {
+        return -1;
+    }
+
+    if (sec < 0 || nsec < 0)
+    {
+        PyErr_SetString(PyExc_TypeError, "expected a tuple returned from abstimeout_from_timeout()");
+        return -1;
+    }
+
+    tsbuf->tv_sec = sec;
+    tsbuf->tv_nsec = nsec;
+    *ts = tsbuf;
+
+    return 0;
+}
+
 PyDoc_STRVAR(_fd_wait_read_ready_doc, "wait for fd to be ready for read.");
 static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    static char *keywords[] = {"fd", "timeout", NULL};
-    PyObject *timeout = NULL;
-    struct timespec tsbuf;
-    struct timespec *ts;
-    int fd;
-    int err;
+    static char *keywords[] = {"fd", "timeout", "abstimeout", "timeout_exc", NULL};
+    PyObject *timeout = NULL, *abstimeout = NULL, *timeout_exc = NULL;
+    struct timespec tsbuf, *ts;
+    int fd, err;
     PyFilIOThread *iothr;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|O",
+    printf("fil_read_ready\n");
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|OOO:fd_wait_read_ready",
                                      keywords,
                                      &fd,
-                                     &timeout))
+                                     &timeout,
+                                     &abstimeout,
+                                     &timeout_exc))
     {
         return NULL;
     }
@@ -230,9 +303,10 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
         return NULL;
     }
 
-    if (_act_nonblock(PyTuple_GET_ITEM(args, 0)))
+    /* takes precedence */
+    if (_timespec_from_abstimeout(abstimeout, &tsbuf, &ts) < 0)
     {
-        Py_RETURN_NONE;
+        return NULL;
     }
 
     if ((iothr = fil_iothread_get()) == NULL)
@@ -240,7 +314,7 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
         return NULL;
     }
 
-    err = fil_iothread_read_ready(iothr, fd, ts, NULL);
+    err = fil_iothread_read_ready(iothr, fd, ts, timeout_exc);
 
     Py_DECREF(iothr);
 
@@ -255,18 +329,20 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
 PyDoc_STRVAR(_fd_wait_write_ready_doc, "wait for fd to be ready for write.");
 static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    static char *keywords[] = {"fd", "timeout", NULL};
-    PyObject *timeout = NULL;
-    struct timespec tsbuf;
-    struct timespec *ts;
-    int fd;
-    int err;
+    static char *keywords[] = {"fd", "timeout", "abstimeout", "timeout_exc", NULL};
+    PyObject *timeout = NULL, *abstimeout = NULL, *timeout_exc = NULL;
+    struct timespec tsbuf, *ts;
+    int fd, err;
     PyFilIOThread *iothr;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|O",
+    printf("fil_write_ready\n");
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|OOO:fd_wait_write_ready",
                                      keywords,
                                      &fd,
-                                     &timeout))
+                                     &timeout,
+                                     &abstimeout,
+                                     &timeout_exc))
     {
         return NULL;
     }
@@ -276,9 +352,10 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
         return NULL;
     }
 
-    if (_act_nonblock(PyTuple_GET_ITEM(args, 0)))
+    /* takes precedence */
+    if (_timespec_from_abstimeout(abstimeout, &tsbuf, &ts) < 0)
     {
-        Py_RETURN_NONE;
+        return NULL;
     }
 
     if ((iothr = fil_iothread_get()) == NULL)
@@ -286,7 +363,7 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
         return NULL;
     }
 
-    err = fil_iothread_write_ready(iothr, fd, ts, NULL);
+    err = fil_iothread_write_ready(iothr, fd, ts, timeout_exc);
 
     Py_DECREF(iothr);
 
@@ -304,6 +381,7 @@ static PyMethodDef _fil_io_module_methods[] = {
     { "os_write", (PyCFunction)_os_write, METH_VARARGS, _os_write_doc},
     { "fd_wait_read_ready", (PyCFunction)_fd_wait_read_ready, METH_VARARGS|METH_KEYWORDS, _fd_wait_read_ready_doc},
     { "fd_wait_write_ready", (PyCFunction)_fd_wait_write_ready, METH_VARARGS|METH_KEYWORDS, _fd_wait_write_ready_doc},
+    { "abstimeout_from_timeout", (PyCFunction)_abstimeout_from_timeout, METH_O, _abstimeout_from_timeout_doc},
     { NULL }
 };
 

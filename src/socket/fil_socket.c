@@ -556,6 +556,8 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
     int err;
     socklen_t err_sz;
 
+    printf("fil_connect\n");
+
     connect_meth = PyObject_GetAttrString(self->_sock, "connect");
     if (connect_meth == NULL)
     {
@@ -619,6 +621,8 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
     struct timespec ts_buf, *ts;
     int err;
     socklen_t err_sz;
+
+    printf("fil_connect_ex\n");
 
     connect_meth = PyObject_GetAttrString(self->_sock, "connect_ex");
     if (connect_meth == NULL)
@@ -1294,6 +1298,7 @@ static PyMemberDef _sock_memberlist[] = {
     { "family", T_INT, offsetof(PyFilSocket, family), READONLY, "the socket family" },
     { "type", T_INT, offsetof(PyFilSocket, type), READONLY, "the socket type" },
     { "proto", T_INT, offsetof(PyFilSocket, proto), READONLY, "the socket protocol" },
+    { "_sock", T_OBJECT, offsetof(PyFilSocket, _sock), READONLY, "the real _socket.socket that filament has wrapped" },
     { "fil_first_misses", T_INT, offsetof(PyFilSocket, first_misses), READONLY, "how many misses on try before poll" },
     { NULL, },
 };

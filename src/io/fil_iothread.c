@@ -382,7 +382,7 @@ static void _iothread_event_cb(evutil_socket_t fd, short what, void *arg)
 
     if (what & EV_TIMEOUT)
     {
-        ecbi->flags |= IOTHR_ECBI_FLAGS_TIMEOUT;
+        ecbi->flags |= IOTHR_ECBI_FLAGS_TIMEOUT|IOTHR_ECBI_FLAGS_DONE;
         event_del(ecbi->event);
 
         /* NOTE: We need to acquire the GIL here so we can safely run
@@ -614,6 +614,7 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
     PyThreadState *ts;
     struct timeval tv_buf;
     struct timeval *tv = NULL;
+    int err;
 
     /* TODO(comstud): Can optimize this by not polling if we're in a Thread
      * that doesn't have any filaments
@@ -688,65 +689,64 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
 
         fil_waiter_decref(waiter);
 
-        /* FIXME(comstud): Use errno_save to add to this string */
-        (void)errno_save;
-        PyErr_SetString(PyExc_RuntimeError, "Couldn't add event");
+        PyErr_Format(PyExc_RuntimeError, "Couldn't add event: %d", errno_save);
         return -1;
     }
 
     PyEval_RestoreThread(ts);
 
-    fil_waiter_wait(waiter, NULL);
+    err = fil_waiter_wait(waiter, NULL, timeout_exc);
+
+    ts = PyEval_SaveThread();
 
     pthread_mutex_lock(&(ecbi->ecbi_lock));
 
-    if (ecbi->flags & IOTHR_ECBI_FLAGS_TIMEOUT)
+    if (!(ecbi->flags & IOTHR_ECBI_FLAGS_DONE))
     {
+        /* hrmph.. must have received a signal
+         * or something else that caused fil_waiter_wait
+         * to return early.
+         */
+
+        ecbi->flags &= ~IOTHR_ECBI_FLAGS_WAITING;
+
+        /* The event is still scheduled.  Make it active so it can clean up */
+        event_active(ecbi->event, 0, 0);
+
+        while(!(ecbi->flags & IOTHR_ECBI_FLAGS_DONE))
+        {
+            pthread_cond_wait(&(ecbi->ecbi_cond), &(ecbi->ecbi_lock));
+        }
+
         pthread_mutex_unlock(&(ecbi->ecbi_lock));
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
-        fil_waiter_decref(waiter);
-        if (timeout_exc == NULL)
+
+        PyEval_RestoreThread(ts);
+
+        if (err == 0)
         {
-            PyErr_SetString(PyFil_TimeoutExc, "timed out");
+            /* should not happen */
+            PyErr_SetString(PyExc_RuntimeError, "waiter returned early with success but i/o not done");
+            return -1;
         }
-        else
-        {
-            PyErr_SetString(timeout_exc, "timed out");
-        }
-        return 1;
-    }
-
-    if (ecbi->flags & IOTHR_ECBI_FLAGS_DONE)
-    {
-        pthread_mutex_unlock(&(ecbi->ecbi_lock));
-        pthread_mutex_destroy(&(ecbi->ecbi_lock));
-        pthread_cond_destroy(&(ecbi->ecbi_cond));
-        fil_waiter_decref(waiter);
-        return 0;
-    }
-
-    ecbi->flags &= ~IOTHR_ECBI_FLAGS_WAITING;
-    /* The event is still scheduled.  Make it active so it can clean up */
-    event_active(ecbi->event, 0, 0);
-
-    while(!(ecbi->flags & IOTHR_ECBI_FLAGS_DONE))
-    {
-        pthread_cond_wait(&(ecbi->ecbi_cond), &(ecbi->ecbi_lock));
+        return -1;
     }
 
     pthread_mutex_unlock(&(ecbi->ecbi_lock));
     pthread_mutex_destroy(&(ecbi->ecbi_lock));
     pthread_cond_destroy(&(ecbi->ecbi_cond));
+    PyEval_RestoreThread(ts);
     fil_waiter_decref(waiter);
 
-    if (PyErr_Occurred() == NULL)
+    if (ecbi->flags & IOTHR_ECBI_FLAGS_TIMEOUT && !err)
     {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "greenlet scheduled early when waiting for I/O");
+        fil_set_timeout_exc(timeout_exc);
+        err = 1;
     }
 
-    return -1;
+    /* need to propogate any errors from fil_waiter_wait */
+    return err;
 }
 
 static void _event_log_cb(int severity, const char *msg)

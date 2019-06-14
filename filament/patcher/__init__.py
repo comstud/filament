@@ -1,6 +1,10 @@
 import sys
 
 from filament import exc
+from filament import _util
+
+_patch_items = {
+        'socket': { 'socket': 'filament.socket', 'ssl': 'filament.ssl' }}
 
 
 class Patcher(object):
@@ -46,7 +50,7 @@ class Patcher(object):
                 raise exc.PatcherItemNotFound("Couldn't find %s" % name)
         return src_obj, obj, part
 
-    def patch(self, name, new_object):
+    def patch_attr(self, name, new_object):
         # 'name' should contain full module path to target
         if name in self.orig_objects:
             return self.orig_objects[name][1]
@@ -60,11 +64,15 @@ class Patcher(object):
         self.orig_objects[name] = (src, orig)
         return orig
 
+    def patch_item(self, source, target):
+        pass
+
     def get_original(self, name):
         try:
             return self.orig_objects[name][1]
         except KeyError:
             return self._find_attr(name)[1]
+
 
 _PATCHER = Patcher()
 
@@ -78,6 +86,11 @@ def get_original(name):
 
 
 def patch_all():
+    for name in _patch_items:
+        for target in _patch_items[name]:
+            pass
+
+
     from filament.patcher import socket
     from filament.patcher import os
     socket._patch()

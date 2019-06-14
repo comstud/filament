@@ -76,7 +76,7 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
         return 1;
     }
 
-    int err = fil_waiterlist_wait(lock->waiters, ts);
+    int err = fil_waiterlist_wait(lock->waiters, ts, NULL);
     if (err)
     {
         return -1;
@@ -133,7 +133,7 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
         return 1;
     }
 
-    int err = fil_waiterlist_wait(lock->lock.waiters, ts);
+    int err = fil_waiterlist_wait(lock->lock.waiters, ts, NULL);
     if (err)
     {
         return -1;

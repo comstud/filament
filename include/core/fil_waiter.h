@@ -65,7 +65,7 @@ static inline void _fil_waiter_handle_timeout(PyFilScheduler *sched, FilWaiter *
     fil_waiter_decref(waiter);
 }
 
-static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts)
+static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObject *timeout_exc)
 {
     if (fil_waiter_signaled(waiter))
     {
@@ -106,8 +106,8 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts)
 
             if (err == ETIMEDOUT)
             {
-                PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
-                return err;
+                fil_set_timeout_exc(timeout_exc);
+                return -err;
             }
 
             /* check signals here so we don't lock up forever */
@@ -151,9 +151,9 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts)
          * I believe this is what caused me to see this exception
          * when I ^C'd a socket server while blocked in a recv()
          */
-        PyErr_SetString(PyFil_TimeoutExc, "Wait timed out");
+        fil_set_timeout_exc(timeout_exc);
 
-        return ETIMEDOUT;
+        return -ETIMEDOUT;
     }
 
     return 0;
@@ -206,7 +206,7 @@ static inline void fil_waiter_signal(FilWaiter *waiter)
 
 #define fil_waiterlist_empty(waiter_list) ((waiter_list).next == &(waiter_list))
 
-#define fil_waiterlist_wait(waiter_list, ts) _fil_waiterlist_wait(&(waiter_list), ts)
+#define fil_waiterlist_wait(waiter_list, ts, exc) _fil_waiterlist_wait(&(waiter_list), ts, exc)
 #define fil_waiterlist_signal_first(waiter_list) _fil_waiterlist_signal_first(&(waiter_list))
 #define fil_waiterlist_signal_all(waiter_list) _fil_waiterlist_signal_all(&(waiter_list))
 
@@ -236,7 +236,7 @@ static inline void _fil_waiterlist_del(FilWaiterList *entry)
     prev->next = next;
 }
 
-static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timespec *ts)
+static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timespec *ts, PyObject *timeout_exc)
 {
     int err;
     FilWaiter *waiter = fil_waiter_alloc();
@@ -247,7 +247,7 @@ static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timesp
 
     _fil_waiterlist_add(waiter_list, waiter);
 
-    err = fil_waiter_wait(waiter, ts);
+    err = fil_waiter_wait(waiter, ts, timeout_exc);
     if (err)
     {
         _fil_waiterlist_del(&(waiter->waiter_list));

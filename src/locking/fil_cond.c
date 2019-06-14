@@ -103,7 +103,7 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
         return -1;
     }
 
-    err = fil_waiterlist_wait(cond->waiters, ts);
+    err = fil_waiterlist_wait(cond->waiters, ts, NULL);
     if (err)
     {
         PyObject *exc_type, *exc_value, *exc_tb;

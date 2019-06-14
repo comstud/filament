@@ -232,22 +232,9 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
     while(!self->queue_entries)
     {
-        err = fil_waiterlist_wait(self->getters, ts);
+        err = fil_waiterlist_wait(self->getters, ts, _EmptyError);
         if (err)
         {
-            PyObject *pt, *pv, *ptb;
-            PyErr_Fetch(&pt, &pv, &ptb);
-            if (!pt || PyErr_GivenExceptionMatches(pt, PyFil_TimeoutExc))
-            {
-                Py_XDECREF(pt);
-                Py_XDECREF(pv);
-                Py_XDECREF(ptb);
-                PyErr_SetNone(_EmptyError);
-            }
-            else
-            {
-                PyErr_Restore(pt, pv, ptb);
-            }
             return NULL;
         }
     }
@@ -346,22 +333,9 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
     while(__queue_full(self))
     {
-        err = fil_waiterlist_wait(self->putters, ts);
+        err = fil_waiterlist_wait(self->putters, ts, _FullError);
         if (err)
         {
-            PyObject *pt, *pv, *ptb;
-            PyErr_Fetch(&pt, &pv, &ptb);
-            if (!pt || PyErr_GivenExceptionMatches(pt, PyFil_TimeoutExc))
-            {
-                Py_XDECREF(pt);
-                Py_XDECREF(pv);
-                Py_XDECREF(ptb);
-                PyErr_SetNone(_EmptyError);
-            }
-            else
-            {
-                PyErr_Restore(pt, pv, ptb);
-            }
             return NULL;
         }
     }

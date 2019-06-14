@@ -97,7 +97,7 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
         return EAGAIN;
     }
 
-    if (fil_waiterlist_wait(sema->waiters, ts)) {
+    if (fil_waiterlist_wait(sema->waiters, ts, NULL)) {
         return -1;
     }
 

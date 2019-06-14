@@ -282,4 +282,39 @@ static inline PyObject *fil_format_exception(PyObject *exc_type, PyObject *exc_v
     return res;
 }
 
+static inline void fil_set_timeout_exc(PyObject *timeout_exc)
+{
+    PyObject *exc_type = PyFil_TimeoutExc;
+    PyObject *exc_value = NULL;
+    PyObject *exc_tb = NULL;
+
+    if (timeout_exc == NULL)
+    {
+        PyErr_SetString(exc_type, "timed out");
+        return;
+    }
+    else if (PyExceptionClass_Check(timeout_exc))
+    {
+        PyErr_SetString(timeout_exc, "timed out");
+        return;
+    }
+    else if (PyExceptionInstance_Check(timeout_exc))
+    {
+        exc_value = timeout_exc;
+    }
+    else if (PyCallable_Check(timeout_exc))
+    {
+        exc_value = PyObject_Call(timeout_exc, fil_empty_tuple(), NULL);
+        if (exc_value == NULL)
+        {
+            /* just leave this one */
+            return;
+        }
+        PyErr_SetString(PyExc_TypeError, "timeout_exc callback should always raise");
+        return;
+    }
+    exc_type = PyExceptionInstance_Class(exc_value);
+    PyErr_Restore(exc_type, exc_value, exc_tb);
+}
+
 #endif /* __FIL_UTIL_H__ */

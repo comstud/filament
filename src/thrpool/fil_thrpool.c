@@ -227,7 +227,7 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
 
     if (waiter != NULL)
     {
-        int err = fil_waiter_wait(waiter, NULL);
+        int err = fil_waiter_wait(waiter, NULL, NULL);
 
         if (err)
         {
@@ -482,7 +482,7 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
         Py_RETURN_NONE;
     }
 
-    err = fil_waiter_wait(waiter, ts);
+    err = fil_waiter_wait(waiter, ts, NULL);
     fil_waiter_decref(waiter);
     if (err)
     {
