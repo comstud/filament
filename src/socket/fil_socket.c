@@ -43,127 +43,36 @@ typedef int SOCKET_T;
 #       define SIZEOF_SOCKET_T SIZEOF_INT
 #endif
 
-#define FIL_CPROXY_NOARG(NAME)                                              \
-static PyObject *_sock_ ## NAME(PyFilSocket *self)                          \
-{                                                                           \
-    if (self->_sock_ ## NAME == NULL)                                       \
-    {                                                                       \
-        if ((self->_sock_ ## NAME = PyObject_GetAttrString(self->_sock, #NAME)) == NULL) \
-        {                                                                   \
-            return NULL;                                                    \
-        }                                                                   \
-    }                                                                       \
-    return PyObject_Call(self->_sock_ ## NAME, _EMPTY_TUPLE, NULL);         \
-}
-
-#define FIL_CPROXY_ARG(NAME)                                                \
-static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *arg)           \
-{                                                                           \
-    PyObject *res, *args;                                                   \
-    if (self->_sock_ ## NAME == NULL)                                       \
-    {                                                                       \
-        if ((self->_sock_ ## NAME = PyObject_GetAttrString(self->_sock, #NAME)) == NULL) \
-        {                                                                   \
-            return NULL;                                                    \
-        }                                                                   \
-    }                                                                       \
-    args = PyTuple_New(1);                                                  \
-    Py_INCREF(arg);                                                         \
-    PyTuple_SET_ITEM(args, 0, arg);                                         \
-    res = PyObject_Call(self->_sock_ ## NAME, args, NULL);                  \
-    Py_DECREF(args);                                                        \
-    return res;                                                             \
-}
-
-#define FIL_CPROXY_VARG(NAME)                                               \
-static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *args)          \
-{                                                                           \
-    if (self->_sock_ ## NAME == NULL)                                       \
-    {                                                                       \
-        if ((self->_sock_ ## NAME = PyObject_GetAttrString(self->_sock, #NAME)) == NULL) \
-        {                                                                   \
-            return NULL;                                                    \
-        }                                                                   \
-    }                                                                       \
-    return PyObject_Call(self->_sock_ ## NAME, args, NULL);                 \
-}
-
-#define FIL_PROXY_NOARG(NAME)                                               \
-static PyObject *_sock_ ## NAME(PyFilSocket *self)                          \
-{                                                                           \
-    PyObject *attr, *res;                                                   \
-    if ((attr = PyObject_GetAttrString(self->_sock, #NAME)) == NULL)        \
-    {                                                                       \
-        return NULL;                                                        \
-    }                                                                       \
-    res = PyObject_Call(attr, _EMPTY_TUPLE, NULL);                          \
-    Py_DECREF(attr);                                                        \
-    return res;                                                             \
-}
-
-#define FIL_PROXY_ARG(NAME)                                                 \
-static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *arg)           \
-{                                                                           \
-    PyObject *attr, *res, *args;                                            \
-    if ((attr = PyObject_GetAttrString(self->_sock, #NAME)) == NULL)        \
-    {                                                                       \
-        return NULL;                                                        \
-    }                                                                       \
-    if ((args = PyTuple_New(1)) == NULL)                                    \
-    {                                                                       \
-        Py_DECREF(attr);                                                    \
-        return NULL;                                                        \
-    }                                                                       \
-    Py_INCREF(arg);                                                         \
-    PyTuple_SET_ITEM(args, 0, arg);                                         \
-    res = PyObject_Call(attr, args, NULL);                                  \
-    Py_DECREF(attr);                                                        \
-    Py_DECREF(args);                                                        \
-    return res;                                                             \
-}
-
-#define FIL_PROXY_VARG(NAME)                                                \
-static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *args)          \
-{                                                                           \
-    PyObject *attr, *res;                                                   \
-    if ((attr = PyObject_GetAttrString(self->_sock, #NAME)) == NULL)        \
-    {                                                                       \
-        return NULL;                                                        \
-    }                                                                       \
-    res = PyObject_Call(attr, args, NULL);                                  \
-    Py_DECREF(attr);                                                        \
-    return res;                                                             \
-}
-
 #define FIL_CPROXY_POLL(NAME, SIG, CALLARG, READ_OR_WRITE)                  \
 static PyObject *_sock_ ## NAME SIG                                         \
 {                                                                           \
+    PyFilSocketData *data = FIL_SOCKET_DATA(self);                          \
     PyObject *attr;                                                         \
     PyObject *res = NULL;                                                   \
     PyFilIOThread *iothr;                                                   \
     struct timespec ts_buf, *ts;                                            \
     int err;                                                                \
-    if ((attr = self->_sock_ ## NAME) == NULL)                              \
+    if ((attr = data->_sock_ ## NAME) == NULL)                              \
     {                                                                       \
-        attr = self->_sock_##NAME = PyObject_GetAttrString(                 \
-                self->_sock, #NAME);                                        \
+        attr = data->_sock_##NAME = PyObject_GetAttrString(                 \
+                data->_super, #NAME);                                       \
         if (attr == NULL)                                                   \
         {                                                                   \
             return NULL;                                                    \
         }                                                                   \
     }                                                                       \
     Py_INCREF(attr);                                                        \
-    if (self->timeout == 0.0 ||                                             \
-            self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)              \
+    if (data->timeout == 0.0 ||                                             \
+            data->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)              \
     {                                                                       \
         res = PyObject_Call CALLARG;                                        \
-        if ((res != NULL) || (self->timeout == 0.0) || !_exc_is_eagain(1))  \
+        if ((res != NULL) || (data->timeout == 0.0) || !_exc_is_eagain(1))  \
         {                                                                   \
             goto out;                                                       \
         }                                                                   \
-        self->first_misses++;                                               \
+        data->first_misses++;                                               \
     }                                                                       \
-    if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))     \
+    if (fil_timespec_from_double_interval(data->timeout, &ts_buf, &ts))     \
     {                                                                       \
         goto out;                                                           \
     }                                                                       \
@@ -174,7 +83,7 @@ static PyObject *_sock_ ## NAME SIG                                         \
     do                                                                      \
     {                                                                       \
         if ((err = fil_iothread_ ## READ_OR_WRITE ## _ready(                \
-                        iothr, self->_sock_fd, ts, _SOCK_TIMEOUT)))         \
+                        iothr, data->_sock_fd, ts, _SOCK_TIMEOUT)))         \
         {                                                                   \
             break;                                                          \
         }                                                                   \
@@ -188,36 +97,35 @@ out:                                                                        \
 
 typedef struct _pyfil_socket {
     PyObject_HEAD
+} PyFilSocket;
 
-    int family;
-    int type;
-    int proto;
+typedef struct _pyfil_socket_data {
     int first_misses;
 
 #define PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL 0x00000001
 #define PYFIL_SOCKET_FLAGS_DO_IN_BACKGROUND 0x00000002
     int flags;
 
+    PyObject *_super;
     PyObject *_sock; /* built-in _socket object */
     SOCKET_T _sock_fd;
     PyObject *_sock_accept;
-    PyObject *_sock_getpeername;
-    PyObject *_sock_getsockname;
-    PyObject *_sock_getsockopt;
-#if defined(MS_WINDOWS) && defined(SIO_RCVALL)
-    PyObject *_sock_ioctl;
-#endif
     PyObject *_sock_recvfrom;
     PyObject *_sock_recvfrom_into;
     PyObject *_sock_sendto;
     double timeout;
-} PyFilSocket;
+} PyFilSocketData;
+
+#define FIL_SOCKET_DATA(x) ((PyFilSocketData *)(((void *)x) + _SOCK_BASE_SIZE))
+#define FIL_ORIG_CLASS_TYPE ((PyTypeObject *)_SOCK_CLASS)
 
 static PyObject *_SOCK_MODULE, *_SOCK_CLASS, *_SOCK_ERROR, *_SOCK_HERROR, *_SOCK_TIMEOUT;
+static PyObject *_SOCK_CLASS_ACCEPT, *_SOCK_CLASS_DUP;
 static PyObject *_SOCK_SOCKETPAIR;
 static PyObject *_OUR_MODULE;
 static PyObject *_EMPTY_TUPLE;
 static PyTypeObject *_PYFIL_SOCK_TYPE;
+static Py_ssize_t _SOCK_BASE_SIZE;
 static PyObject *_RESOLVER, *_RESOLVER_METHOD_LIST;
 /* these get copied in when module is loaded */
 static char *_RESOLVER_METHOD_NAMES[] = {
@@ -332,36 +240,41 @@ static inline int _exc_is_errno(int errn, int clear_on_match)
     return 0;
 }
 
-static void _sock_clear_methods(PyFilSocket *self)
+static void _sock_clear_methods(PyFilSocketData *data)
 {
-    Py_CLEAR(self->_sock_accept);
-    Py_CLEAR(self->_sock_getpeername);
-    Py_CLEAR(self->_sock_getsockname);
-    Py_CLEAR(self->_sock_getsockopt);
-#if defined(MS_WINDOWS) && defined(SIO_RCVALL)
-    Py_CLEAR(self->_sock_ioctl);
-#endif
-    Py_CLEAR(self->_sock_recvfrom);
-    Py_CLEAR(self->_sock_recvfrom_into);
-    Py_CLEAR(self->_sock_sendto);
+    Py_CLEAR(data->_sock_accept);
+    Py_CLEAR(data->_sock_recvfrom);
+    Py_CLEAR(data->_sock_recvfrom_into);
+    Py_CLEAR(data->_sock_sendto);
 }
 
 static PyFilSocket *_sock_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 {
-    PyFilSocket *self = (PyFilSocket *)type->tp_alloc(type, 0);
+    PyFilSocket *self = FIL_ORIG_CLASS_TYPE->tp_new(type, 0);
+
     if (self != NULL) {
-        self->_sock_fd = -1;
-        self->timeout = -1.0;
-        self->flags = (PYFIL_SOCKET_FLAGS_DO_IN_BACKGROUND|PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL);
+        PyFilSocketData *data = FIL_SOCKET_DATA(self);
+        data->_super = PyObject_CallFunctionObjArgs(&PySuper_Type, self->ob_type, self, NULL);
+        if (data->_super == NULL)
+        {
+            Py_DECREF(self);
+            return NULL;
+        }
+        data->_sock_fd = -1;
+        data->timeout = -1.0;
+        data->flags = (PYFIL_SOCKET_FLAGS_DO_IN_BACKGROUND|PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL);
     }
     return self;
 }
 
-static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
+static int _sock_init_from_super(PyFilSocket *self, PyObject *_sock)
 {
+    orig_type = self->ob_type;
+
     double timeout = -1.0;
     SOCKET_T fileno;
     PyObject *res;
+    PyFilSocketData *data = FIL_SOCKET_DATA(self);
 
     res = PyObject_CallMethod(_sock, "fileno", "");
     if (res == NULL)
@@ -408,9 +321,9 @@ static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
     }
 
     Py_INCREF(_sock);
-    Py_XSETREF(self->_sock, _sock);
-    self->_sock_fd = fileno;
-    self->timeout = timeout;
+    Py_XSETREF(data->_sock, _sock);
+    data->_sock_fd = fileno;
+    data->timeout = timeout;
 
     return 0;
 }
@@ -418,6 +331,7 @@ static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
 static PyObject *_create_new_socket(int family, int type, int proto, PyObject *_sock)
 {
     PyFilSocket *sock;
+    PyFilSocketData *data;
 
     sock = _sock_new(_PYFIL_SOCK_TYPE, NULL, NULL);
     if (sock == NULL)
@@ -431,68 +345,36 @@ static PyObject *_create_new_socket(int family, int type, int proto, PyObject *_
         return NULL;
     }
 
-    sock->family = family;
-    sock->type = type;
-    sock->proto = proto;
+    data = FIL_SOCKET_DATA(sock);
 
     return (PyObject *)sock;
 }
 
 static int _sock_init(PyFilSocket *self, PyObject *args, PyObject *kwargs)
 {
-    int family = AF_INET, type = SOCK_STREAM, proto = 0;
-    static char *keywords[] = {"family", "type", "proto", "_sock",  NULL};
-    PyObject *_sock = NULL;
-    PyObject *_sock_args;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs,
-        "|iiiO:socket", keywords, &family, &type, &proto, &_sock))
+    PyObject *data = FIL_SOCKET_DATA(self);
+    
+    if (FIL_ORIG_CLASS_TYPE->tp_init(self, args, kwargs) < 0)
     {
         return -1;
-    }
-
-    if (_sock == NULL)
-    {
-        _sock_args = Py_BuildValue("iii", family, type, proto);
-        if (_sock_args == NULL)
-        {
-            return -1;
-        }
-
-        _sock = PyObject_Call(_SOCK_CLASS, _sock_args, NULL);
-        Py_DECREF(_sock_args);
-
-        if (_sock == NULL)
-        {
-            return -1;
-        }
-    }
-    else
-    {
-        Py_INCREF(_sock);
     }
 
     if (_sock_init_from_sock(self, _sock) < 0)
     {
-        Py_DECREF(_sock);
         return -1;
     }
 
-    Py_DECREF(_sock);
-
-    self->family = family;
-    self->type = type;
-    self->proto = proto;
-    _sock_clear_methods(self);
+    _sock_clear_methods(data);
     return 0;
 }
 
 static void _sock_dealloc(PyFilSocket *self)
 {
-    _sock_clear_methods(self);
-    Py_CLEAR(self->_sock);
-
-    PyObject_Del(self);
+    PyObject *data = FIL_SOCKET_DATA(self);
+    _sock_clear_methods(data);
+    Py_CLEAR(data->_sock);
+    Py_CLEAR(data->_super);
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 PyDoc_STRVAR(_sock_accept_doc,
@@ -501,11 +383,21 @@ PyDoc_STRVAR(_sock_accept_doc,
 Wait for an incoming connection.  Return a new socket representing the\n\
 connection, and the address of the client.  For IP sockets, the address\n\
 info is a pair (hostaddr, port).");
-FIL_CPROXY_POLL(accept, (PyFilSocket *self), (attr, _EMPTY_TUPLE, NULL), read)
-static PyObject *_sock_accept_real(PyFilSocket *self)
+static PyObject *_sock_accept(PyFilSocket *self)
 {
+    PyObject *data = FIL_SOCKET_DATA(self);
     PyObject *sock;
-    PyObject *res = _sock_accept(self);
+    PyObject *attr;
+
+    if ((attr = data->_sock_accept) == NULL)
+    {
+        if ((attr = data->_sock_accept = PyObject_GetAttrString(data->_super, "accept")) == NULL)
+        {
+            return NULL;
+        }
+    }
+
+    PyObject *res = Python_Call(attr, _EMPTY_TUPLE, NULL);
 
     if (res == NULL || !PyTuple_Check(res) || PyTuple_GET_SIZE(res) < 1)
     {
@@ -529,20 +421,6 @@ static PyObject *_sock_accept_real(PyFilSocket *self)
     return res;
 }
 
-PyDoc_STRVAR(_sock_bind_doc,
-"bind(address)\n\
-\n\
-Bind the socket to a local address.  For IP sockets, the address is a\n\
-pair (host, port); the host must refer to the local host. For raw packet\n\
-sockets the address is a tuple (ifname, proto [,pkttype [,hatype]])");
-FIL_PROXY_ARG(bind)
-
-PyDoc_STRVAR(_sock_close_doc,
-"close()\n\
-\n\
-Close the socket.  It cannot be used after this call.");
-FIL_PROXY_NOARG(close)
-
 PyDoc_STRVAR(_sock_connect_doc,
 "connect(address)\n\
 \n\
@@ -550,6 +428,7 @@ Connect the socket to a remote address.  For IP sockets, the address\n\
 is a pair (host, port).");
 static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
 {
+    PyObject *data = FIL_SOCKET_DATA(self);
     PyObject *res;
     PyObject *connect_meth;
     PyFilIOThread *iothr;
@@ -566,7 +445,7 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
     res = PyObject_Call(connect_meth, args, NULL);
     Py_DECREF(connect_meth);
 
-    if ((res != NULL) || (self->timeout == 0.0))
+    if ((res != NULL) || (data->timeout == 0.0))
     {
         return res;
     }
@@ -576,7 +455,7 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
         return NULL;
     }
 
-    if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))
+    if (fil_timespec_from_double_interval(data->timeout, &ts_buf, &ts))
     {
         return NULL;
     }
@@ -587,7 +466,7 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
         return NULL;
     }
 
-    if ((err = fil_iothread_write_ready(iothr, self->_sock_fd, ts, _SOCK_TIMEOUT)))
+    if ((err = fil_iothread_write_ready(iothr, data->_sock_fd, ts, _SOCK_TIMEOUT)))
     {
         Py_DECREF(iothr);
         return NULL;
@@ -597,7 +476,7 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
 
     err_sz = sizeof(err);
     err = 0;
-    (void)getsockopt(self->_sock_fd, SOL_SOCKET, SO_ERROR, &err, &err_sz);
+    (void)getsockopt(data->_sock_fd, SOL_SOCKET, SO_ERROR, &err, &err_sz);
     if ((err == 0) || (err == EISCONN))
     {
         Py_RETURN_NONE;
@@ -614,6 +493,7 @@ This is like connect(address), but returns an error code (the errno value)\n\
 instead of raising an exception when an error occurs.");
 static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
 {
+    PyObject *data = FIL_SOCKET_DATA(self);
     PyObject *res;
     PyObject *connect_meth;
     PyFilIOThread *iothr;
@@ -630,7 +510,7 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
     res = PyObject_Call(connect_meth, args, NULL);
     Py_DECREF(connect_meth);
 
-    if ((res == NULL) || (self->timeout == 0.0))
+    if ((res == NULL) || (data->timeout == 0.0))
     {
         return res;
     }
@@ -650,7 +530,7 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
 
     Py_DECREF(res);
 
-    if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))
+    if (fil_timespec_from_double_interval(data->timeout, &ts_buf, &ts))
     {
         return NULL;
     }
@@ -661,7 +541,7 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
         return NULL;
     }
 
-    if ((err = fil_iothread_write_ready(iothr, self->_sock_fd, ts, _SOCK_TIMEOUT)))
+    if ((err = fil_iothread_write_ready(iothr, data->_sock_fd, ts, _SOCK_TIMEOUT)))
     {
         Py_DECREF(iothr);
         if (PyErr_ExceptionMatches(_SOCK_TIMEOUT))
@@ -680,7 +560,7 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
 
     err_sz = sizeof(err);
     err = 0;
-    (void)getsockopt(self->_sock_fd, SOL_SOCKET, SO_ERROR, &err, &err_sz);
+    (void)getsockopt(data->_sock_fd, SOL_SOCKET, SO_ERROR, &err, &err_sz);
     if (err == EISCONN)
     {
         err = 0;
@@ -688,17 +568,14 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
     return PyInt_FromLong((long)err);
 }
 
-
 PyDoc_STRVAR(_sock_dup_doc,
 "dup() -> socket object\n\
 \n\
 Return a new socket object connected to the same system resource.");
-FIL_PROXY_NOARG(dup)
-
-static PyObject *_sock_dup_real(PyFilSocket *self)
+static PyObject *_sock_dup(PyFilSocket *self)
 {
     PyObject *sock;
-    PyObject *_sock = _sock_dup(self);
+    PyObject *_sock = Python_CallFunctionObjArgs(_SOCK_CLASS_DUP, self, NULL);
 
     if (_sock == NULL)
     {
@@ -717,50 +594,6 @@ static PyObject *_sock_dup_real(PyFilSocket *self)
     return sock;
 }
 
-PyDoc_STRVAR(_sock_listen_doc,
-"listen(backlog)\n\
-\n\
-Enable a server to accept connections.  The backlog argument must be at\n\
-least 0 (if it is lower, it is set to 0); it specifies the number of\n\
-unaccepted connections that the system will allow before refusing new\n\
-connections.");
-FIL_PROXY_ARG(listen)
-
-PyDoc_STRVAR(_sock_fileno_doc,
-"fileno() -> integer\n\
-\n\
-Return the integer file descriptor of the socket.");
-static PyObject *_sock_fileno(PyFilSocket *self)
-{
-    #if SIZEOF_SOCKET_T <= SIZEOF_LONG
-        return PyInt_FromLong((long) self->_sock_fd);
-    #else
-        return PyLong_FromLongLong((PY_LONG_LONG)self->_sock_fd);
-    #endif
-}
-
-PyDoc_STRVAR(_sock_getpeername_doc,
-"getpeername() -> address info\n\
-\n\
-Return the address of the remote endpoint.  For IP sockets, the address\n\
-info is a pair (hostaddr, port).");
-FIL_CPROXY_NOARG(getpeername)
-
-PyDoc_STRVAR(_sock_getsockname_doc,
-"getsockname() -> address info\n\
-\n\
-Return the address of the local endpoint.  For IP sockets, the address\n\
-info is a pair (hostaddr, port).");
-FIL_CPROXY_NOARG(getsockname)
-
-PyDoc_STRVAR(_sock_getsockopt_doc,
-"getsockopt(level, option[, buffersize]) -> value\n\
-\n\
-Get a socket option.  See the Unix manual for level and option.\n\
-If a nonzero buffersize argument is given, the return value is a\n\
-string of that length; otherwise it is an integer.");
-FIL_CPROXY_VARG(getsockopt)
-
 PyDoc_STRVAR(_sock_gettimeout_doc,
 "gettimeout() -> timeout\n\
 \n\
@@ -771,23 +604,12 @@ operations are disabled.");
    Returns the timeout associated with a socket. */
 static PyObject *_sock_gettimeout(PyFilSocket *self)
 {
-    if (self->timeout < 0.0) {
+    PyObject *data = FIL_SOCKET_DATA(self);
+    if (data->timeout < 0.0) {
         Py_RETURN_NONE;
     }
-    return PyFloat_FromDouble(self->timeout);
+    return PyFloat_FromDouble(data->timeout);
 }
-
-#if defined(MS_WINDOWS) && defined(SIO_RCVALL)
-
-PyDoc_STRVAR(_sock_ioctl_doc,
-"ioctl(cmd, option) -> long\n\
-\n\
-Control the socket with WSAIoctl syscall. Currently supported 'cmd' values are\n\
-SIO_RCVALL:  'option' must be one of the socket.RCVALL_* constants.\n\
-SIO_KEEPALIVE_VALS:  'option' is a tuple of (onoff, timeout, interval).");
-FIL_CPROXY_VARG(ioctl)
-
-#endif
 
 static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, int flags)
 {
@@ -1210,13 +1032,6 @@ static PyObject *_sock_setblocking(PyFilSocket *self, PyObject *arg)
     Py_RETURN_NONE;
 }
 
-PyDoc_STRVAR(_sock_setsockopt_doc,
-"setsockopt(level, option, value)\n\
-\n\
-Set a socket option.  See the Unix manual for level and option.\n\
-The value argument can either be an integer or a string.");
-FIL_PROXY_VARG(setsockopt)
-
 PyDoc_STRVAR(_sock_settimeout_doc,
 "settimeout(timeout)\n\
 \n\
@@ -1251,29 +1066,12 @@ static PyObject *_sock_settimeout(PyFilSocket *self, PyObject *arg)
     Py_RETURN_NONE;
 }
 
-PyDoc_STRVAR(_sock_shutdown_doc,
-"shutdown(flag)\n\
-\n\
-Shut down the reading side of the socket (flag == SHUT_RD), the writing side\n\
-of the socket (flag == SHUT_WR), or both ends (flag == SHUT_RDWR).");
-FIL_PROXY_ARG(shutdown)
-
 static PyMethodDef _sock_methods[] = {
-    { "accept", (PyCFunction)_sock_accept_real, METH_NOARGS, _sock_accept_doc },
-    { "bind", (PyCFunction)_sock_bind, METH_O, _sock_bind_doc },
-    { "close", (PyCFunction)_sock_close, METH_NOARGS, _sock_close_doc },
+    { "accept", (PyCFunction)_sock_accept, METH_NOARGS, _sock_accept_doc },
     { "connect", (PyCFunction)_sock_connect, METH_VARARGS, _sock_connect_doc },
     { "connect_ex", (PyCFunction)_sock_connect_ex, METH_VARARGS, _sock_connect_ex_doc },
-    { "dup", (PyCFunction)_sock_dup_real, METH_NOARGS, _sock_dup_doc },
-    { "fileno", (PyCFunction)_sock_fileno, METH_NOARGS, _sock_fileno_doc },
-    { "getpeername", (PyCFunction)_sock_getpeername, METH_NOARGS, _sock_getpeername_doc },
-    { "getsockname", (PyCFunction)_sock_getsockname, METH_NOARGS, _sock_getsockname_doc },
-    { "getsockopt", (PyCFunction)_sock_getsockopt, METH_VARARGS, _sock_getsockopt_doc },
+    { "dup", (PyCFunction)_sock_dup, METH_NOARGS, _sock_dup_doc },
     { "gettimeout", (PyCFunction)_sock_gettimeout, METH_NOARGS, _sock_gettimeout_doc },
-#if defined(MS_WINDOWS) && defined(SIO_RCVALL)
-    { "ioctl", (PyCFunction)_sock_ioctl, METH_VARARGS, _sock_ioctl_doc },
-#endif
-    { "listen", (PyCFunction)_sock_listen, METH_O, _sock_listen_doc },
     /* No 'makefile'. Doesn't exist in py3 here, and py2 ignores it in favor
      * of the one in socket.py
      */
@@ -1285,17 +1083,11 @@ static PyMethodDef _sock_methods[] = {
     { "sendall", (PyCFunction)_sock_sendall, METH_VARARGS, _sock_sendall_doc },
     { "sendto", (PyCFunction)_sock_sendto, METH_VARARGS, _sock_sendto_doc },
     { "setblocking", (PyCFunction)_sock_setblocking, METH_O, _sock_setblocking_doc },
-    { "setsockopt", (PyCFunction)_sock_setsockopt, METH_VARARGS, _sock_setsockopt_doc },
     { "settimeout", (PyCFunction)_sock_settimeout, METH_O, _sock_settimeout_doc },
-    { "shutdown", (PyCFunction)_sock_shutdown, METH_O, _sock_shutdown_doc },
     { NULL, },
 };
 
 static PyMemberDef _sock_memberlist[] = {
-    { "family", T_INT, offsetof(PyFilSocket, family), READONLY, "the socket family" },
-    { "type", T_INT, offsetof(PyFilSocket, type), READONLY, "the socket type" },
-    { "proto", T_INT, offsetof(PyFilSocket, proto), READONLY, "the socket protocol" },
-    { "_sock", T_OBJECT, offsetof(PyFilSocket, _sock), READONLY, "the real _socket.socket that filament has wrapped" },
     { "fil_first_misses", T_INT, offsetof(PyFilSocket, first_misses), READONLY, "how many misses on try before poll" },
     { NULL, },
 };
@@ -1320,7 +1112,7 @@ static PyTypeObject _sock_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_TYPE_SUBCLASS, /* tp_flags */
     0,                                          /* tp_doc */
     0,                                          /* tp_traverse */
     0,                                          /* tp_clear */
@@ -1339,7 +1131,7 @@ static PyTypeObject _sock_type = {
     (initproc)_sock_init,                       /* tp_init */
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_sock_new,                         /* tp_new */
-    PyObject_Del,                               /* tp_free */
+    0,                                          /* tp_free */
     0,                                          /* tp_is_gc */
     0,                                          /* tp_bases */
     0,                                          /* tp_mro */
@@ -1594,6 +1386,22 @@ initsocket(void)
     {
         return;
     }
+
+    if (_SOCK_CLASS_ACCEPT == NULL &&
+        (_SOCK_CLASS_ACCEPT = PyObject_GetAttrString(_SOCK_CLASS_ACCEPT, "accept")) == NULL)
+    {
+        return;
+    }
+
+    /* fix up _sock_type to inherit from _socket.socket */
+    if (!PyType_Check(_SOCK_CLASS))
+    {
+        PyErr_SetString(PyExc_TypeError, "_socket.socket is not a type");
+        return;
+    }
+    _SOCK_BASE_SIZE = (((PyTypeObject *)_SOCK_CLASS)->tp_basicsize + sizeof(PyObject *) - 1) & ~(sizeof(PyObject *)-1);
+    _sock_type.tp_basicsize = _SOCK_BASE_SIZE + sizeof(PyFilSocketData);
+    _sock_type.tp_base = _SOCK_CLASS;
 
     if (PyType_Ready(&_sock_type) < 0)
     {
