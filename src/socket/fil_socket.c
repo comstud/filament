@@ -556,8 +556,6 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
     int err;
     socklen_t err_sz;
 
-    printf("fil_connect\n");
-
     connect_meth = PyObject_GetAttrString(self->_sock, "connect");
     if (connect_meth == NULL)
     {
@@ -621,8 +619,6 @@ static PyObject *_sock_connect_ex(PyFilSocket *self, PyObject *args)
     struct timespec ts_buf, *ts;
     int err;
     socklen_t err_sz;
-
-    printf("fil_connect_ex\n");
 
     connect_meth = PyObject_GetAttrString(self->_sock, "connect_ex");
     if (connect_meth == NULL)

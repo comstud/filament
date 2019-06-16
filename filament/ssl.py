@@ -1,16 +1,18 @@
 from __future__ import absolute_import
 import errno
-import socket
-import sys
-import time
 
 from _socket import socket as _fil_realsocket
 
-from filament import io as _fio
-from filament import exc as _fexc
-from filament import _util
+from filament import io as _fil_io
+from filament import _util as _fil_util
 
-_fil_ssl = _util.copy_module('ssl')
+__filament__ = {"patch":"ssl"}
+
+# We use a copy because we're going to replace
+# its SSLSocket after we use it. See other
+# comment below.
+_fil_ssl = _fil_util.copy_module('ssl')
+_fil_orig_SSLSocket = _fil_ssl.SSLSocket
 
 
 class SSLSocket(_fil_ssl.SSLSocket):
@@ -21,7 +23,7 @@ class SSLSocket(_fil_ssl.SSLSocket):
         # real python _socket.socket obj.
         if type(sock._sock) is _fil_realsocket:
             # Not passed a filament socket.. don't bother wrapping.
-            return _fil_ssl.SSLSocket(sock=sock, **kwargs)
+            return _fil_orig_SSLSocket(sock=sock, **kwargs)
         return super(SSLSocket, cls).__new__(cls, sock, *args, **kwargs)
 
     def __init__(self, sock, *args, **kwargs):
@@ -42,7 +44,7 @@ class SSLSocket(_fil_ssl.SSLSocket):
         return self._fil_sock.setblocking(val)
 
     def _get_timeout(self):
-        return _fio.abstimeout_from_timeout(self.gettimeout())
+        return _fil_io.abstimeout_from_timeout(self.gettimeout())
 
     def _fil_wait_read(self, to, operation):
         if self._fil_sock.gettimeout() == 0.0:
@@ -50,7 +52,7 @@ class SSLSocket(_fil_ssl.SSLSocket):
             raise
         def _fil_read_timeout():
             raise _fil_ssl.SSLError("The %s operation timed out" % (operation,))
-        _fio.fd_wait_read_ready(self._sock.fileno(), abstimeout=to, timeout_exc=_fil_read_timeout)
+        _fil_io.fd_wait_read_ready(self._sock.fileno(), abstimeout=to, timeout_exc=_fil_read_timeout)
 
     def _fil_wait_write(self, to, operation):
         if self._fil_sock.gettimeout() == 0.0:
@@ -58,7 +60,7 @@ class SSLSocket(_fil_ssl.SSLSocket):
             raise
         def _fil_write_timeout():
             raise _fil_ssl.SSLError("The %s operation timed out" % (operation,))
-        _fio.fd_wait_write_ready(self._sock.fileno(), abstimeout=to, timeout_exc=_fil_write_timeout)
+        _fil_io.fd_wait_write_ready(self._sock.fileno(), abstimeout=to, timeout_exc=_fil_write_timeout)
 
     def _real_connect(self, addr, connect_ex):
         # do some tricky stuff, as this needs the _socket.socket as self._sock
@@ -133,16 +135,17 @@ class SSLSocket(_fil_ssl.SSLSocket):
     unwrap.__doc__ = _fil_ssl.SSLSocket.unwrap.__doc__
 
 
-
-
 # Replacing this in the 'ssl' dict
 # allows us to not have to subclass SSLContext
 # to wrap it's wrap_socket() method with one that
-# creates our sSLSocket. Instead, this makes the
-# wrap_context() find ours:
+# creates our SSLSocket along with the _create_default_context
+# type functions and so forth. Instead, this just patches
+# our copy of 'ssl' so it can find our SSLSocket.
 _fil_ssl.SSLSocket = SSLSocket
+
 
 def sslwrap_simple(sock, keyfile=None, certfile=None):
     return SSLSocket(sock, keyfile=keyfile, certfile=certfile)
 
-_util.copy_globals(_fil_ssl, globals())
+# Copy the rest of the real ssl
+_fil_util.copy_globals(_fil_ssl, globals())

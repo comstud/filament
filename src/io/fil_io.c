@@ -286,8 +286,6 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
     int fd, err;
     PyFilIOThread *iothr;
 
-    printf("fil_read_ready\n");
-
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|OOO:fd_wait_read_ready",
                                      keywords,
                                      &fd,
@@ -334,8 +332,6 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
     struct timespec tsbuf, *ts;
     int fd, err;
     PyFilIOThread *iothr;
-
-    printf("fil_write_ready\n");
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|OOO:fd_wait_write_ready",
                                      keywords,
