@@ -561,7 +561,7 @@ static PyMethodDef _iothread_methods[] = {
 
 static PyTypeObject _iothread_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type value later */
-    "filament.iothread.IOThread",               /* tp_name */
+    "_filament.io.IOThread",                    /* tp_name */
     sizeof(PyFilIOThread),                      /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_iothread_dealloc,              /* tp_dealloc */

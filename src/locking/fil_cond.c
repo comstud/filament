@@ -218,7 +218,7 @@ static PyMethodDef _cond_methods[] = {
 
 static PyTypeObject _cond_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.cond.Condition",                  /* tp_name */
+    "_filament.locking.Condition",              /* tp_name */
     sizeof(PyFilCond),                          /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_cond_dealloc,                  /* tp_dealloc */

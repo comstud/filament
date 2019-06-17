@@ -1301,7 +1301,7 @@ static PyMemberDef _sock_memberlist[] = {
 
 static PyTypeObject _sock_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "_filament.Socket",                         /* tp_name */
+    "_filament.socket.Socket",                  /* tp_name */
     sizeof(PyFilSocket),                        /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_sock_dealloc,                  /* tp_dealloc */

@@ -176,8 +176,8 @@ static PyMethodDef _semaphore_methods[] = {
 
 static PyTypeObject _semaphore_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.semaphore.Semaphore",             /* tp_name */
-    sizeof(PyFilSemaphore),                      /* tp_basicsize */
+    "_filament.locking.Semaphore",              /* tp_name */
+    sizeof(PyFilSemaphore),                     /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_semaphore_dealloc,             /* tp_dealloc */
     0,                                          /* tp_print */

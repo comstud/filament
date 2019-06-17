@@ -49,7 +49,7 @@ static PyMemberDef _fdesc_members[] = {
 
 static PyTypeObject _fdesc_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type value later */
-    "filament.io.FDesc",                        /* tp_name */
+    "_filament.io.FDesc",                       /* tp_name */
     sizeof(PyFilFDesc),                         /* tp_basicsize */
     0,                                          /* tp_itemsize */
     0,                                          /* tp_dealloc */

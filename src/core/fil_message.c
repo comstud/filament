@@ -198,7 +198,7 @@ static PyMethodDef _message_methods[] = {
 
 static PyTypeObject _message_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.message.Message",                 /* tp_name */
+    "_filament.Message",                        /* tp_name */
     sizeof(PyFilMessage),                       /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_message_dealloc,               /* tp_dealloc */

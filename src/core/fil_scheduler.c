@@ -527,7 +527,7 @@ static PyMethodDef _sched_methods[] = {
 static PyTypeObject _scheduler_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type
                                                    value later */
-    "filament.Scheduler",                       /* tp_name */
+    "_filament.Scheduler",                      /* tp_name */
     sizeof(PyFilScheduler),                     /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_sched_dealloc,                 /* tp_dealloc */

@@ -564,7 +564,7 @@ static PyMemberDef _thrpool_memberlist[] = {
 
 static PyTypeObject _thrpool_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.thrpool.ThreadPool",              /* tp_name */
+    "_filament.thrpool.ThreadPool",             /* tp_name */
     sizeof(PyFilThrPool),                       /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_thrpool_dealloc,               /* tp_dealloc */

@@ -165,7 +165,7 @@ static PyMethodDef _timer_methods[] = {
 
 static PyTypeObject _timer_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.timer.Timer",                     /* tp_name */
+    "_filament.timer.Timer",                    /* tp_name */
     sizeof(PyFilTimer),                         /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_timer_dealloc,                 /* tp_dealloc */

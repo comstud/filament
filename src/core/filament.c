@@ -205,7 +205,7 @@ static PyMethodDef _fil_filament_methods[] = {
 static PyTypeObject _fil_filament_type = {
     PyVarObject_HEAD_INIT(0, 0)                 /* Must fill in type
                                                    value later */
-    "filament.Filament",                        /* tp_name */
+    "_filament.Filament",                       /* tp_name */
     sizeof(PyFilament),                         /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_fil_filament_dealloc,          /* tp_dealloc */

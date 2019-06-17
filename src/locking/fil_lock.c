@@ -285,7 +285,7 @@ static PyMethodDef _rlock_methods[] = {
 
 static PyTypeObject _lock_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.lock.Lock",                     /* tp_name */
+    "_filament.locking.Lock",                 /* tp_name */
     sizeof(PyFilLock),                           /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_lock_dealloc,                  /* tp_dealloc */
@@ -328,7 +328,7 @@ static PyTypeObject _lock_type = {
 /* Re-entrant lock.  We can use the same calls here */
 static PyTypeObject _rlock_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.lock.RLock",                      /* tp_name */
+    "_filament.locking.RLock",                  /* tp_name */
     sizeof(PyFilRLock),                         /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_lock_dealloc,                  /* tp_dealloc */
