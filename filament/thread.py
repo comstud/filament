@@ -1,5 +1,5 @@
-from filament import _fil_patcher
-from filament import _fil_util
+from filament import patcher as _fil_patcher
+from filament import _util as _fil_util
 import filament as _fil
 import _filament.locking as _fil_locking
 
@@ -15,7 +15,7 @@ class Lock(_fil_locking.Lock):
     def acquire_lock(self, waitflag=1):
         return self.acquire(waitflag)
 
-    def release_lock(self)
+    def release_lock(self):
         return self.release()
 
     def locked(self):
@@ -39,4 +39,4 @@ def start_new_thread(fn, *args, **kwargs):
 
 LockType = Lock
 
-_util.copy_globals(_thread, globals())
+_fil_util.copy_globals(_thread, globals())
