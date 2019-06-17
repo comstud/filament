@@ -1,18 +1,18 @@
-/* 
+/*
  * The MIT License (MIT): http://opensource.org/licenses/mit-license.php
- * 
+ *
  * Copyright (c) 2013-2014, Chris Behrens
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -77,9 +77,9 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
     }
 
     int err = fil_waiterlist_wait(lock->waiters, ts, NULL);
-    if (err)
+    if (err < 0)
     {
-        return -1;
+        return err;
     }
 
     assert(lock->locked == 1);
@@ -136,7 +136,7 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
     int err = fil_waiterlist_wait(lock->lock.waiters, ts, NULL);
     if (err)
     {
-        return -1;
+        return err;
     }
 
     assert(lock->lock.locked == 1);
@@ -148,18 +148,9 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
 
 static int __rlock_release(PyFilRLock *lock)
 {
-    uint64_t owner;
-
-    if (!lock->lock.locked)
+    if (!lock->lock.locked || (fil_get_ident() != lock->owner))
     {
-        PyErr_SetString(PyExc_RuntimeError, "release without acquire");
-        return -1;
-    }
-
-    owner = fil_get_ident();
-    if (owner != lock->owner)
-    {
-        PyErr_SetString(PyExc_RuntimeError, "not lock owner");
+        PyErr_SetString(PyExc_RuntimeError, "cannot release un-acquired lock");
         return -1;
     }
 
@@ -210,20 +201,58 @@ static PyObject *_lock_acquire(PyFilLock *self, PyObject *args, PyObject *kwargs
 
     blocking = (blockingobj == NULL || blockingobj == Py_True);
     err = __lock_acquire(self, blocking, ts);
-    if (err)
+    if (err < 0 && err != -ETIMEDOUT)
+    {
         return NULL;
-    Py_RETURN_NONE;
-    return NULL;
+    }
+
+    if (err == 0)
+    {
+        Py_INCREF(Py_True);
+        return Py_True;
+    }
+
+    Py_INCREF(Py_False);
+    return Py_False;
+}
+
+PyDoc_STRVAR(_lock_locked_doc, "Is the lock locked?");
+static PyObject *_lock_locked(PyFilLock *self)
+{
+    PyObject *res = (self->locked || !fil_waiterlist_empty(self->waiters)) ? Py_True : Py_False;
+    Py_INCREF(res);
+    return res;
 }
 
 PyDoc_STRVAR(_lock_release_doc, "Release the lock.");
-static PyObject *_lock_release(PyFilLock *self, PyObject *args)
+static PyObject *_lock_release(PyFilLock *self)
 {
     if (__lock_release(self) < 0)
     {
         return NULL;
     }
     Py_RETURN_NONE;
+}
+
+static PyObject *_lock_enter(PyFilLock *self)
+{
+    int err = __lock_acquire(self, 1, NULL);
+    if (err)
+    {
+        if (!PyErr_Occurred())
+        {
+            PyErr_Format(PyExc_RuntimeError, "unexpected failure in Lock.__enter__: %d", err);
+        }
+        return NULL;
+    }
+
+    Py_INCREF(self);
+    return (PyObject *)self;
+}
+
+static PyObject *_lock_exit(PyFilLock *self, PyObject *args)
+{
+    return _lock_release(self);
 }
 
 PyDoc_STRVAR(_rlock_acquire_doc, "Acquire the lock.");
@@ -252,13 +281,33 @@ static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *args, PyObject *kwar
 
     blocking = (blockingobj == NULL || blockingobj == Py_True);
     err = __rlock_acquire(self, blocking, ts);
-    if (err)
+    if (err < 0 && err != -ETIMEDOUT)
+    {
         return NULL;
-    Py_RETURN_NONE;
+    }
+
+    if (err == 0)
+    {
+        Py_INCREF(Py_True);
+        return Py_True;
+    }
+
+    Py_INCREF(Py_False);
+    return Py_False;
+}
+
+PyDoc_STRVAR(_rlock_locked_doc, "Is the lock locked (by someone else)?");
+static PyObject *_rlock_locked(PyFilRLock *self)
+{
+    uint64_t owner = fil_get_ident();
+    PyObject *res = ((self->lock.locked && self->owner != owner) ||
+            !fil_waiterlist_empty(self->lock.waiters)) ? Py_True : Py_False;
+    Py_INCREF(res);
+    return res;
 }
 
 PyDoc_STRVAR(_rlock_release_doc, "Release the lock.");
-static PyObject *_rlock_release(PyFilRLock *self, PyObject *args)
+static PyObject *_rlock_release(PyFilRLock *self)
 {
     if (__rlock_release(self) < 0)
     {
@@ -267,19 +316,43 @@ static PyObject *_rlock_release(PyFilRLock *self, PyObject *args)
     Py_RETURN_NONE;
 }
 
+static PyObject *_rlock_enter(PyFilRLock *self)
+{
+    int err = __rlock_acquire(self, 1, NULL);
+    if (err)
+    {
+        if (!PyErr_Occurred())
+        {
+            PyErr_Format(PyExc_RuntimeError, "unexpected failure in RLock.__enter__: %d", err);
+        }
+        return NULL;
+    }
+
+    Py_INCREF(self);
+    return (PyObject *)self;
+}
+
+static PyObject *_rlock_exit(PyFilRLock *self, PyObject *args)
+{
+    return _rlock_release(self);
+}
+
+
 static PyMethodDef _lock_methods[] = {
-    {"acquire", (PyCFunction)_lock_acquire, METH_VARARGS|METH_KEYWORDS, _lock_acquire_doc},
-    {"release", (PyCFunction)_lock_release, METH_NOARGS, _lock_release_doc},
-    {"__enter__", (PyCFunction)_lock_acquire, METH_VARARGS|METH_KEYWORDS, _lock_acquire_doc},
-    {"__exit__", (PyCFunction)_lock_release, METH_VARARGS, _lock_release_doc},
+    { "acquire", (PyCFunction)_lock_acquire, METH_VARARGS|METH_KEYWORDS, _lock_acquire_doc },
+    { "release", (PyCFunction)_lock_release, METH_NOARGS, _lock_release_doc },
+    { "locked", (PyCFunction)_lock_locked, METH_NOARGS, _lock_locked_doc },
+    { "__enter__", (PyCFunction)_lock_enter, METH_NOARGS, NULL },
+    { "__exit__", (PyCFunction)_lock_exit, METH_VARARGS, NULL },
     { NULL, NULL }
 };
 
 static PyMethodDef _rlock_methods[] = {
-    {"acquire", (PyCFunction)_rlock_acquire, METH_VARARGS|METH_KEYWORDS, _rlock_acquire_doc},
-    {"release", (PyCFunction)_rlock_release, METH_NOARGS, _rlock_release_doc},
-    {"__enter__", (PyCFunction)_rlock_acquire, METH_VARARGS, _rlock_acquire_doc},
-    {"__exit__", (PyCFunction)_rlock_release, METH_VARARGS, _rlock_release_doc},
+    { "acquire", (PyCFunction)_rlock_acquire, METH_VARARGS|METH_KEYWORDS, _rlock_acquire_doc },
+    { "release", (PyCFunction)_rlock_release, METH_NOARGS, _rlock_release_doc },
+    { "locked", (PyCFunction)_rlock_locked, METH_NOARGS, _rlock_locked_doc },
+    { "__enter__", (PyCFunction)_rlock_enter, METH_NOARGS, NULL },
+    { "__exit__", (PyCFunction)_rlock_exit, METH_VARARGS, NULL },
     { NULL, NULL }
 };
 
