@@ -37,7 +37,8 @@
 typedef struct _pyfil_queue {
     PyObject_HEAD
 
-    FilFifoQ *queue;
+    int _queue_inited;
+    FilFifoQ queue;
     uint64_t queue_max_size;
 
     FilWaiterList getters;
@@ -63,12 +64,13 @@ static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kwar
 
     if ((self = (PyFilQueue *)type->tp_alloc(type, 0)) != NULL)
     {
-        if ((self->queue = fil_fifoq_alloc()) == NULL)
+        if (fil_fifoq_init(&(self->queue)))
         {
-            PyErr_SetString(PyExc_MemoryError, "out of memory allocating queue");
+            PyErr_SetString(PyExc_MemoryError, "out of memory allocating queue chunk");
             Py_DECREF(self);
             return NULL;
         }
+        self->_queue_inited = 1;
         self->queue_max_size = maxsize < 0 ? 0 : maxsize;
         fil_waiterlist_init(self->getters);
         fil_waiterlist_init(self->putters);
@@ -86,9 +88,9 @@ static void _queue_dealloc(PyFilQueue *self)
 {
     assert(fil_waiterlist_empty(self->getters));
     assert(fil_waiterlist_empty(self->putters));
-    if (self->queue != NULL)
+    if (self->_queue_inited)
     {
-        fil_fifoq_free(self->queue);
+        fil_fifoq_deinit(&(self->queue));
     }
     PyObject_Del(self);
 }
@@ -96,20 +98,20 @@ static void _queue_dealloc(PyFilQueue *self)
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
 static PyObject *_queue_qsize(PyFilQueue *self, PyObject *args)
 {
-    return PyInt_FromLong(self->queue->len);
+    return PyInt_FromLong(self->queue.len);
 }
 
 PyDoc_STRVAR(_queue_empty_doc, "Is the queue empty?");
 static PyObject *_queue_empty(PyFilQueue *self, PyObject *args)
 {
-    PyObject *res = self->queue->len ? Py_False : Py_True;
+    PyObject *res = self->queue.len ? Py_False : Py_True;
     Py_INCREF(res);
     return res;
 }
 
 static inline int __queue_full(PyFilQueue *self)
 {
-    if (1 + self->queue->len < self->queue->len)
+    if (1 + self->queue.len < self->queue.len)
     {
         return 1;
     }
@@ -117,7 +119,7 @@ static inline int __queue_full(PyFilQueue *self)
     {
         return 0;
     }
-    return self->queue->len < self->queue_max_size ? 0 : 1;
+    return self->queue.len < self->queue_max_size ? 0 : 1;
 }
 
 PyDoc_STRVAR(_queue_full_doc, "Is the queue full?");
@@ -133,7 +135,7 @@ static PyObject *_queue_get_nowait(PyFilQueue *self)
 {
     void *res;
 
-    if (fil_fifoq_get(self->queue, &res))
+    if (fil_fifoq_get(&(self->queue), &res))
     {
         PyErr_SetNone(_EmptyError);
         return NULL;
@@ -170,7 +172,7 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    while(!self->queue->len)
+    while(!self->queue.len)
     {
         err = fil_waiterlist_wait(self->getters, ts, _EmptyError);
         if (err)
@@ -187,7 +189,7 @@ static inline int __queue_put(PyFilQueue *self, PyObject *item)
     int err;
 
     Py_INCREF(item);
-    if ((err = fil_fifoq_put(self->queue, item)))
+    if ((err = fil_fifoq_put(&(self->queue), item)))
     {
         if (err == FIL_FIFOQ_ERROR_OUT_OF_MEMORY)
         {
@@ -297,7 +299,7 @@ static PyMethodDef _queue_methods[] = {
 
 static Py_ssize_t _queue_len(PyFilQueue *self)
 {
-    return self->queue->len;
+    return self->queue.len;
 }
 
 static PySequenceMethods _queue_as_sequence = {

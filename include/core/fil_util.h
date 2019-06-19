@@ -85,7 +85,7 @@ static inline int fil_double_from_timeout_obj(PyObject *timeoutobj, double *dbl)
         if (!PyErr_Occurred())
         {
             PyErr_SetString(PyExc_ValueError,
-                "timeout must be positive or None");
+                "timeout must None or a non-negative number");
         }
         return -1;
     }

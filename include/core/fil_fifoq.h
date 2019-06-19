@@ -27,16 +27,28 @@
 
 #include "core/filament.h"
 
+#ifndef FIL_FIFOQ_TARGET_CHUNK_SIZE
+#define FIL_FIFOQ_TARGET_CHUNK_SIZE 8192
+#endif
+
+#define _FIL_FIFOQ_CIO offsetof(FilFifoQChunk, items)
+#define _FIL_FIFOQ_CTS (sizeof(void *) * FIL_FIFOQ_TARGET_CHUNK_SIZE)
+#define _FIL_FIFOQ_ALIGN(__x, __y) (((__x) + (__y) - 1) & ~((__y)-1))
+
+/* make the Chunk object size a multiple of 8192 */
+#define FIL_FIFOQ_CHUNK_SIZE        ((_FIL_FIFOQ_ALIGN(_FIL_FIFOQ_CIO + _FIL_FIFOQ_CTS, 8192) - _FIL_FIFOQ_CIO) / sizeof(void *))
+#define FIL_FIFOQ_CHUNK_OBJ_SIZE    (_FIL_FIFOQ_CIO + (sizeof(void *) * FIL_FIFOQ_CHUNK_SIZE))
+
 #ifndef FIL_FIFOQ_CHUNK_SIZE
-#define FIL_FIFOQ_CHUNK_SIZE (1 << 14)
+#define FIL_FIFOQ_CHUNK_SIZE 8192
 #endif
 
 #ifndef FIL_FIFOQ_FREELIST_SIZE
-#define FIL_FIFOQ_FREELIST_SIZE (1 << 6)
+#define FIL_FIFOQ_FREELIST_SIZE 16
 #endif
 
 #ifndef FIL_FIFOQ_CHUNK_FREELIST_SIZE
-#define FIL_FIFOQ_CHUNK_FREELIST_SIZE (1 << 6)
+#define FIL_FIFOQ_CHUNK_FREELIST_SIZE 128
 #endif
 
 #define FIL_FIFOQ_ERROR_EMPTY -1
@@ -52,9 +64,9 @@ static FilFifoQChunk *_fil_fifoq_chunk_freelist[FIL_FIFOQ_CHUNK_FREELIST_SIZE];
 
 struct _fil_fifoq_chunk
 {
-    void *items[FIL_FIFOQ_CHUNK_SIZE];
     uint64_t append_idx;
     FilFifoQChunk *next_chunk;
+    void *items[1]; /* void *items[FIL_FIFOQ_CHUNK_SIZE]; */
 };
 
 struct _fil_fifoq {
@@ -64,9 +76,14 @@ struct _fil_fifoq {
     uint64_t len;
 };
 
-#define _fil_fifoq_chunk_alloc() (_fil_fifoq_chunk_freelist_len                 \
-    ?  _fil_fifoq_chunk_freelist[--_fil_fifoq_chunk_freelist_len]               \
-    :  malloc(sizeof(FilFifoQChunk)))
+static inline FilFifoQChunk *_fil_fifoq_chunk_alloc(void)
+{
+    if (_fil_fifoq_chunk_freelist_len)
+    {
+        return _fil_fifoq_chunk_freelist[--_fil_fifoq_chunk_freelist_len];
+    }
+    return malloc(FIL_FIFOQ_CHUNK_OBJ_SIZE);
+}
 
 static inline void _fil_fifoq_chunk_free(FilFifoQChunk *chunk)
 {
@@ -78,7 +95,22 @@ static inline void _fil_fifoq_chunk_free(FilFifoQChunk *chunk)
     {
         _fil_fifoq_chunk_freelist[_fil_fifoq_chunk_freelist_len++] = chunk;
     }
+}
 
+/* for when statically allocated */
+static inline int fil_fifoq_init(FilFifoQ *q)
+{
+    if ((q->head = q->tail = _fil_fifoq_chunk_alloc()) == NULL)
+    {
+        return -1;
+    }
+#ifndef NDEBUG
+    q->head->next_chunk = NULL;
+#endif
+    q->len = 0;
+    q->pop_idx = 0;
+    q->head->append_idx = -1;
+    return 0;
 }
 
 static inline FilFifoQ *fil_fifoq_alloc(void)
@@ -96,15 +128,12 @@ static inline FilFifoQ *fil_fifoq_alloc(void)
         {
             return NULL;
         }
-        if ((q->head = q->tail = _fil_fifoq_chunk_alloc()) == NULL)
+        if (fil_fifoq_init(q))
         {
             free(q);
             return NULL;
         }
-#ifndef NDEBUG
-        q->head->next_chunk = NULL;
-#endif
-        q->len = 0;
+        return q;
     }
     assert(q->head == q->tail);
     assert(q->len == 0);
@@ -113,7 +142,7 @@ static inline FilFifoQ *fil_fifoq_alloc(void)
     return q;
 }
 
-static inline void fil_fifoq_free(FilFifoQ *q)
+static inline void _fil_fifoq_dump(FilFifoQ *q)
 {
     FilFifoQChunk *head;
 
@@ -122,16 +151,29 @@ static inline void fil_fifoq_free(FilFifoQ *q)
         q->head = head->next_chunk;
         _fil_fifoq_chunk_free(head);
     }
+}
 
+/* for when statically allocated -- do not call unless _init() succeeded! */
+static inline void fil_fifoq_deinit(FilFifoQ *q)
+{
+    _fil_fifoq_dump(q);
+    _fil_fifoq_chunk_free(q->head);
+    q->head = NULL;
+    q->len = 0;
+}
+
+static inline void fil_fifoq_free(FilFifoQ *q)
+{
     if (_fil_fifoq_freelist_len == FIL_FIFOQ_FREELIST_SIZE - 1)
     {
-        _fil_fifoq_chunk_free(head);
+        fil_fifoq_deinit(q);
         free(q);
         return;
     }
 
     q->len = 0;
-    q->tail = head;
+    _fil_fifoq_freelist[_fil_fifoq_freelist_len++] = q;
+
     return;
 }
 
