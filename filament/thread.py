@@ -5,7 +5,7 @@ import _filament.locking as _fil_locking
 
 __filament__ = {'patch':'thread'}
 
-_thread = _fil_patcher.get_original('thread')
+_fil_thread = _fil_patcher.get_original('thread')
 
 class Lock(_fil_locking.Lock):
     def acquire(self, waitflag=1):
@@ -39,4 +39,4 @@ def start_new_thread(fn, *args, **kwargs):
 
 LockType = Lock
 
-_fil_util.copy_globals(_thread, globals())
+_fil_util.copy_globals(_fil_thread, globals())

@@ -274,7 +274,7 @@ static void _sched_dealloc(PyFilScheduler *self)
     _handle_greenlet_done(&(sched->greenlet));
 #endif
     _scheduler_set(NULL);
-    Py_TYPE(self)->tp_free((PyObject *)self);
+    PyObject_Del(self);
 }
 
 PyDoc_STRVAR(sched_fil_switch_doc, "Schedule a filament to run.");
@@ -307,7 +307,7 @@ static PyObject *_sched_fil_switch(PyFilScheduler *self, PyObject *args)
  * when no one is waiting on the thread, but I'm not sure
  * we can really detect that. Maybe we only do it if we
  * have a filament.spawn() that doesn't return a Filament.
- * 
+ *
  * In any case, we're also called here from paths where
  * an exception may have been raised outside of a Filament,
  * but we can't really tell. Perhaps some of this logic
@@ -325,7 +325,7 @@ static void _handle_exception(PyFilScheduler *self)
     if (PyErr_GivenExceptionMatches(exc_type,
                                     self->system_exceptions))
     {
-        /* 
+        /*
          * Raise these in our parent. This immediately switches
          * to the parent.
          */
@@ -545,7 +545,7 @@ static PyTypeObject _scheduler_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,   /* tp_flags */
+    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
     0,                                          /* tp_doc */
     0,                                          /* tp_traverse */
     0,                                          /* tp_clear */
@@ -565,6 +565,14 @@ static PyTypeObject _scheduler_type = {
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_sched_new,                        /* tp_new */
     PyObject_Del,                               /* tp_free */
+    0,                                          /* tp_is_gc */
+    0,                                          /* tp_bases */
+    0,                                          /* tp_mro */
+    0,                                          /* tp_cache */
+    0,                                          /* tp_subclasses */
+    0,                                          /* tp_weaklist */
+    0,                                          /* tp_del */
+    0,                                          /* tp_version_tag */
 };
 
 /****************/

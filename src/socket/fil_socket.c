@@ -491,7 +491,8 @@ static void _sock_dealloc(PyFilSocket *self)
 {
     _sock_clear_methods(self);
     Py_CLEAR(self->_sock);
-    Py_TYPE(self)->tp_free((PyObject *)self);
+
+    PyObject_Del(self);
 }
 
 PyDoc_STRVAR(_sock_accept_doc,
@@ -1319,7 +1320,7 @@ static PyTypeObject _sock_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE,     /* tp_flags */
+    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
     0,                                          /* tp_doc */
     0,                                          /* tp_traverse */
     0,                                          /* tp_clear */
@@ -1339,6 +1340,14 @@ static PyTypeObject _sock_type = {
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_sock_new,                         /* tp_new */
     PyObject_Del,                               /* tp_free */
+    0,                                          /* tp_is_gc */
+    0,                                          /* tp_bases */
+    0,                                          /* tp_mro */
+    0,                                          /* tp_cache */
+    0,                                          /* tp_subclasses */
+    0,                                          /* tp_weaklist */
+    0,                                          /* tp_del */
+    0,                                          /* tp_version_tag */
 };
 
 PyDoc_STRVAR(_socket_fil_set_resolver_doc,

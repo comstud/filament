@@ -1,18 +1,18 @@
-/* 
+/*
  * The MIT License (MIT): http://opensource.org/licenses/mit-license.php
- * 
+ *
  * Copyright (c) 2013-2014, Chris Behrens
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -148,7 +148,8 @@ static void _timer_dealloc(PyFilTimer *self)
     Py_CLEAR(self->func);
     Py_CLEAR(self->args);
     Py_CLEAR(self->kwargs);
-    Py_TYPE(self)->tp_free((PyObject *)self);
+
+    PyObject_Del(self);
 }
 
 PyDoc_STRVAR(_timer_cancel_doc, "Cancel the timer.");
@@ -183,7 +184,7 @@ static PyTypeObject _timer_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE,     /* tp_flags */
+    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
     0,                                          /* tp_doc */
     0,                                          /* tp_traverse */
     0,                                          /* tp_clear */
@@ -203,6 +204,14 @@ static PyTypeObject _timer_type = {
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_timer_new,                        /* tp_new */
     PyObject_Del,                               /* tp_free */
+    0,                                          /* tp_is_gc */
+    0,                                          /* tp_bases */
+    0,                                          /* tp_mro */
+    0,                                          /* tp_cache */
+    0,                                          /* tp_subclasses */
+    0,                                          /* tp_weaklist */
+    0,                                          /* tp_del */
+    0,                                          /* tp_version_tag */
 };
 
 PyDoc_STRVAR(_fil_timer_module_doc, "Filament _filament.timer module.");

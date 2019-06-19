@@ -27,6 +27,8 @@
 
 #include "core/filament.h"
 
+#define FIL_DEFAULT_TPFLAGS (Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE)
+
 #if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
 #define FIL_IS_EAGAIN(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
 #else
