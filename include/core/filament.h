@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "core/fil_exceptions.h"
+#include "core/fil_fifoq.h"
 #include "core/fil_message.h"
 #include "core/fil_scheduler.h"
 #include "core/fil_thrpool.h"

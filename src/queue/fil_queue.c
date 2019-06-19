@@ -37,36 +37,39 @@
 typedef struct _pyfil_queue {
     PyObject_HEAD
 
-    PyObject *deque;
-    PyObject *append;
-    PyObject *popleft;
-    PyObject *len;
-    PyObject *tuple_deque_item;
+    FilFifoQ *queue;
+    uint64_t queue_max_size;
 
-    long queue_size;
-    long queue_entries;
     FilWaiterList getters;
     FilWaiterList putters;
 } PyFilQueue;
 
-static PyObject *_deque;
-static PyObject *_EmptyTuple;
 static PyObject *_EmptyError;
 static PyObject *_FullError;
 
-static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kw)
+static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    PyFilQueue *self = (PyFilQueue *)type->tp_alloc(type, 0);
+    PyFilQueue *self;
 
-    if (self != NULL)
+    static char *keywords[] = {"maxsize", NULL};
+    long maxsize = -1;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|l",
+                                     keywords,
+                                     &maxsize))
     {
-        self->deque = NULL;
-        self->append = NULL;
-        self->popleft = NULL;
-        self->len = NULL;
-        self->tuple_deque_item = NULL;
-        self->queue_size = -1;
-        self->queue_entries = 0;
+        return NULL;
+    }
+
+    if ((self = (PyFilQueue *)type->tp_alloc(type, 0)) != NULL)
+    {
+        if ((self->queue = fil_fifoq_alloc()) == NULL)
+        {
+            PyErr_SetString(PyExc_MemoryError, "out of memory allocating queue");
+            Py_DECREF(self);
+            return NULL;
+        }
+        self->queue_max_size = maxsize < 0 ? 0 : maxsize;
         fil_waiterlist_init(self->getters);
         fil_waiterlist_init(self->putters);
     }
@@ -76,97 +79,45 @@ static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kw)
 
 static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 {
-    long maxsize = 0;
-
-    static char *keywords[] = {"maxsize", NULL};
-    PyObject *deque = NULL, *append = NULL, *popleft = NULL, *len = NULL;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|l",
-                                     keywords,
-                                     &maxsize))
-    {
-        return -1;
-    }
-
-    if (maxsize <= 0) {
-        maxsize = -1;
-    }
-
-    self->queue_size = maxsize;
-
-    if (((deque = PyObject_Call(_deque, _EmptyTuple, NULL)) == NULL) ||
-        ((append = PyObject_GetAttrString(deque, "append")) == NULL) ||
-        ((popleft = PyObject_GetAttrString(deque, "popleft")) == NULL) ||
-        ((len = PyObject_GetAttrString(deque, "__len__")) == NULL))
-    {
-        goto failure;
-    }
-
-    if (self->tuple_deque_item == NULL)
-    {
-        self->tuple_deque_item = PyTuple_New(1);
-        if (self->tuple_deque_item == NULL)
-        {
-            goto failure;
-        }
-        Py_INCREF(Py_None);
-        PyTuple_SET_ITEM(self->tuple_deque_item, 0, Py_None);
-    }
-
-    Py_XSETREF(self->deque, deque);
-    Py_XSETREF(self->append, append);
-    Py_XSETREF(self->popleft, popleft);
-    Py_XSETREF(self->len, len);
-
     return 0;
-
-failure:
-    Py_XDECREF(len);
-    Py_XDECREF(popleft);
-    Py_XDECREF(append);
-    Py_XDECREF(deque);
-
-    return -1;
 }
 
 static void _queue_dealloc(PyFilQueue *self)
 {
     assert(fil_waiterlist_empty(self->getters));
     assert(fil_waiterlist_empty(self->putters));
-    Py_XDECREF(self->len);
-    Py_XDECREF(self->popleft);
-    Py_XDECREF(self->append);
-    Py_XDECREF(self->deque);
-    Py_XDECREF(self->tuple_deque_item);
-
+    if (self->queue != NULL)
+    {
+        fil_fifoq_free(self->queue);
+    }
     PyObject_Del(self);
 }
 
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
 static PyObject *_queue_qsize(PyFilQueue *self, PyObject *args)
 {
-    return PyInt_FromLong(self->queue_entries);
+    return PyInt_FromLong(self->queue->len);
 }
 
 PyDoc_STRVAR(_queue_empty_doc, "Is the queue empty?");
 static PyObject *_queue_empty(PyFilQueue *self, PyObject *args)
 {
-    PyObject *res = self->queue_entries ? Py_False : Py_True;
+    PyObject *res = self->queue->len ? Py_False : Py_True;
     Py_INCREF(res);
     return res;
 }
 
 static inline int __queue_full(PyFilQueue *self)
 {
-    /* full if 1 more entry would overflow the count */
-    if (1 + self->queue_entries < self->queue_entries) {
+    if (1 + self->queue->len < self->queue->len)
+    {
         return 1;
     }
-    else if (self->queue_size == -1)
+    else if (self->queue_max_size == 0)
     {
         return 0;
     }
-    return self->queue_entries >= self->queue_size ? 1 : 0;
+    return self->queue->len < self->queue_max_size ? 0 : 1;
 }
 
 PyDoc_STRVAR(_queue_full_doc, "Is the queue full?");
@@ -178,28 +129,16 @@ static PyObject *_queue_full(PyFilQueue *self, PyObject *args)
 }
 
 PyDoc_STRVAR(_queue_get_nowait_doc, "Get from queue without blocking.");
-static PyObject *_queue_get_nowait(PyFilQueue *self, PyObject *args)
+static PyObject *_queue_get_nowait(PyFilQueue *self)
 {
-    PyObject *res;
+    void *res;
 
-    res = PyObject_Call(self->popleft, _EmptyTuple, NULL);
-    if (res == NULL)
+    if (fil_fifoq_get(self->queue, &res))
     {
-        PyObject *pt, *pv, *ptb;
-        PyErr_Fetch(&pt, &pv, &ptb);
-        if (!pt || PyErr_GivenExceptionMatches(pt, PyExc_IndexError))
-        {
-            Py_XDECREF(pt);
-            Py_XDECREF(pv);
-            Py_XDECREF(ptb);
-            PyErr_SetNone(_EmptyError);
-            return NULL;
-        }
-        PyErr_Restore(pt, pv, ptb);
+        PyErr_SetNone(_EmptyError);
         return NULL;
     }
 
-    self->queue_entries--;
     fil_waiterlist_signal_first(self->putters);
 
     return res;
@@ -223,7 +162,7 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
     if (block != NULL && PyObject_Not(block))
     {
-        return _queue_get_nowait(self, NULL);
+        return _queue_get_nowait(self);
     }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
@@ -231,7 +170,7 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    while(!self->queue_entries)
+    while(!self->queue->len)
     {
         err = fil_waiterlist_wait(self->getters, ts, _EmptyError);
         if (err)
@@ -240,36 +179,28 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         }
     }
 
-    return _queue_get_nowait(self, NULL);
+    return _queue_get_nowait(self);
 }
 
 static inline int __queue_put(PyFilQueue *self, PyObject *item)
 {
-    PyObject *res;
+    int err;
 
     Py_INCREF(item);
-    if (PyTuple_SetItem(self->tuple_deque_item, 0, item) < 0)
+    if ((err = fil_fifoq_put(self->queue, item)))
     {
-        /* reference is removed even on error */
+        if (err == FIL_FIFOQ_ERROR_OUT_OF_MEMORY)
+        {
+            PyErr_SetString(PyExc_MemoryError, "out of memory inserting entry");
+            return -1;
+        }
+        /* shouldn't reach this because we check fullness before all calls to this */
+        PyErr_SetNone(_FullError);
         return -1;
     }
 
-    res = PyObject_Call(self->append, self->tuple_deque_item, NULL);
-    if (res == NULL)
-    {
-        return -1;
-    }
-
-    Py_DECREF(res);
-
-    self->queue_entries++;
     fil_waiterlist_signal_first(self->getters);
 
-    Py_INCREF(Py_None);
-    if (PyTuple_SetItem(self->tuple_deque_item, 0, Py_None) < 0)
-    {
-        return -1;
-    }
     return 0;
 }
 
@@ -366,7 +297,7 @@ static PyMethodDef _queue_methods[] = {
 
 static Py_ssize_t _queue_len(PyFilQueue *self)
 {
-    return self->queue_entries;
+    return self->queue->len;
 }
 
 static PySequenceMethods _queue_as_sequence = {
@@ -441,7 +372,6 @@ PyMODINIT_FUNC
 initqueue(void)
 {
     PyObject *m = NULL;
-    PyObject *cm = NULL;
     PyObject *qm = NULL;
 
     PyGreenlet_Import();
@@ -449,8 +379,6 @@ initqueue(void)
     {
         return;
     }
-
-    _EmptyTuple = fil_empty_tuple();
 
     m = Py_InitModule3("_filament.queue", _fil_queue_module_methods, _fil_queue_module_doc);
     if (m == NULL)
@@ -462,18 +390,6 @@ initqueue(void)
     {
         return;
     }
-
-    if ((cm = PyImport_ImportModuleNoBlock("_collections")) == NULL)
-    {
-        goto failure;
-    }
-
-    if ((_deque = PyObject_GetAttrString(cm, "deque")) == NULL)
-    {
-        goto failure;
-    }
-
-    Py_CLEAR(cm);
 
     if ((qm = PyImport_ImportModuleNoBlock("Queue")) == NULL)
     {
@@ -518,9 +434,7 @@ failure:
 
     Py_CLEAR(_EmptyError);
     Py_CLEAR(_FullError);
-    Py_CLEAR(_deque);
     Py_XDECREF(qm);
-    Py_XDECREF(cm);
 
     return;
 }
