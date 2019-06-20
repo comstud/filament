@@ -31,18 +31,10 @@
 #include <pthread.h>
 #include <errno.h>
 #include "core/filament.h"
-#include "core/fil_util.h"
-#include "core/fil_waiter.h"
 
 typedef struct _pyfil_queue {
     PyObject_HEAD
-
-    int _queue_inited;
-    FilFifoQ queue;
-    uint64_t queue_max_size;
-
-    FilWaiterList getters;
-    FilWaiterList putters;
+    FilWFifoQ queue;
 } PyFilQueue;
 
 static PyObject *_EmptyError;
@@ -64,16 +56,16 @@ static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kwar
 
     if ((self = (PyFilQueue *)type->tp_alloc(type, 0)) != NULL)
     {
-        if (fil_fifoq_init(&(self->queue)))
+        if (maxsize < 0)
         {
-            PyErr_SetString(PyExc_MemoryError, "out of memory allocating queue chunk");
+            maxsize = 0;
+        }
+
+        if (fil_wfifoq_init(&(self->queue), maxsize))
+        {
             Py_DECREF(self);
             return NULL;
         }
-        self->_queue_inited = 1;
-        self->queue_max_size = maxsize < 0 ? 0 : maxsize;
-        fil_waiterlist_init(self->getters);
-        fil_waiterlist_init(self->putters);
     }
 
     return self;
@@ -86,46 +78,28 @@ static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 
 static void _queue_dealloc(PyFilQueue *self)
 {
-    assert(fil_waiterlist_empty(self->getters));
-    assert(fil_waiterlist_empty(self->putters));
-    if (self->_queue_inited)
-    {
-        fil_fifoq_deinit(&(self->queue));
-    }
+    fil_wfifoq_deinit(&(self->queue));
     PyObject_Del(self);
 }
 
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
 static PyObject *_queue_qsize(PyFilQueue *self, PyObject *args)
 {
-    return PyInt_FromLong(self->queue.len);
+    return PyInt_FromLong(fil_wfifoq_len(&(self->queue)));
 }
 
 PyDoc_STRVAR(_queue_empty_doc, "Is the queue empty?");
 static PyObject *_queue_empty(PyFilQueue *self, PyObject *args)
 {
-    PyObject *res = self->queue.len ? Py_False : Py_True;
+    PyObject *res = fil_wfifoq_empty(&(self->queue)) ? Py_True : Py_False;
     Py_INCREF(res);
     return res;
-}
-
-static inline int __queue_full(PyFilQueue *self)
-{
-    if (1 + self->queue.len < self->queue.len)
-    {
-        return 1;
-    }
-    else if (self->queue_max_size == 0)
-    {
-        return 0;
-    }
-    return self->queue.len < self->queue_max_size ? 0 : 1;
 }
 
 PyDoc_STRVAR(_queue_full_doc, "Is the queue full?");
 static PyObject *_queue_full(PyFilQueue *self, PyObject *args)
 {
-    PyObject *res = __queue_full(self) ? Py_True : Py_False;
+    PyObject *res = fil_wfifoq_full(&(self->queue)) ? Py_True : Py_False;
     Py_INCREF(res);
     return res;
 }
@@ -133,17 +107,7 @@ static PyObject *_queue_full(PyFilQueue *self, PyObject *args)
 PyDoc_STRVAR(_queue_get_nowait_doc, "Get from queue without blocking.");
 static PyObject *_queue_get_nowait(PyFilQueue *self)
 {
-    void *res;
-
-    if (fil_fifoq_get(&(self->queue), &res))
-    {
-        PyErr_SetNone(_EmptyError);
-        return NULL;
-    }
-
-    fil_waiterlist_signal_first(self->putters);
-
-    return res;
+    return fil_wfifoq_get_nowait(&(self->queue));
 }
 
 PyDoc_STRVAR(_queue_get_doc, "Get from queue.");
@@ -151,7 +115,7 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"block", "timeout", NULL};
     PyObject *block = NULL, *timeout = NULL;
-    int err;
+    double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|OO",
@@ -162,80 +126,39 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    if (block != NULL && PyObject_Not(block))
+    if (block == NULL || PyObject_IsTrue(block))
     {
-        return _queue_get_nowait(self);
-    }
-
-    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
-    {
-        return NULL;
-    }
-
-    while(!self->queue.len)
-    {
-        err = fil_waiterlist_wait(self->getters, ts, _EmptyError);
-        if (err)
+        if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
             return NULL;
         }
     }
 
-    return _queue_get_nowait(self);
-}
-
-static inline int __queue_put(PyFilQueue *self, PyObject *item)
-{
-    int err;
-
-    Py_INCREF(item);
-    if ((err = fil_fifoq_put(&(self->queue), item)))
+    if (timeout_dbl == 0)
     {
-        if (err == FIL_FIFOQ_ERROR_OUT_OF_MEMORY)
-        {
-            PyErr_SetString(PyExc_MemoryError, "out of memory inserting entry");
-            return -1;
-        }
-        /* shouldn't reach this because we check fullness before all calls to this */
-        PyErr_SetNone(_FullError);
-        return -1;
+        return fil_wfifoq_get_nowait(&(self->queue));
     }
 
-    fil_waiterlist_signal_first(self->getters);
+    if (fil_timespec_from_double_interval(timeout_dbl, &tsbuf, &ts))
+    {
+        return NULL;
+    }
 
-    return 0;
+    return fil_wfifoq_get(&(self->queue), ts);
 }
 
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
-static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *args)
+static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
 {
-    PyObject *item;
-
-    if (!PyArg_ParseTuple(args, "O", &item))
-    {
-        return NULL;
-    }
-
-    if (__queue_full(self))
-    {
-        PyErr_SetNone(_FullError);
-        return NULL;
-    }
-
-    if (__queue_put(self, item) < 0)
-    {
-        return NULL;
-    }
-
-    Py_RETURN_NONE;
+    return fil_wfifoq_put_nowait(&(self->queue), item);
 }
 
 PyDoc_STRVAR(_queue_put_doc, "Put into queue.");
 static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"item", "block", "timeout", NULL};
-    PyObject *item = NULL, *block = NULL, *timeout = NULL;
-    int err;
+    PyObject *item, *block = NULL, *timeout = NULL;
+    double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|OO",
@@ -247,46 +170,32 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    if (block != NULL && PyObject_Not(block))
+    if (block == NULL || PyObject_IsTrue(block))
     {
-        if (__queue_full(self)) {
-            PyErr_SetNone(_FullError);
-            return NULL;
-        }
-        if (__queue_put(self, item) < 0)
-        {
-            return NULL;
-        }
-        Py_RETURN_NONE;
-    }
-
-    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
-    {
-        return NULL;
-    }
-
-    while(__queue_full(self))
-    {
-        err = fil_waiterlist_wait(self->putters, ts, _FullError);
-        if (err)
+        if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
             return NULL;
         }
     }
 
-    if (__queue_put(self, item) < 0)
+    if (timeout_dbl == 0)
+    {
+        return fil_wfifoq_put_nowait(&(self->queue), item);
+    }
+
+    if (fil_timespec_from_double_interval(timeout_dbl, &tsbuf, &ts))
     {
         return NULL;
     }
 
-    Py_RETURN_NONE;
+    return fil_wfifoq_put(&(self->queue), item, ts);
 }
 
 static PyMethodDef _queue_methods[] = {
     {"get", (PyCFunction)_queue_get, METH_VARARGS|METH_KEYWORDS, _queue_get_doc},
     {"get_nowait", (PyCFunction)_queue_get_nowait, METH_NOARGS, _queue_get_nowait_doc},
     {"put", (PyCFunction)_queue_put, METH_VARARGS|METH_KEYWORDS, _queue_put_doc},
-    {"put_nowait", (PyCFunction)_queue_put_nowait, METH_VARARGS, _queue_put_nowait_doc},
+    {"put_nowait", (PyCFunction)_queue_put_nowait, METH_O, _queue_put_nowait_doc},
     {"qsize", (PyCFunction)_queue_qsize, METH_NOARGS, _queue_qsize_doc},
     {"empty", (PyCFunction)_queue_empty, METH_NOARGS, _queue_empty_doc},
     {"full", (PyCFunction)_queue_full, METH_NOARGS, _queue_full_doc},
@@ -299,7 +208,7 @@ static PyMethodDef _queue_methods[] = {
 
 static Py_ssize_t _queue_len(PyFilQueue *self)
 {
-    return self->queue.len;
+    return fil_wfifoq_len(&(self->queue));
 }
 
 static PySequenceMethods _queue_as_sequence = {

@@ -21,6 +21,7 @@
 #include "core/fil_thrpool.h"
 #include "core/fil_util.h"
 #include "core/fil_waiter.h"
+#include "core/fil_wfifoq.h"
 
 #define FILAMENT_CORE_MODULE_NAME "_filament.core"
 #define FILAMENT_CORE_CAPI_NAME "CAPI"
