@@ -198,7 +198,14 @@ static PyObject *_cond_notifyall(PyFilCond *self, PyObject *args)
 PyDoc_STRVAR(_cond_enter_doc, "Lock the underlying lock.");
 static PyObject *_cond_enter(PyFilCond *self)
 {
-    return PyObject_CallMethod(self->lock, "acquire", NULL);
+    PyObject *res = PyObject_CallMethod(self->lock, "acquire", NULL);
+    if (res == NULL)
+    {
+        return NULL;
+    }
+    Py_DECREF(res);
+    Py_INCREF(self);
+    return (PyObject *)self;
 }
 
 PyDoc_STRVAR(_cond_exit_doc, "Release the underlying lock.");

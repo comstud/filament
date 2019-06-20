@@ -26,82 +26,64 @@
 #define __FIL_BUILDING_QUEUE__
 #include "queue/fil_queue.h"
 
-PyTypeObject *_FIL_QUEUE_TYPE = NULL;
+PyTypeObject *_FIL_SIMPLE_QUEUE_TYPE = NULL;
 
-static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static PyFilSimpleQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    PyFilQueue *self;
+    PyFilSimpleQueue *self;
 
-    static char *keywords[] = {"maxsize", NULL};
-    long maxsize = -1;
+    static char *keywords[] = {NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|l:Queue",
-                                     keywords,
-                                     &maxsize))
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, ":SimpleQueue", keywords))
     {
         return NULL;
     }
 
-    if ((self = (PyFilQueue *)type->tp_alloc(type, 0)) != NULL)
+    if ((self = (PyFilSimpleQueue *)type->tp_alloc(type, 0)) != NULL)
     {
-        if (maxsize < 0)
-        {
-            maxsize = 0;
-        }
-
-        if (fil_wfifoq_init(&(self->queue), maxsize, _FIL_QUEUE_EMPTY_ERROR, _FIL_QUEUE_FULL_ERROR))
+        if (fil_wfifoq_init(&(self->queue), 0, _FIL_QUEUE_EMPTY_ERROR, _FIL_QUEUE_FULL_ERROR))
         {
             Py_DECREF(self);
             return NULL;
         }
-
-        fil_waiterlist_init(self->task_done_waiters);
     }
 
     return self;
 }
 
-static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+static int _queue_init(PyFilSimpleQueue *self, PyObject *args, PyObject *kwargs)
 {
     return 0;
 }
 
-static void _queue_dealloc(PyFilQueue *self)
+static void _queue_dealloc(PyFilSimpleQueue *self)
 {
     fil_wfifoq_deinit(&(self->queue));
     PyObject_Del(self);
 }
 
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
-static PyObject *_queue_qsize(PyFilQueue *self, PyObject *args)
+static PyObject *_queue_qsize(PyFilSimpleQueue *self, PyObject *args)
 {
     return PyInt_FromLong(fil_wfifoq_len(&(self->queue)));
 }
 
 PyDoc_STRVAR(_queue_empty_doc, "Is the queue empty?");
-static PyObject *_queue_empty(PyFilQueue *self, PyObject *args)
+static PyObject *_queue_empty(PyFilSimpleQueue *self, PyObject *args)
 {
     PyObject *res = fil_wfifoq_empty(&(self->queue)) ? Py_True : Py_False;
     Py_INCREF(res);
     return res;
 }
 
-PyDoc_STRVAR(_queue_full_doc, "Is the queue full?");
-static PyObject *_queue_full(PyFilQueue *self, PyObject *args)
-{
-    PyObject *res = fil_wfifoq_full(&(self->queue)) ? Py_True : Py_False;
-    Py_INCREF(res);
-    return res;
-}
-
 PyDoc_STRVAR(_queue_get_nowait_doc, "Get from queue without blocking.");
-static PyObject *_queue_get_nowait(PyFilQueue *self)
+static PyObject *_queue_get_nowait(PyFilSimpleQueue *self)
 {
     return fil_wfifoq_get_nowait(&(self->queue));
 }
 
 PyDoc_STRVAR(_queue_get_doc, "Get from queue.");
-static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+static PyObject *_queue_get(PyFilSimpleQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"block", "timeout", NULL};
     PyObject *block = NULL, *timeout = NULL;
@@ -138,21 +120,16 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 }
 
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
-static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
+static PyObject *_queue_put_nowait(PyFilSimpleQueue *self, PyObject *item)
 {
-    PyObject *res = fil_wfifoq_put_nowait(&(self->queue), item);
-    if (res != NULL)
-    {
-        self->unfinished_tasks++;
-    }
-    return res;
+    return fil_wfifoq_put_nowait(&(self->queue), item);
 }
 
 PyDoc_STRVAR(_queue_put_doc, "Put into queue.");
-static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+static PyObject *_queue_put(PyFilSimpleQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"item", "block", "timeout", NULL};
-    PyObject *res, *item, *block = NULL, *timeout = NULL;
+    PyObject *item, *block = NULL, *timeout = NULL;
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
 
@@ -183,98 +160,7 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    res = fil_wfifoq_put(&(self->queue), item, ts);
-    if (res != NULL)
-    {
-        self->unfinished_tasks++;
-    }
-    return res;
-}
-
-PyDoc_STRVAR(_queue_task_done_doc,
-"Indicate that a formerly enqueued task is complete.\n\
-\n\
-Used by Queue consumer threads.  For each get() used to fetch a task,\n\
-a subsequent call to task_done() tells the queue that the processing\n\
-on the task is complete.\n\
-\n\
-If a join() is currently blocking, it will resume when all items\n\
-have been processed (meaning that a task_done() call was received\n\
-for every item that had been put() into the queue).\n\
-\n\
-Raises a ValueError if called more times than there were items\n\
-placed in the queue.\n");
-static PyObject *_queue_task_done(PyFilQueue *self)
-{
-    if (self->unfinished_tasks == 0)
-    {
-        PyErr_SetString(PyExc_ValueError, "task_done() called too many times");
-        return NULL;
-    }
-
-    self->unfinished_tasks--;
-    fil_waiterlist_signal_all(self->task_done_waiters);
-
-    Py_RETURN_NONE;
-}
-
-PyDoc_STRVAR(_queue_join_doc,
-"Blocks until all items in the Queue have been gotten and processed.\n\
-\n\
-The count of unfinished tasks goes up whenever an item is added to the\n\
-queue. The count goes down whenever a consumer thread calls task_done()\n\
-to indicate the item was retrieved and all work on it is complete.\n\
-\n\
-When the count of unfinished tasks drops to zero, join() unblocks.\n\
-\n\
-FILAMENT EXTENSION:\n\
-\n\
-A 'timeout' keyword argument can be specified to only wait a specific\n\
-period of time. It may be None to wait forever, or a number >= 0 representing\n\
-number of seconds to wait. floats are accepted. If the time expires before\n\
-the tasks are done, False will be returned. The normal return value is None.\n");
-static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
-{
-    static char *keywords[] = {"timeout", NULL};
-    PyObject *timeout = NULL;
-    struct timespec tsbuf, *ts = NULL;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O",
-                                     keywords,
-                                     &timeout))
-    {
-        return NULL;
-    }
-
-    if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
-    {
-        return NULL;
-    }
-
-    while (self->unfinished_tasks)
-    {
-        /* We use full error just to distinguish a timeout from
-         * a different type of exception.
-         */
-        if (fil_waiterlist_wait(self->task_done_waiters, ts, _FIL_QUEUE_FULL_ERROR))
-        {
-            PyObject *exc_type, *exc_value, *exc_tb;
-
-            PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
-            if (!PyErr_GivenExceptionMatches(exc_type, _FIL_QUEUE_FULL_ERROR))
-            {
-                PyErr_Restore(exc_type, exc_value, exc_tb);
-                return NULL;
-            }
-
-            Py_DECREF(exc_type);
-            Py_XDECREF(exc_value);
-            Py_XDECREF(exc_tb);
-
-            Py_RETURN_FALSE;
-        }
-    }
-    Py_RETURN_NONE;
+    return fil_wfifoq_put(&(self->queue), item, ts);
 }
 
 static PyMethodDef _queue_methods[] = {
@@ -284,13 +170,10 @@ static PyMethodDef _queue_methods[] = {
     { "put_nowait", (PyCFunction)_queue_put_nowait, METH_O, _queue_put_nowait_doc },
     { "qsize", (PyCFunction)_queue_qsize, METH_NOARGS, _queue_qsize_doc },
     { "empty", (PyCFunction)_queue_empty, METH_NOARGS, _queue_empty_doc },
-    { "full", (PyCFunction)_queue_full, METH_NOARGS, _queue_full_doc },
-    { "task_done", (PyCFunction)_queue_task_done, METH_NOARGS, _queue_task_done_doc },
-    { "join", (PyCFunction)_queue_join, METH_VARARGS|METH_KEYWORDS, _queue_join_doc },
     { NULL, NULL }
 };
 
-static Py_ssize_t _queue_len(PyFilQueue *self)
+static Py_ssize_t _queue_len(PyFilSimpleQueue *self)
 {
     return fil_wfifoq_len(&(self->queue));
 }
@@ -307,8 +190,8 @@ static PySequenceMethods _queue_as_sequence = {
 
 static PyTypeObject _queue_type = {
     PyVarObject_HEAD_INIT(0, 0)
-    "filament.queue.Queue",                     /* tp_name */
-    sizeof(PyFilQueue),                         /* tp_basicsize */
+    "filament.queue.SimpleQueue",               /* tp_name */
+    sizeof(PyFilSimpleQueue),                   /* tp_basicsize */
     0,                                          /* tp_itemsize */
     (destructor)_queue_dealloc,                 /* tp_dealloc */
     0,                                          /* tp_print */
@@ -357,7 +240,7 @@ static PyTypeObject _queue_type = {
 
 /****************/
 
-int fil_queue_init(PyObject *m)
+int fil_simplequeue_init(PyObject *m)
 {
     if (PyFilCore_Import() < 0)
     {
@@ -369,10 +252,10 @@ int fil_queue_init(PyObject *m)
         return -1;
     }
 
-    _FIL_QUEUE_TYPE = &_queue_type;
+    _FIL_SIMPLE_QUEUE_TYPE = &_queue_type;
 
     Py_INCREF((PyObject *)&_queue_type);
-    if (PyModule_AddObject(m, "Queue",
+    if (PyModule_AddObject(m, "SimpleQueue",
                            (PyObject *)&_queue_type) != 0)
     {
         Py_DECREF((PyObject *)&_queue_type);

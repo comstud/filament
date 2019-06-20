@@ -31,13 +31,12 @@ typedef struct _fil_wfifoq {
     int _queue_inited;
     uint64_t max_size;
     FilFifoQ queue;
+    PyObject *empty_error;
+    PyObject *full_error;
 
     FilWaiterList getters;
     FilWaiterList putters;
 } FilWFifoQ;
-
-static PyObject *_FIL_WFIFOQ_EMPTY_ERROR;
-static PyObject *_FIL_WFIFOQ_FULL_ERROR;
 
 #define fil_wfifoq_len(__q) ((__q)->queue.len)
 #define fil_wfifoq_empty(__q) (fil_wfifoq_len(__q) == 0)
@@ -47,34 +46,8 @@ static PyObject *_FIL_WFIFOQ_FULL_ERROR;
  */
 #define fil_wfifoq_full(__q) ((__q)->queue.len >= (__q)->max_size)
 
-static inline int fil_wfifoq_init(FilWFifoQ *q, uint64_t max_size)
+static inline int fil_wfifoq_init(FilWFifoQ *q, uint64_t max_size, PyObject *empty_error, PyObject *full_error)
 {
-    if (_FIL_WFIFOQ_EMPTY_ERROR == NULL)
-    {
-        PyObject *qm = PyImport_ImportModuleNoBlock("Queue");
-        if (qm == NULL)
-        {
-            return -1;
-        }
-
-        _FIL_WFIFOQ_EMPTY_ERROR = PyObject_GetAttrString(qm, "Empty");
-        if (_FIL_WFIFOQ_EMPTY_ERROR == NULL)
-        {
-            Py_DECREF(qm);
-            return -1;
-        }
-
-        _FIL_WFIFOQ_FULL_ERROR = PyObject_GetAttrString(qm, "Full");
-        if (_FIL_WFIFOQ_FULL_ERROR == NULL)
-        {
-            Py_CLEAR(_FIL_WFIFOQ_EMPTY_ERROR);
-            Py_DECREF(qm);
-            return -1;
-        }
-
-        Py_DECREF(qm);
-    }
-
     if (fil_fifoq_init(&(q->queue)))
     {
         PyErr_SetString(PyExc_MemoryError, "out of memory allocating queue chunk");
@@ -86,6 +59,10 @@ static inline int fil_wfifoq_init(FilWFifoQ *q, uint64_t max_size)
         max_size = (uint64_t)-1;
     }
     q->max_size = max_size;
+    Py_INCREF(empty_error);
+    q->empty_error = empty_error;
+    Py_INCREF(full_error);
+    q->full_error = full_error;
     fil_waiterlist_init(q->getters);
     fil_waiterlist_init(q->putters);
     return 0;
@@ -99,6 +76,8 @@ static inline void fil_wfifoq_deinit(FilWFifoQ *q)
     {
         fil_fifoq_deinit(&(q->queue));
     }
+    Py_CLEAR(q->empty_error);
+    Py_CLEAR(q->full_error);
 }
 
 
@@ -116,7 +95,7 @@ static inline PyObject *_fil_wfifoq_put(FilWFifoQ *q, PyObject *item)
             return NULL;
         }
         /* won't reach this due to callers checking 'full' first */
-        PyErr_SetNone(_FIL_WFIFOQ_FULL_ERROR);
+        PyErr_SetNone(q->full_error);
         return NULL;
     }
 
@@ -128,7 +107,7 @@ static inline PyObject *fil_wfifoq_put_nowait(FilWFifoQ *q, PyObject *item)
 {
     if (fil_wfifoq_full(q))
     {
-        PyErr_SetNone(_FIL_WFIFOQ_FULL_ERROR);
+        PyErr_SetNone(q->full_error);
         return NULL;
     }
     return _fil_wfifoq_put(q, item);
@@ -138,7 +117,7 @@ static inline PyObject *fil_wfifoq_put(FilWFifoQ *q, PyObject *item, struct time
 {
     while(fil_wfifoq_full(q))
     {
-        if (fil_waiterlist_wait(q->putters, ts, _FIL_WFIFOQ_FULL_ERROR))
+        if (fil_waiterlist_wait(q->putters, ts, q->full_error))
         {
             return NULL;
         }
@@ -153,7 +132,7 @@ static inline PyObject *fil_wfifoq_get_nowait(FilWFifoQ *q)
 
     if (fil_fifoq_get(&(q->queue), &res))
     {
-        PyErr_SetNone(_FIL_WFIFOQ_EMPTY_ERROR);
+        PyErr_SetNone(q->empty_error);
         return NULL;
     }
 
@@ -165,7 +144,7 @@ static inline PyObject *fil_wfifoq_get(FilWFifoQ *q, struct timespec *ts)
 {
     while(!q->queue.len)
     {
-        if (fil_waiterlist_wait(q->getters, ts, _FIL_WFIFOQ_EMPTY_ERROR))
+        if (fil_waiterlist_wait(q->getters, ts, q->empty_error))
         {
             return NULL;
         }
