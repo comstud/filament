@@ -84,7 +84,10 @@ static inline FilSchedEvent *_get_ready_events(FilSchedEventList *elist, struct 
 
 static void _scheduler_key_delete(void *sched)
 {
-    _scheduler_set(NULL);
+    if (sched != NULL)
+    {
+        Py_DECREF((PyObject *)sched);
+    }
 }
 
 static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg)
@@ -228,7 +231,6 @@ static PyObject *_sched_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     self->events.head = self->events.tail = NULL;
     self->running = 0;
     self->aborting = 0;
-    _scheduler_set(self);
     return (PyObject *)self;
 }
 
@@ -253,10 +255,15 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
         return -1;
     }
 
+    Py_INCREF(self);
+    _scheduler_set(self);
+
     /* Switch to the scheduler greenlet, but immediately switch back */
     fil_scheduler_gl_switch(self, NULL, self->greenlet->parent);
     if (_greenlet_switch(self->greenlet) < 0)
     {
+        _scheduler_set(NULL);
+        Py_DECREF(self);
         Py_CLEAR(self->system_exceptions);
         Py_CLEAR(self->greenlet);
         return -1;
@@ -267,26 +274,30 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
 
 static void _sched_dealloc(PyFilScheduler *self)
 {
+    printf("sched dealloc\n");
     pthread_mutex_destroy(&(self->sched_lock));
     pthread_cond_destroy(&(self->sched_cond));
     Py_CLEAR(self->system_exceptions);
-#if 0
-    _handle_greenlet_done(&(sched->greenlet));
+#if 1 /* why did I disable this? */
+    _handle_greenlet_done(&(self->greenlet));
 #endif
-    _scheduler_set(NULL);
+    /* a ref is held when in thread specific data. if we're
+     * being deallocated, that means we've been removed from it
+     * already
+     */
+    assert(_scheduler_get() == NULL);
     PyObject_Del(self);
 }
 
 PyDoc_STRVAR(sched_fil_switch_doc, "Schedule a filament to run.");
-static PyObject *_sched_fil_switch(PyFilScheduler *self, PyObject *args)
+static PyObject *_sched_fil_switch(PyFilScheduler *self, PyObject *greenlet)
 {
-    PyGreenlet *greenlet;
-
-    if (!PyArg_ParseTuple(args, "O", (PyObject **)&greenlet))
+    if (!PyGreenlet_Check(greenlet))
+    {
+        PyErr_SetString(PyExc_TypeError, "fil_switch() expects a filament/greenlet.");
         return NULL;
-
-    fil_scheduler_gl_switch(self, NULL, greenlet);
-
+    }
+    fil_scheduler_gl_switch(self, NULL, (PyGreenlet *)greenlet);
     Py_RETURN_NONE;
 }
 
@@ -386,7 +397,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
 
     pthread_mutex_lock(&(self->sched_lock));
     self->running = 1;
-    while (!self->aborting)
+    while (!self->aborting || self->events.head)
     {
         ready_events = _get_ready_events(&(self->events),
                                          &wait_time);
@@ -451,6 +462,12 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     /* Block threads */
     PyEval_RestoreThread(self->thread_state);
     self->thread_state = NULL;
+
+    Py_DECREF(self);
+    _scheduler_set(NULL);
+
+    printf("sched exiting, refcnt=%ld\n", self->ob_refcnt);
+
     Py_RETURN_NONE;
 }
 
@@ -470,6 +487,7 @@ static PyObject *_sched_abort(PyFilScheduler *self, PyObject *args)
     {
         /* The scheduler must already be running, but switched out via
          * a callback.  Switching back to it will cause it to exit.
+         * XXX: true if greenlet.getcurrent() == self->greenlet
          */
         self->aborting = 1;
         PyObject *result = PyGreenlet_Switch(self->greenlet, NULL, NULL);
@@ -516,7 +534,7 @@ static PyObject *_sched_greenlet(PyFilScheduler *self, PyObject *args)
 }
 
 static PyMethodDef _sched_methods[] = {
-    {"fil_switch", (PyCFunction)_sched_fil_switch, METH_VARARGS, sched_fil_switch_doc},
+    {"fil_switch", (PyCFunction)_sched_fil_switch, METH_O, sched_fil_switch_doc},
     {"main", (PyCFunction)_sched_main, METH_VARARGS, sched_main_doc},
     {"abort", (PyCFunction)_sched_abort, METH_VARARGS, sched_abort_doc},
     {"switch", (PyCFunction)_sched_switch, METH_NOARGS, sched_switch_doc},
@@ -583,6 +601,7 @@ PyFilScheduler *fil_scheduler_get(int create)
 
     if ((self != NULL) || !create)
     {
+        Py_XINCREF(self);
         return self;
     }
 

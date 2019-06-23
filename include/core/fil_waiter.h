@@ -48,6 +48,7 @@ static inline FilWaiter *fil_waiter_alloc(void)
 static inline void fil_waiter_decref(FilWaiter *waiter)
 {
     if (--waiter->refcnt == 0) {
+        Py_CLEAR(waiter->sched);
         Py_CLEAR(waiter->gl);
         pthread_mutex_destroy(&(waiter->waiter_lock));
         pthread_cond_destroy(&(waiter->waiter_cond));
@@ -74,7 +75,7 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
 
     fil_waiter_set_waiting(waiter);
 
-    waiter->sched = fil_scheduler_get(0);
+    Py_XSETREF(waiter->sched, fil_scheduler_get(0));
     if (waiter->sched == NULL)
     {
         PyThreadState *thr_state;

@@ -105,12 +105,14 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
     method = PyTuple_GET_ITEM(args, 1);
     if (!PyCallable_Check(method))
     {
+        Py_DECREF(sched);
         PyErr_SetString(PyExc_TypeError, "Timer() 2nd argument should be a callable");
         return -1;
     }
 
     if (self->func != NULL)
     {
+        Py_DECREF(sched);
         PyErr_SetString(PyExc_TypeError, "Timer() already initialized");
         return -1;
     }
@@ -118,6 +120,7 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
     method_args = PyTuple_GetSlice(args, 2, args_len);
     if (method_args == NULL)
     {
+        Py_DECREF(sched);
         return -1;
     }
 
@@ -133,12 +136,15 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
                                   (fil_event_cb_t)_timer_callback, self);
     if (err)
     {
+        Py_DECREF(sched);
         Py_CLEAR(self->func);
         Py_CLEAR(self->args);
         Py_CLEAR(self->kwargs);
         Py_DECREF(self);
         return -1;
     }
+
+    Py_DECREF(sched);
 
     return 0;
 }

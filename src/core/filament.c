@@ -85,12 +85,9 @@ static int _fil_filament_init_common(PyFilament *self, PyObject *method, PyObjec
         return -1;
     }
 
-    Py_INCREF(self->sched);
-
     self->message = fil_message_alloc();
     if (self->message == NULL)
     {
-        Py_DECREF(self->sched);
         Py_DECREF(main_method);
         return -1;
     }
@@ -326,15 +323,22 @@ static PyObject *_fil_sleep(PyObject *_self, PyObject *args)
 
     current_gl = PyGreenlet_GetCurrent();
     if (current_gl == NULL)
+    {
+        Py_DECREF(fil_scheduler);
         return NULL;
+    }
 
     fil_scheduler_gl_switch(fil_scheduler, ts, current_gl);
     Py_DECREF(current_gl);
     fil_scheduler_switch(fil_scheduler);
 
     if (PyErr_Occurred())
+    {
+        Py_DECREF(fil_scheduler);
         return NULL;
+    }
 
+    Py_DECREF(fil_scheduler);
     Py_RETURN_NONE;
 }
 
@@ -358,13 +362,20 @@ static PyObject *_fil_yield(PyObject *_self, PyObject *_args)
 
     current_gl = PyGreenlet_GetCurrent();
     if (current_gl == NULL)
+    {
+        Py_DECREF(fil_scheduler);
         return NULL;
+    }
 
     fil_scheduler_gl_switch(fil_scheduler, NULL, current_gl);
     Py_DECREF(current_gl);
     fil_scheduler_switch(fil_scheduler);
     if (PyErr_Occurred())
+    {
+        Py_DECREF(fil_scheduler);
         return NULL;
+    }
+    Py_DECREF(fil_scheduler);
     Py_RETURN_NONE;
 }
 
