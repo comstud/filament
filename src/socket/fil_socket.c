@@ -218,6 +218,25 @@ static PyObject *_SOCK_SOCKETPAIR;
 static PyObject *_OUR_MODULE;
 static PyObject *_EMPTY_TUPLE;
 static PyTypeObject *_PYFIL_SOCK_TYPE;
+
+#if 0
+static char *_PROXY_METHOD_NAMES[] = {
+    "bind",
+    "close",
+    "dup",
+    "getpeername",
+    "getsockname",
+    "getsockopt",
+#if defined(MS_WINDOWS) && defined(SIO_RCVALL)
+    "ioctl",
+#endif
+    "listen",
+    "setsockopt",
+    "shutdown",
+    NULL,
+};
+#endif
+
 static PyObject *_RESOLVER, *_RESOLVER_METHOD_LIST;
 /* these get copied in when module is loaded */
 static char *_RESOLVER_METHOD_NAMES[] = {
@@ -395,6 +414,10 @@ static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
         {
             Py_DECREF(res);
             return -1;
+        }
+        if (timeout < 0)
+        {
+            timeout = -1.0;
         }
     }
 
@@ -1446,13 +1469,21 @@ static PyObject *_socket_resolver_proxy_fn(PyObject *self, PyObject *args, PyObj
 {
     /* we init the proxy methods with 'self' being the idx encoded in a CVoidPtr obj */
     long idx = (long)PyCObject_AsVoidPtr(self);
+    PyObject *fn, *res;
 
     if (idx < 0 || idx >= _NUM_RESOLVER_METHODS)
     {
         PyErr_SetString(PyExc_RuntimeError, "internal error: fil resolver proxy idx out of range");
         return NULL;
     }
-    return PyObject_Call(_RESOLVER_METHODS[idx], args, kwargs);
+    /* It's possible for a greenlet switch or the GIL to be released..
+     * and one could change the resolver, so we'd better grab a ref.
+     */
+    fn = _RESOLVER_METHODS[idx];
+    Py_INCREF(fn);
+    res = PyObject_Call(fn, args, kwargs);
+    Py_DECREF(fn);
+    return res;
 }
 
 static PyMethodDef _fil_resolver_proxy_methods[_NUM_RESOLVER_METHODS];
