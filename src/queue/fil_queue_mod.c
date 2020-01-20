@@ -36,34 +36,33 @@ static PyMethodDef _fil_queue_module_methods[] = {
 
 /****************/
 
-PyMODINIT_FUNC
-initqueue(void)
+_FIL_MODULE_INIT_FN_NAME(queue)
 {
     PyObject *m = NULL;
     PyObject *qm = NULL;
 
     if (PyFilCore_Import() < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    m = Py_InitModule3("_filament.queue", _fil_queue_module_methods, _fil_queue_module_doc);
+    _FIL_MODULE_SET(m, "_filament.queue", _fil_queue_module_methods, _fil_queue_module_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     qm = PyImport_ImportModuleNoBlock("Queue");
     if (qm == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     _FIL_QUEUE_EMPTY_ERROR = PyObject_GetAttrString(qm, "Empty");
     if (_FIL_QUEUE_EMPTY_ERROR == NULL)
     {
         Py_DECREF(qm);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     _FIL_QUEUE_FULL_ERROR = PyObject_GetAttrString(qm, "Full");
@@ -71,7 +70,7 @@ initqueue(void)
     {
         Py_CLEAR(_FIL_QUEUE_EMPTY_ERROR);
         Py_DECREF(qm);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_DECREF(qm);
@@ -92,18 +91,18 @@ initqueue(void)
 
     if (fil_simplequeue_init(m))
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (fil_queue_init(m))
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 
 failure:
     Py_CLEAR(_FIL_QUEUE_EMPTY_ERROR);
     Py_CLEAR(_FIL_QUEUE_FULL_ERROR);
-    return;
+    return _FIL_MODULE_INIT_ERROR;
 }

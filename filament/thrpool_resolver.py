@@ -1,5 +1,6 @@
 import functools
 import _socket
+import sys
 import types
 
 from filament import thrpool
@@ -40,7 +41,10 @@ for _methname in _proxy_methods:
     _p = functools.partial(_meth, getattr(_socket, _methname))
     _p.__name__ = _methname
     _p.__doc__ = getattr(_socket, _methname).__doc__
-    setattr(Resolver, _methname, types.MethodType(_p, None, Resolver))
+    if sys.version_info >= (3,0):
+        setattr(Resolver, _methname, types.MethodType(_p, Resolver))
+    else:
+        setattr(Resolver, _methname, types.MethodType(_p, None, Resolver))
     del _p
 
 

@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include "pyversion.h"
 #include "core/fil_exceptions.h"
 #include "core/fil_fifoq.h"
 #include "core/fil_message.h"

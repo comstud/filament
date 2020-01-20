@@ -225,30 +225,29 @@ static PyMethodDef _fil_timer_module_methods[] = {
     { NULL, },
 };
 
-PyMODINIT_FUNC
-inittimer(void)
+_FIL_MODULE_INIT_FN_NAME(timer)
 {
     PyObject *m;
 
     PyFilCore_Import();
 
-    m = Py_InitModule3("_filament.timer", _fil_timer_module_methods, _fil_timer_module_doc);
+    _FIL_MODULE_SET(m, "_filament.timer", _fil_timer_module_methods, _fil_timer_module_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (PyType_Ready(&_timer_type) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_timer_type);
     if (PyModule_AddObject(m, "Timer", (PyObject *)&_timer_type) != 0)
     {
         Py_DECREF((PyObject *)&_timer_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 }

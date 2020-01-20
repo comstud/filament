@@ -3,6 +3,12 @@ import sys
 
 _held_refs = {}
 
+def _is_str(x):
+    if sys.version_info >= (3, 0):
+        return isinstance(x, str)
+    return isinstance(x, basestring)
+
+
 def _hold_refs(modules):
     # This is called when we've removed something from
     # sys.modules. We want to keep a ref on the module
@@ -21,8 +27,10 @@ class ModuleRemover(object):
     __slots__ = ('modules', 'originals', '_skip_restore', '_import')
 
     def __init__(self, modules, do_import=False, skip_restore=False):
-        if not isinstance(modules, list):
+        if _is_str(modules):
             modules = [ modules ]
+        if not isinstance(modules, list):
+            modules = list(modules)
         self.modules = modules
         self._import = do_import
         self._skip_restore = skip_restore

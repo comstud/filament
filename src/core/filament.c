@@ -437,23 +437,22 @@ PyFilament *filament_alloc(PyObject *method, PyObject *args, PyObject *kwargs)
     return self;
 }
 
-PyMODINIT_FUNC
-initcore(void)
+_FIL_MODULE_INIT_FN_NAME(core)
 {
     PyObject *m;
     PyObject *capsule;
 
     PyGreenlet_Import();
-    m = Py_InitModule3(FILAMENT_CORE_MODULE_NAME, cext_methods, cext_doc);
+    _FIL_MODULE_SET(m, FILAMENT_CORE_MODULE_NAME, cext_methods, cext_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     _fil_filament_type.tp_base = &PyGreenlet_Type;
     if (PyType_Ready(&_fil_filament_type) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_fil_filament_type);
@@ -461,7 +460,7 @@ initcore(void)
                            (PyObject *)&_fil_filament_type) != 0)
     {
         Py_DECREF((PyObject *)&_fil_filament_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     PyFilament_Type = &_fil_filament_type;
@@ -472,15 +471,15 @@ initcore(void)
         fil_scheduler_init(m, _PY_FIL_CORE_API) < 0 ||
         fil_exceptions_init(m, _PY_FIL_CORE_API) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     capsule = PyCapsule_New(_PY_FIL_CORE_API, FILAMENT_CORE_CAPSULE_NAME, NULL);
     if (PyModule_AddObject(m, FILAMENT_CORE_CAPI_NAME, capsule) != 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 }
 

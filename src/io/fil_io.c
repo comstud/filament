@@ -389,23 +389,22 @@ static PyMethodDef _fil_io_module_methods[] = {
     { NULL }
 };
 
-PyMODINIT_FUNC
-initio(void)
+_FIL_MODULE_INIT_FN_NAME(io)
 {
     PyObject *m, *capsule;
 
     PyFilCore_Import();
 
-    m = Py_InitModule3(FILAMENT_IO_MODULE_NAME, _fil_io_module_methods, _fil_io_module_doc);
+    _FIL_MODULE_SET(m, FILAMENT_IO_MODULE_NAME, _fil_io_module_methods, _fil_io_module_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     _fdesc_type.tp_base = &PyLong_Type;
     if (PyType_Ready(&_fdesc_type) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_fdesc_type);
@@ -413,19 +412,19 @@ initio(void)
                            (PyObject *)&_fdesc_type) != 0)
     {
         Py_DECREF((PyObject *)&_fdesc_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (fil_iothread_init(m) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     capsule = PyCapsule_New(_PY_FIL_IO_API, FILAMENT_IO_CAPSULE_NAME, NULL);
     if (PyModule_AddObject(m, FILAMENT_IO_CAPI_NAME, capsule) != 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 }

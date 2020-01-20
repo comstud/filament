@@ -466,7 +466,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     Py_DECREF(self);
     _scheduler_set(NULL);
 
-    printf("sched exiting, refcnt=%ld\n", self->ob_refcnt);
+    printf("sched exiting, refcnt=%ld\n", Py_REFCNT(self));
 
     Py_RETURN_NONE;
 }

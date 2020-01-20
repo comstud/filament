@@ -215,7 +215,6 @@ typedef struct _pyfil_socket {
 
 static PyObject *_SOCK_MODULE, *_SOCK_CLASS, *_SOCK_ERROR, *_SOCK_HERROR, *_SOCK_TIMEOUT;
 static PyObject *_SOCK_SOCKETPAIR;
-static PyObject *_OUR_MODULE;
 static PyObject *_EMPTY_TUPLE;
 static PyTypeObject *_PYFIL_SOCK_TYPE;
 
@@ -1467,8 +1466,8 @@ static PyObject *_socket_socketpair(PyObject *self, PyObject *args)
 /* doc strings set dynamically */
 static PyObject *_socket_resolver_proxy_fn(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    /* we init the proxy methods with 'self' being the idx encoded in a CVoidPtr obj */
-    long idx = (long)PyCObject_AsVoidPtr(self);
+    /* we init the proxy methods with 'self' being the idx encoded in as a PyLong */
+    long idx = (long)PyLong_AsLong(self);
     PyObject *fn, *res;
 
     if (idx < 0 || idx >= _NUM_RESOLVER_METHODS)
@@ -1532,7 +1531,7 @@ static int _init_resolver_proxy_fns(PyObject *module, char *mod_name_str)
         mdef->ml_flags = METH_VARARGS | METH_KEYWORDS;
         mdef->ml_doc = doc_str ? doc_str : "<doc unavailable>";
 
-        res_idx = PyCObject_FromVoidPtr((void *)idx, NULL);
+        res_idx = PyLong_FromLong(idx);
         if (res_idx == NULL)
         {
             res = -1;
@@ -1562,8 +1561,7 @@ static int _init_resolver_proxy_fns(PyObject *module, char *mod_name_str)
     return res;
 }
 
-PyMODINIT_FUNC
-initsocket(void)
+_FIL_MODULE_INIT_FN_NAME(socket)
 {
     PyObject *m;
     int i;
@@ -1576,7 +1574,7 @@ initsocket(void)
     _RESOLVER_METHOD_LIST = PyList_New(_NUM_RESOLVER_METHODS);
     if (_RESOLVER_METHOD_LIST == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
     for(i = 0;i < _NUM_RESOLVER_METHODS;i++)
     {
@@ -1584,7 +1582,7 @@ initsocket(void)
         if (str == NULL)
         {
             Py_CLEAR(_RESOLVER_METHOD_LIST);
-            return;
+            return _FIL_MODULE_INIT_ERROR;
         }
         PyList_SET_ITEM(_RESOLVER_METHOD_LIST, i, str);
     }
@@ -1593,71 +1591,71 @@ initsocket(void)
     if (_SOCK_MODULE == NULL &&
         (_SOCK_MODULE = PyImport_ImportModuleNoBlock("_socket")) == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (_SOCK_CLASS == NULL &&
         (_SOCK_CLASS = PyObject_GetAttrString(_SOCK_MODULE, "socket")) == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (_SOCK_ERROR == NULL &&
         (_SOCK_ERROR = PyObject_GetAttrString(_SOCK_MODULE, "error")) == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (_SOCK_HERROR == NULL &&
         (_SOCK_HERROR = PyObject_GetAttrString(_SOCK_MODULE, "herror")) == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (_SOCK_TIMEOUT == NULL &&
         (_SOCK_TIMEOUT = PyObject_GetAttrString(_SOCK_MODULE, "timeout")) == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (_SOCK_SOCKETPAIR == NULL &&
         (_SOCK_SOCKETPAIR = PyObject_GetAttrString(_SOCK_MODULE, "socketpair")) == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (PyType_Ready(&_sock_type) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     _PYFIL_SOCK_TYPE = &_sock_type;
 
-    _OUR_MODULE = m = Py_InitModule3(FIL_SOCKET_MODULE_NAME, _fil_socket_module_methods, _fil_socket_module_doc);
+    _FIL_MODULE_SET(m, FIL_SOCKET_MODULE_NAME, _fil_socket_module_methods, _fil_socket_module_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_sock_type);
     if (PyModule_AddObject(m, "Socket", (PyObject *)&_sock_type) != 0)
     {
         Py_DECREF((PyObject *)&_sock_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_sock_type);
     if (PyModule_AddObject(m, "socket", (PyObject *)&_sock_type) != 0)
     {
         Py_DECREF((PyObject *)&_sock_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_sock_type);
     if (PyModule_AddObject(m, "SocketType", (PyObject *)&_sock_type) != 0)
     {
         Py_DECREF((PyObject *)&_sock_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (_RESOLVER == NULL)
@@ -1673,7 +1671,7 @@ initsocket(void)
 
         if ((rm = PyImport_ImportModuleNoBlock(ptr)) == NULL)
         {
-            return;
+            return _FIL_MODULE_INIT_ERROR;
         }
 
         _RESOLVER = PyObject_CallMethod(rm, "get_resolver", "");
@@ -1681,33 +1679,33 @@ initsocket(void)
 
         if (_RESOLVER == NULL)
         {
-            return;
+            return _FIL_MODULE_INIT_ERROR;
         }
 
         if (_check_resolver_methods(_RESOLVER))
         {
             _clear_resolver_methods();
             Py_CLEAR(_RESOLVER);
-            return;
+            return _FIL_MODULE_INIT_ERROR;
         }
 
         if (_copy_resolver_methods(_RESOLVER))
         {
             _clear_resolver_methods();
             Py_CLEAR(_RESOLVER);
-            return;
+            return _FIL_MODULE_INIT_ERROR;
         }
 
         if (_init_resolver_proxy_fns(m, FIL_SOCKET_MODULE_NAME))
         {
             _clear_resolver_methods();
             Py_CLEAR(_RESOLVER);
-            return;
+            return _FIL_MODULE_INIT_ERROR;
         }
     }
 
     /* Now copy everything we don't have from original module */
     PyDict_Merge(PyModule_GetDict(m), PyModule_GetDict(_SOCK_MODULE), 0);
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 }

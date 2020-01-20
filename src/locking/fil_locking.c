@@ -36,23 +36,22 @@ static PyMethodDef _fil_locking_module_methods[] = {
 
 /****************/
 
-PyMODINIT_FUNC
-initlocking(void)
+_FIL_MODULE_INIT_FN_NAME(locking)
 {
     PyObject *m;
 
-    m = Py_InitModule3("_filament.locking", _fil_locking_module_methods, _fil_locking_module_doc);
+    _FIL_MODULE_SET(m, "_filament.locking", _fil_locking_module_methods, _fil_locking_module_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (fil_lock_type_init(m) < 0 ||
             fil_cond_type_init(m) < 0 ||
             fil_semaphore_type_init(m) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 }

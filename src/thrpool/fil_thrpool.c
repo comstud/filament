@@ -618,8 +618,7 @@ static PyMethodDef _fil_thrpool_module_methods[] = {
     { NULL, },
 };
 
-PyMODINIT_FUNC
-initthrpool(void)
+_FIL_MODULE_INIT_FN_NAME(thrpool)
 {
     PyObject *m;
 
@@ -631,23 +630,23 @@ initthrpool(void)
         _EMPTY_TUPLE = fil_empty_tuple();
     }
 
-    m = Py_InitModule3("_filament.thrpool", _fil_thrpool_module_methods, _fil_thrpool_module_doc);
+    _FIL_MODULE_SET(m, "_filament.thrpool", _fil_thrpool_module_methods, _fil_thrpool_module_doc);
     if (m == NULL)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     if (PyType_Ready(&_thrpool_type) < 0)
     {
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
     Py_INCREF((PyObject *)&_thrpool_type);
     if (PyModule_AddObject(m, "ThreadPool", (PyObject *)&_thrpool_type) != 0)
     {
         Py_DECREF((PyObject *)&_thrpool_type);
-        return;
+        return _FIL_MODULE_INIT_ERROR;
     }
 
-    return;
+    return _FIL_MODULE_INIT_SUCCESS(m);
 }
