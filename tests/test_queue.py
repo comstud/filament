@@ -20,14 +20,14 @@ class _QueueTestMixIn(object):
 
     def test_basic_queue_function(self):
         iters = 10
-        data = range(iters)
+        data = list(range(iters))
         expected = data[:]
         if self.lifo:
             expected.reverse()
         for x in data:
             self.queue.put(x)
         self.assertEqual(iters, self.queue.qsize())
-        results = [self.queue.get() for x in xrange(iters)]
+        results = [self.queue.get() for x in range(iters)]
         self.assertEqual(expected, results)
         self.assertTrue(self.queue.empty())
         self.assertFalse(self.queue.full())

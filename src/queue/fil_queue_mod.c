@@ -52,7 +52,7 @@ _FIL_MODULE_INIT_FN_NAME(queue)
         return _FIL_MODULE_INIT_ERROR;
     }
 
-    qm = PyImport_ImportModuleNoBlock("Queue");
+    qm = PyImport_ImportModule(_FIL_PY_QUEUE_MODULE_NAME);
     if (qm == NULL)
     {
         return _FIL_MODULE_INIT_ERROR;
