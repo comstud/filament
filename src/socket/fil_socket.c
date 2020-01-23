@@ -31,6 +31,14 @@
 #define FIL_SOCKET_MODULE_NAME "_filament.socket"
 #define FIL_DEFAULT_RESOLVER_CLASS "filament.thrpool_resolver"
 
+#if SIZEOF_SOCKET_T <= SIZEOF_LONG
+#define PyLong_FromSocket_t(fd) PyLong_FromLong((SOCKET_T)(fd))
+#define PyLong_AsSocket_t(fd) (SOCKET_T)PyLong_AsLong(fd)
+#else
+#define PyLong_FromSocket_t(fd) PyLong_FromLongLong((SOCKET_T)(fd))
+#define PyLong_AsSocket_t(fd) (SOCKET_T)PyLong_AsLongLong(fd)
+#endif
+
 #ifdef MS_WINDOWS
 typedef SOCKET SOCKET_T;
 #       ifdef MS_WIN64
@@ -200,7 +208,11 @@ typedef struct _pyfil_socket {
 
     PyObject *_sock; /* built-in _socket object */
     SOCKET_T _sock_fd;
+#if _FIL_PYTHON3
+    PyObject *_sock__accept;
+#else
     PyObject *_sock_accept;
+#endif
     PyObject *_sock_getpeername;
     PyObject *_sock_getsockname;
     PyObject *_sock_getsockopt;
@@ -295,6 +307,47 @@ static inline int _check_resolver_methods(PyObject *resolver)
     return 0;
 }
 
+#if _FIL_PYTHON3
+static inline int _exc_is_blockingioerr(int clear_on_match)
+{
+    PyObject *exc_type, *exc_value, *exc_tb;
+
+    PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+    if (exc_type == NULL)
+    {
+        return 0;
+    }
+
+    if (exc_value == NULL || (exc_type != PyExc_BlockingIOError))
+    {
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+        return 0;
+    }
+
+    if (clear_on_match)
+    {
+        Py_XDECREF(exc_type);
+        Py_XDECREF(exc_value);
+        Py_XDECREF(exc_tb);
+    }
+    else
+    {
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+    }
+
+    return 1;
+}
+
+static inline int _exc_is_inprogress(int clear_on_match)
+{
+    return _exc_is_blockingioerr(clear_on_match);
+}
+
+static inline int _exc_is_eagain(int clear_on_match)
+{
+    return _exc_is_blockingioerr(clear_on_match);
+}
+#else
 static inline int _exc_socket_error_errno(int *err_ret)
 {
     PyObject *exc_type, *exc_value, *exc_tb;
@@ -318,6 +371,11 @@ static inline int _exc_socket_error_errno(int *err_ret)
 
     PyErr_Restore(exc_type, exc_value, exc_tb);
     return 1;
+}
+
+static inline int _exc_is_inprogress(int clear_on_match)
+{
+    return _exc_is_errno(EINPROGRESS, clear_on_match);
 }
 
 static inline int _exc_is_eagain(int clear_on_match)
@@ -349,10 +407,15 @@ static inline int _exc_is_errno(int errn, int clear_on_match)
     }
     return 0;
 }
+#endif /* _FIL_PYTHON3 */
 
 static void _sock_clear_methods(PyFilSocket *self)
 {
+#if _FIL_PYTHON3
+    Py_CLEAR(self->_sock__accept);
+#else
     Py_CLEAR(self->_sock_accept);
+#endif
     Py_CLEAR(self->_sock_getpeername);
     Py_CLEAR(self->_sock_getsockname);
     Py_CLEAR(self->_sock_getsockopt);
@@ -375,30 +438,10 @@ static PyFilSocket *_sock_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     return self;
 }
 
-static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
+static int _sock_init_from_sock_and_fd(PyFilSocket *self, PyObject *_sock, SOCKET_T fileno)
 {
     double timeout = -1.0;
-    SOCKET_T fileno;
     PyObject *res;
-
-    res = PyObject_CallMethod(_sock, "fileno", "");
-    if (res == NULL)
-    {
-        return -1;
-    }
-
-#if SIZEOF_SOCKET_T <= SIZEOF_LONG
-    fileno = (SOCKET_T)PyInt_AsLong(res);
-#else
-    fileno = (SOCKET_T)PyLong_AsLongLong(res);
-#endif
-    if (fileno == -1 && PyErr_Occurred())
-    {
-        PyErr_SetString(PyExc_ValueError, "Received unexpected type from fileno() call");
-        return -1;
-    }
-
-    Py_DECREF(res);
 
     res = PyObject_CallMethod(_sock, "gettimeout", "");
     if (res == NULL)
@@ -436,6 +479,89 @@ static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
 
     return 0;
 }
+
+static int _sock_init_from_sock(PyFilSocket *self, PyObject *_sock)
+{
+    SOCKET_T fileno;
+    PyObject *res;
+
+    res = PyObject_CallMethod(_sock, "fileno", "");
+    if (res == NULL)
+    {
+        return -1;
+    }
+
+#if SIZEOF_SOCKET_T <= SIZEOF_LONG
+    fileno = (SOCKET_T)PyInt_AsLong(res);
+#else
+    fileno = (SOCKET_T)PyLong_AsLongLong(res);
+#endif
+
+    Py_DECREF(res);
+
+    if (fileno == -1 && PyErr_Occurred())
+    {
+        PyErr_SetString(PyExc_ValueError, "Received unexpected type from fileno() call");
+        return -1;
+    }
+
+    return _sock_init_from_sock_and_fd(self, _sock, fileno);
+}
+
+#if _FIL_PYTHON3
+static int _sock_init_from_fd(PyFilSocket *self, SOCKET_T fileno)
+{
+    PyObject *_sock;
+    PyObject *_sock_args;
+
+    _sock_args = Py_BuildValue("iiii", self->family, self->type, self->proto, fileno);
+    if (_sock_args == NULL)
+    {
+        return -1;
+    }
+
+    _sock = PyObject_Call(_SOCK_CLASS, _sock_args, NULL);
+    Py_DECREF(_sock_args);
+
+    if (_sock == NULL)
+    {
+        return -1;
+    }
+
+    return _sock_init_from_sock_and_fd(self, _sock, fileno);
+}
+
+static PyObject *_create_new_socket_from_fd(int family, int type, int proto, PyObject *fileno_obj)
+{
+    PyFilSocket *sock;
+    SOCKET_T fileno;
+
+    if (!PyLong_Check(fileno_obj)) {
+        PyErr_SetString(PyExc_ValueError, "Received unexpected fd type when creating new socket");
+        return NULL;
+    }
+
+    fileno = PyLong_AsSocket_t(fileno_obj);
+
+    sock = _sock_new(_PYFIL_SOCK_TYPE, NULL, NULL);
+    if (sock == NULL)
+    {
+        return NULL;
+    }
+
+    if (_sock_init_from_fd(sock, fileno) < 0)
+    {
+        Py_DECREF(sock);
+        return NULL;
+    }
+
+    sock->family = family;
+    sock->type = type;
+    sock->proto = proto;
+
+    return (PyObject *)sock;
+}
+#endif
 
 static PyObject *_create_new_socket(int family, int type, int proto, PyObject *_sock)
 {
@@ -523,18 +649,32 @@ PyDoc_STRVAR(_sock_accept_doc,
 Wait for an incoming connection.  Return a new socket representing the\n\
 connection, and the address of the client.  For IP sockets, the address\n\
 info is a pair (hostaddr, port).");
+
+#if _FIL_PYTHON3
+FIL_CPROXY_POLL(_accept, (PyFilSocket *self), (attr, _EMPTY_TUPLE, NULL), read)
+#else
 FIL_CPROXY_POLL(accept, (PyFilSocket *self), (attr, _EMPTY_TUPLE, NULL), read)
+#endif
+
 static PyObject *_sock_accept_real(PyFilSocket *self)
 {
     PyObject *sock;
+#if _FIL_PYTHON3
+    PyObject *res = _sock__accept(self);
+#else
     PyObject *res = _sock_accept(self);
+#endif
 
     if (res == NULL || !PyTuple_Check(res) || PyTuple_GET_SIZE(res) < 1)
     {
         return res;
     }
 
+#if _FIL_PYTHON3
+    sock = _create_new_socket_from_fd(self->family, self->type, self->proto, PyTuple_GET_ITEM(res, 0));
+#else
     sock = _create_new_socket(self->family, self->type, self->proto, PyTuple_GET_ITEM(res, 0));
+#endif
     if (sock == NULL)
     {
         Py_DECREF(res);
@@ -563,7 +703,30 @@ PyDoc_STRVAR(_sock_close_doc,
 "close()\n\
 \n\
 Close the socket.  It cannot be used after this call.");
-FIL_PROXY_NOARG(close)
+static PyObject *_sock_close(PyFilSocket *self)
+{
+    PyObject *close_meth, *res;
+
+    if (self->_sock_fd == -1)
+    {
+        Py_RETURN_NONE;
+    }
+
+    if ((close_meth = PyObject_GetAttrString(self->_sock, "close")) == NULL)
+    {
+        return NULL;
+    }
+
+    res = PyObject_Call(close_meth, _EMPTY_TUPLE, NULL);
+    Py_DECREF(close_meth);
+
+    if (res != NULL)
+    {
+        self->_sock_fd = -1;
+    }
+
+    return res;
+}
 
 PyDoc_STRVAR(_sock_connect_doc,
 "connect(address)\n\
@@ -593,7 +756,7 @@ static PyObject *_sock_connect(PyFilSocket *self, PyObject *args)
         return res;
     }
 
-    if (!_exc_is_errno(EINPROGRESS, 1))
+    if (!_exc_is_inprogress(1))
     {
         return NULL;
     }
