@@ -1578,7 +1578,9 @@ static PyMethodDef _sock_methods[] = {
     { "close", (PyCFunction)_sock_close, METH_NOARGS, _sock_close_doc },
     { "connect", (PyCFunction)_sock_connect, METH_VARARGS, _sock_connect_doc },
     { "connect_ex", (PyCFunction)_sock_connect_ex, METH_VARARGS, _sock_connect_ex_doc },
+#if _FIL_PYTHON3
     { "detach", (PyCFunction)_sock_detach, METH_NOARGS, _sock_detach_doc },
+#endif
     { "dup", (PyCFunction)_sock_dup_real, METH_NOARGS, _sock_dup_doc },
     { "fileno", (PyCFunction)_sock_fileno, METH_NOARGS, _sock_fileno_doc },
     { "getpeername", (PyCFunction)_sock_getpeername, METH_NOARGS, _sock_getpeername_doc },
