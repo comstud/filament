@@ -1,0 +1,514 @@
+{
+  "python": "2.7.18",
+  "worker_params": {},
+  "runs": {
+    "spawn": {
+      "filament": {
+        "status": "ok",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": {
+          "fireforget_spawn_n_per_sec": {
+            "per_sec_max": 1199458.9385243205,
+            "reps": 3,
+            "per_sec_min": 1108047.6896211936,
+            "per_sec_median": 1150378.7691784466,
+            "samples": [
+              1199458.9,
+              1108047.7,
+              1150378.8
+            ]
+          },
+          "fireforget_error": null,
+          "k": 100000,
+          "tracked_spawn_per_sec": {
+            "per_sec_max": 1407182.3500993075,
+            "reps": 5,
+            "per_sec_min": 1248687.5440983397,
+            "per_sec_median": 1344052.5020508613,
+            "samples": [
+              1353197.7,
+              1407182.4,
+              1251000.4,
+              1248687.5,
+              1344052.5
+            ]
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "spawn",
+        "log_mode": "naive",
+        "lib_version": "filament(greenlet 1.1.3)"
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "spawn",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "eventlet": {
+        "status": "ok",
+        "framework": "eventlet",
+        "greenlet": "1.1.3",
+        "result": {
+          "fireforget_spawn_n_per_sec": {
+            "per_sec_max": 305183.2276353434,
+            "reps": 3,
+            "per_sec_min": 269074.0008929992,
+            "per_sec_median": 289216.2696839331,
+            "samples": [
+              305183.2,
+              269074.0,
+              289216.3
+            ]
+          },
+          "fireforget_error": null,
+          "k": 100000,
+          "tracked_spawn_per_sec": {
+            "per_sec_max": 152455.5597356029,
+            "reps": 5,
+            "per_sec_min": 136208.06563492908,
+            "per_sec_median": 142022.41651539362,
+            "samples": [
+              152455.6,
+              150169.7,
+              142022.4,
+              136208.1,
+              138311.8
+            ]
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "spawn",
+        "log_mode": "naive",
+        "lib_version": "0.33.3"
+      }
+    },
+    "ctxswitch": {
+      "filament": {
+        "status": "ok",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": {
+          "iters_each": 10000,
+          "switches_per_sec": {
+            "per_sec_max": 3687997.291795812,
+            "reps": 5,
+            "per_sec_min": 3543198.7173097297,
+            "per_sec_median": 3663285.171408184,
+            "samples": [
+              3543198.7,
+              3663285.2,
+              3687997.3,
+              3667061.3,
+              3559949.5
+            ]
+          },
+          "total_switches": 1000000,
+          "greenthreads": 100
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "ctxswitch",
+        "log_mode": "naive",
+        "lib_version": "filament(greenlet 1.1.3)"
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "ctxswitch",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "eventlet": {
+        "status": "ok",
+        "framework": "eventlet",
+        "greenlet": "1.1.3",
+        "result": {
+          "iters_each": 10000,
+          "switches_per_sec": {
+            "per_sec_max": 469686.0039572153,
+            "reps": 5,
+            "per_sec_min": 462724.526207848,
+            "per_sec_median": 465955.18666962616,
+            "samples": [
+              465955.2,
+              469686.0,
+              464301.3,
+              462724.5,
+              465996.7
+            ]
+          },
+          "total_switches": 1000000,
+          "greenthreads": 100
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "ctxswitch",
+        "log_mode": "naive",
+        "lib_version": "0.33.3"
+      }
+    },
+    "semaphore": {
+      "filament": {
+        "status": "ok",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": {
+          "contended_total_ops": 200000,
+          "contended_ops_per_sec": {
+            "per_sec_max": 20020066.34686523,
+            "reps": 5,
+            "per_sec_min": 19554320.613534115,
+            "per_sec_median": 19886700.488359965,
+            "samples": [
+              20020066.3,
+              19554320.6,
+              19849525.6,
+              19886700.5,
+              19983819.7
+            ]
+          },
+          "uncontended_ops": 1000000,
+          "contended_greenthreads": 50,
+          "uncontended_ops_per_sec": {
+            "per_sec_max": 40322867.19606222,
+            "reps": 5,
+            "per_sec_min": 38265705.68378798,
+            "per_sec_median": 39246418.57940882,
+            "samples": [
+              39059292.4,
+              40257846.5,
+              38265705.7,
+              39246418.6,
+              40322867.2
+            ]
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "semaphore",
+        "log_mode": "naive",
+        "lib_version": "filament(greenlet 1.1.3)"
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "semaphore",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "eventlet": {
+        "status": "ok",
+        "framework": "eventlet",
+        "greenlet": "1.1.3",
+        "result": {
+          "contended_total_ops": 200000,
+          "contended_ops_per_sec": {
+            "per_sec_max": 4405480.718228272,
+            "reps": 5,
+            "per_sec_min": 4292670.545551308,
+            "per_sec_median": 4389252.656749531,
+            "samples": [
+              4405480.7,
+              4352924.6,
+              4394633.4,
+              4292670.5,
+              4389252.7
+            ]
+          },
+          "uncontended_ops": 1000000,
+          "contended_greenthreads": 50,
+          "uncontended_ops_per_sec": {
+            "per_sec_max": 5011427.233233128,
+            "reps": 5,
+            "per_sec_min": 4812481.7135507325,
+            "per_sec_median": 5001071.921266846,
+            "samples": [
+              4968848.0,
+              5011427.2,
+              5006211.4,
+              4812481.7,
+              5001071.9
+            ]
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "semaphore",
+        "log_mode": "naive",
+        "lib_version": "0.33.3"
+      }
+    },
+    "queue": {
+      "filament": {
+        "status": "ok",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": {
+          "items": 200000,
+          "items_per_sec": {
+            "per_sec_max": 10589270.115377817,
+            "reps": 5,
+            "per_sec_min": 10504273.78254173,
+            "per_sec_median": 10540835.867407203,
+            "samples": [
+              10507563.2,
+              10540835.9,
+              10504273.8,
+              10583658.8,
+              10589270.1
+            ]
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "queue",
+        "log_mode": "naive",
+        "lib_version": "filament(greenlet 1.1.3)"
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "queue",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "eventlet": {
+        "status": "ok",
+        "framework": "eventlet",
+        "greenlet": "1.1.3",
+        "result": {
+          "items": 200000,
+          "items_per_sec": {
+            "per_sec_max": 1852538.221842378,
+            "reps": 5,
+            "per_sec_min": 1751392.1598102588,
+            "per_sec_median": 1835754.3488774656,
+            "samples": [
+              1852538.2,
+              1751392.2,
+              1835754.3,
+              1827404.3,
+              1849491.3
+            ]
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "queue",
+        "log_mode": "naive",
+        "lib_version": "0.33.3"
+      }
+    },
+    "tpool": {
+      "filament": {
+        "status": "ok",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": {
+          "mean_latency_us": 55.28,
+          "calls_per_sec": {
+            "per_sec_max": 20620.828444257986,
+            "reps": 5,
+            "per_sec_min": 16895.30290376203,
+            "per_sec_median": 18088.850617509346,
+            "samples": [
+              16985.8,
+              16895.3,
+              18088.9,
+              20620.8,
+              18742.9
+            ]
+          },
+          "calls": 3000
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "tpool",
+        "log_mode": "naive",
+        "lib_version": "filament(greenlet 1.1.3)"
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "tpool",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "eventlet": {
+        "status": "ok",
+        "framework": "eventlet",
+        "greenlet": "1.1.3",
+        "result": {
+          "mean_latency_us": 98.94,
+          "calls_per_sec": {
+            "per_sec_max": 10472.050340762218,
+            "reps": 5,
+            "per_sec_min": 9783.553593768587,
+            "per_sec_median": 10107.406098383832,
+            "samples": [
+              9783.6,
+              10107.4,
+              10472.1,
+              10020.8,
+              10366.9
+            ]
+          },
+          "calls": 3000
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "tpool",
+        "log_mode": "naive",
+        "lib_version": "0.33.3"
+      }
+    },
+    "echo": {
+      "filament": {
+        "status": "ok",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": {
+          "c1000_r20": {
+            "requests_per_sec_min": 54351.09637031225,
+            "requests_per_sec_median": 63240.898848281846,
+            "p50_ms": 14.264,
+            "concurrency": 1000,
+            "p99_ms": 16.649,
+            "requests_per_sec_max": 63263.314838878025,
+            "reps": 3,
+            "total_requests": 20000,
+            "roundtrips_each": 20
+          },
+          "c100_r100": {
+            "requests_per_sec_min": 63181.12115013241,
+            "requests_per_sec_median": 75013.61915373459,
+            "p50_ms": 1.286,
+            "concurrency": 100,
+            "p99_ms": 1.535,
+            "requests_per_sec_max": 76213.09774520795,
+            "reps": 3,
+            "total_requests": 10000,
+            "roundtrips_each": 100
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "echo",
+        "log_mode": "naive",
+        "lib_version": "filament(greenlet 1.1.3)"
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "echo",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "eventlet": {
+        "status": "ok",
+        "framework": "eventlet",
+        "greenlet": "1.1.3",
+        "result": {
+          "c1000_r20": {
+            "requests_per_sec_min": 35009.160650685815,
+            "requests_per_sec_median": 36650.04106883836,
+            "p50_ms": 25.257,
+            "concurrency": 1000,
+            "p99_ms": 46.228,
+            "requests_per_sec_max": 38154.97584330121,
+            "reps": 3,
+            "total_requests": 20000,
+            "roundtrips_each": 20
+          },
+          "c100_r100": {
+            "requests_per_sec_min": 57440.87538260328,
+            "requests_per_sec_median": 62153.58261129857,
+            "p50_ms": 1.547,
+            "concurrency": 100,
+            "p99_ms": 2.295,
+            "requests_per_sec_max": 63182.739136263874,
+            "reps": 3,
+            "total_requests": 10000,
+            "roundtrips_each": 100
+          }
+        },
+        "error": null,
+        "python": "2.7.18",
+        "benchmark": "echo",
+        "log_mode": "naive",
+        "lib_version": "0.33.3"
+      }
+    },
+    "logging137": {
+      "filament": {
+        "status": "error",
+        "framework": "filament",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "TypeError: Error when calling the metaclass bases\n    __weakref__ slot disallowed: either we already got one, or __itemsize__ != 0",
+        "python": "2.7.18",
+        "benchmark": "logging137",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "gevent": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "logging137",
+        "log_mode": "naive",
+        "lib_version": null
+      },
+      "gevent:workaround": {
+        "status": "error",
+        "framework": "gevent",
+        "greenlet": "1.1.3",
+        "result": null,
+        "error": "ImportError: No module named gevent",
+        "python": "2.7.18",
+        "benchmark": "logging137",
+        "log_mode": "workaround",
+        "lib_version": null
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "logging137",
+        "status": "deadlock",
+        "error": "timeout after 30s",
+        "result": null
+      }
+    }
+  }
+}
