@@ -1,6 +1,26 @@
+"""Low-level module-swapping helpers used by the patcher and green modules.
+
+This module provides the mechanics the patching engine is built on:
+
+* ``ModuleRemover`` / ``ModuleReplacer`` -- context managers that temporarily
+  pull modules out of ``sys.modules`` (and optionally put replacements in), used
+  to make a green module masquerade as a stdlib one while we import a copy
+  (see ``filament.socket`` / ``filament.ssl``).
+* ``copy_globals`` -- fill any names missing from a destination namespace from a
+  source module/dict (used by every green module to pull across the stdlib bits
+  it does not override).
+* ``copy_module`` -- import a fresh, isolated copy of a module.
+* ``_hold_refs`` -- keep displaced modules alive so their globals dict is not
+  torn down (set to None) while other code may still be using it.
+
+Kept deliberately dependency-free and Python 2.7 / 3.x compatible.
+"""
+
 import contextlib
 import sys
 
+# Keeps references to modules we have displaced from sys.modules alive; see
+# ``_hold_refs`` for why.
 _held_refs = {}
 
 def _is_str(x):
