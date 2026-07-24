@@ -3,7 +3,19 @@
 
 #include <Python.h>
 #include <structmember.h>
+/*
+ * PyThread_get_thread_ident() (used by fil_get_ident in fil_util.h and by the
+ * scheduler's owner-thread guard) lives in pythread.h.  Python 3's Python.h
+ * pulls this in transitively, but Python 2.7's does not -- so include it
+ * explicitly to keep the Py2.7 build working.
+ */
+#include <pythread.h>
+#if PY_VERSION_HEX >= 0x030c0000
+/* PyLongObject internals moved out of the public headers in 3.12+ */
+#include <cpython/longintrepr.h>
+#else
 #include <longintrepr.h>
+#endif
 #include <greenlet.h>
 
 #include <errno.h>
@@ -41,7 +53,7 @@ typedef struct _pyfilcore_capi
     PyFilScheduler *(*fil_scheduler_get)(int create);
     int (*fil_scheduler_add_event)(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg);
     int (*fil_scheduler_switch)(PyFilScheduler *sched);
-    void (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
+    int (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
     PyGreenlet *(*fil_scheduler_greenlet)(PyFilScheduler *sched);
 } PyFilCore_CAPIObject;
 

@@ -36,12 +36,19 @@ PyTypeObject *PyFilament_Type = NULL;
 
 static PyObject *_fil_filament_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    PyFilament *self = NULL;
-
-    self = (PyFilament *)type->tp_alloc(type, 0);
-    if (self == NULL)
-        return NULL;
-    return (PyObject *)self;
+    /*
+     * greenlet 3.x made PyGreenlet an opaque object whose real state lives
+     * in a C++ object referenced by the (private) 'pimpl' pointer. That
+     * pointer is constructed *only* by greenlet's own tp_new (green_new) --
+     * NOT by tp_alloc. In greenlet 0.4.x the struct was plain C and a bare
+     * tp_alloc zero-initialised every field, so this function used to just
+     * call tp_alloc. On 3.x that leaves pimpl == NULL and the very next
+     * greenlet operation (green_init -> green_setrun) dereferences it and
+     * segfaults. We MUST delegate to greenlet's tp_new so pimpl is built.
+     * green_new ignores its args/kwds (it uses empty tuple/dict internally),
+     * so forwarding NULLs is safe.
+     */
+    return PyGreenlet_Type.tp_new(type, args, kwargs);
 }
 
 static int _fil_filament_init_common(PyFilament *self, PyObject *method, PyObject *args, PyObject *kwargs)
@@ -106,7 +113,13 @@ static int _fil_filament_init_common(PyFilament *self, PyObject *method, PyObjec
 
     Py_DECREF(gl_args);
 
-    fil_scheduler_gl_switch(self->sched, NULL, (PyGreenlet *)self);
+    /* Enqueue the initial switch into this filament. Propagate failure so a
+     * half-constructed filament (whose body will never be scheduled) isn't
+     * handed back as if it were live. */
+    if (fil_scheduler_gl_switch(self->sched, NULL, (PyGreenlet *)self) < 0)
+    {
+        return -1;
+    }
 
     return 0;
 }
@@ -328,7 +341,12 @@ static PyObject *_fil_sleep(PyObject *_self, PyObject *args)
         return NULL;
     }
 
-    fil_scheduler_gl_switch(fil_scheduler, ts, current_gl);
+    if (fil_scheduler_gl_switch(fil_scheduler, ts, current_gl) < 0)
+    {
+        Py_DECREF(current_gl);
+        Py_DECREF(fil_scheduler);
+        return NULL;
+    }
     Py_DECREF(current_gl);
     fil_scheduler_switch(fil_scheduler);
 
@@ -354,8 +372,11 @@ static PyObject *_fil_yield(PyObject *_self, PyObject *_args)
         Py_BEGIN_ALLOW_THREADS
 #ifdef _POSIX_PRIORITY_SCHEDULING
         sched_yield();
+#else
+        /* pthread_yield() is non-standard (glibc removed the public
+         * declaration); sched_yield() is the portable POSIX spelling. */
+        sched_yield();
 #endif
-        pthread_yield();
         Py_END_ALLOW_THREADS
         Py_RETURN_NONE;
     }
@@ -367,7 +388,12 @@ static PyObject *_fil_yield(PyObject *_self, PyObject *_args)
         return NULL;
     }
 
-    fil_scheduler_gl_switch(fil_scheduler, NULL, current_gl);
+    if (fil_scheduler_gl_switch(fil_scheduler, NULL, current_gl) < 0)
+    {
+        Py_DECREF(current_gl);
+        Py_DECREF(fil_scheduler);
+        return NULL;
+    }
     Py_DECREF(current_gl);
     fil_scheduler_switch(fil_scheduler);
     if (PyErr_Occurred())

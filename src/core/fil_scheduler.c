@@ -231,6 +231,9 @@ static PyObject *_sched_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     self->events.head = self->events.tail = NULL;
     self->running = 0;
     self->aborting = 0;
+    /* Bind this scheduler to the creating OS thread. All greenlet switches
+     * driven by this scheduler MUST happen on this thread. */
+    self->thread_id = PyThread_get_thread_ident();
     return (PyObject *)self;
 }
 
@@ -258,8 +261,27 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
     Py_INCREF(self);
     _scheduler_set(self);
 
-    /* Switch to the scheduler greenlet, but immediately switch back */
-    fil_scheduler_gl_switch(self, NULL, self->greenlet->parent);
+    /* Switch to the scheduler greenlet, but immediately switch back.
+     * PyGreenlet_GetParent() returns a NEW reference; fil_scheduler_gl_switch()
+     * takes its own reference, so release ours afterward.
+     *
+     * We enqueue a switch back to our parent (the greenlet that is bootstrapping
+     * the scheduler) so that once the scheduler greenlet starts running its main
+     * loop and processes the event queue, control returns here. */
+    {
+        PyGreenlet *_parent = PyGreenlet_GetParent(self->greenlet);
+        int _rc = (_parent == NULL) ? -1 :
+                  fil_scheduler_gl_switch(self, NULL, _parent);
+        Py_XDECREF(_parent);
+        if (_rc < 0)
+        {
+            _scheduler_set(NULL);
+            Py_DECREF(self);
+            Py_CLEAR(self->system_exceptions);
+            Py_CLEAR(self->greenlet);
+            return -1;
+        }
+    }
     if (_greenlet_switch(self->greenlet) < 0)
     {
         _scheduler_set(NULL);
@@ -274,7 +296,6 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
 
 static void _sched_dealloc(PyFilScheduler *self)
 {
-    printf("sched dealloc\n");
     pthread_mutex_destroy(&(self->sched_lock));
     pthread_cond_destroy(&(self->sched_cond));
     Py_CLEAR(self->system_exceptions);
@@ -297,7 +318,40 @@ static PyObject *_sched_fil_switch(PyFilScheduler *self, PyObject *greenlet)
         PyErr_SetString(PyExc_TypeError, "fil_switch() expects a filament/greenlet.");
         return NULL;
     }
-    fil_scheduler_gl_switch(self, NULL, (PyGreenlet *)greenlet);
+
+    /*
+     * Cross-thread guard for the one untrusted entry point.
+     *
+     * fil_switch() accepts an arbitrary greenlet from Python and enqueues it
+     * onto THIS scheduler, which will later PyGreenlet_Switch() to it on the
+     * scheduler's own thread. If the greenlet is owned by a different OS thread
+     * that is the classic "switch to a greenlet owned by another thread" crash.
+     *
+     * greenlet 3.x exposes no clean public C API to read a greenlet's owning
+     * thread, so we apply the strongest guard we can express portably: require
+     * that fil_switch() is called from the scheduler's own thread. Legitimate
+     * use (a filament running under this scheduler handing control to a peer
+     * greenlet on the same thread) always satisfies this; a stray call from
+     * another thread -- the case that leads to the illegal cross-thread switch
+     * -- is rejected with a clear error instead of crashing. (Internal wakeups
+     * from the I/O thread / thread pool do NOT come through here; they call
+     * fil_scheduler_gl_switch() directly with a greenlet already known to
+     * belong to this scheduler's thread.)
+     */
+    if (self->thread_id != PyThread_get_thread_ident())
+    {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "fil_switch() must be called from the scheduler's own "
+                        "thread (cross-thread greenlet switch is illegal)");
+        return NULL;
+    }
+
+    /* fil_scheduler_gl_switch() reports enqueue failures; propagate any error
+     * rather than silently swallowing it. */
+    if (fil_scheduler_gl_switch(self, NULL, (PyGreenlet *)greenlet) < 0)
+    {
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 
@@ -340,11 +394,17 @@ static void _handle_exception(PyFilScheduler *self)
          * Raise these in our parent. This immediately switches
          * to the parent.
          */
-        PyGreenlet_Throw(self->greenlet->parent, exc_type, val, tb);
+        /* PyGreenlet_GetParent() returns a NEW reference; PyGreenlet_Throw()
+         * borrows its target, so release our parent ref afterward. */
+        {
+            PyGreenlet *_parent = PyGreenlet_GetParent(self->greenlet);
+            PyGreenlet_Throw(_parent, exc_type, val, tb);
 #if 0
-        /* Throw() automatically switches */
-        _greenlet_switch(self->greenlet->parent);
+            /* Throw() automatically switches */
+            _greenlet_switch(_parent);
 #endif
+            Py_XDECREF(_parent);
+        }
         Py_DECREF(exc_type);
         Py_XDECREF(val);
         Py_XDECREF(tb);
@@ -463,10 +523,13 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     PyEval_RestoreThread(self->thread_state);
     self->thread_state = NULL;
 
+    /* Release the reference the scheduler holds on itself while it is stored
+     * in thread-specific data. After this Py_DECREF, 'self' may already be
+     * freed, so we must NOT read any of its fields (e.g. Py_REFCNT(self)) --
+     * doing so was a use-after-free. Clearing the TSD slot uses the local
+     * key, not 'self', so it remains safe. */
     Py_DECREF(self);
     _scheduler_set(NULL);
-
-    printf("sched exiting, refcnt=%ld\n", Py_REFCNT(self));
 
     Py_RETURN_NONE;
 }
@@ -631,12 +694,54 @@ int fil_scheduler_switch(PyFilScheduler *sched)
     return _greenlet_switch(sched->greenlet);
 }
 
-void fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet)
+/*
+ * Queue a deferred switch to 'greenlet' via the scheduler's event queue.
+ *
+ * This is the heart of the deferred-switch design: rather than switching to a
+ * greenlet directly (which forces an immediate context switch and makes
+ * cross-thread bugs easy), we enqueue an event that the scheduler greenlet
+ * will run (via _greenlet_event_switch) on ITS OWN thread. That keeps every
+ * PyGreenlet_Switch on the thread that owns both the scheduler and the target
+ * greenlet.
+ *
+ * IMPORTANT: this enqueue is intentionally safe to call from *any* OS thread.
+ * The event list is protected by sched_lock, and this is exactly how off-CPU
+ * helpers (the I/O thread and the thread pool workers) wake up a filament that
+ * is parked on its scheduler: they call in from their own thread to enqueue a
+ * switch that the scheduler greenlet then performs on the scheduler's thread.
+ * Therefore we must NOT reject based on the *calling* thread here -- doing so
+ * breaks every cross-thread wakeup. The invariant that actually matters is
+ * that the target 'greenlet' belongs to the scheduler's thread; that is
+ * guaranteed by construction for the internal callers (they always enqueue a
+ * greenlet obtained on the scheduler's own thread), and it is enforced for the
+ * one untrusted entry point in _sched_fil_switch().
+ *
+ * Refcount contract: we take a reference to 'greenlet' here; ownership is
+ * transferred to the event, and _greenlet_event_switch() drops it after the
+ * switch returns. If we cannot enqueue the event (malloc failure) we MUST
+ * drop that reference and report failure -- otherwise we would both leak the
+ * reference AND silently drop the wakeup, hanging the greenlet forever.
+ *
+ * Returns 0 on success, -1 on failure (with a Python exception set).
+ */
+int fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet)
 {
     Py_INCREF(greenlet);
-    fil_scheduler_add_event(sched, ts, 0,
-                            (fil_event_cb_t)_greenlet_event_switch,
-                            greenlet);
+    if (fil_scheduler_add_event(sched, ts, 0,
+                                (fil_event_cb_t)_greenlet_event_switch,
+                                greenlet) < 0)
+    {
+        /* Enqueue failed (out of memory). Undo our incref and surface the
+         * error so the caller doesn't wait on a wakeup that will never come. */
+        Py_DECREF(greenlet);
+        if (!PyErr_Occurred())
+        {
+            PyErr_SetNone(PyExc_MemoryError);
+        }
+        return -1;
+    }
+
+    return 0;
 }
 
 PyGreenlet *fil_scheduler_greenlet(PyFilScheduler *sched)

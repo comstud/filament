@@ -22,6 +22,15 @@ struct _fil_waiter {
     #define FIL_WAITER_FLAGS_SIGNALED   0x001
     #define FIL_WAITER_FLAGS_WAITING    0x002
     unsigned int flags;
+    /* 'refcnt' is a plain (non-atomic) counter. This is safe because of a
+     * strict invariant: a waiter is only ever incref'd/decref'd while holding
+     * the GIL, and every one of those operations happens on the thread that
+     * owns the waiter's scheduler (the greenlet-driven producer/consumer both
+     * run under that single scheduler thread). The only cross-thread wakeup
+     * path (sched == NULL, i.e. a real OS-thread waiter) synchronises via
+     * waiter_lock/waiter_cond and does not touch refcnt off-thread. If a code
+     * path ever needs to change refcnt from another thread, this must become
+     * atomic. */
     unsigned int refcnt;
     pthread_mutex_t waiter_lock;
     pthread_cond_t waiter_cond;
@@ -61,7 +70,12 @@ static inline void _fil_waiter_handle_timeout(PyFilScheduler *sched, FilWaiter *
 {
     if (waiter->gl)
     {
-        fil_scheduler_gl_switch(sched, NULL, waiter->gl);
+        /* Runs as a scheduler event callback, i.e. on the scheduler's own
+         * thread, so the gl_switch thread guard always passes here. On the
+         * rare enqueue (OOM) failure gl_switch drops its own reference and
+         * sets a Python error, which the scheduler loop surfaces after the
+         * callback returns; there is no ref leak. */
+        (void)fil_scheduler_gl_switch(sched, NULL, waiter->gl);
     }
     fil_waiter_decref(waiter);
 }
@@ -191,7 +205,12 @@ static inline void fil_waiter_signal(FilWaiter *waiter)
 
     if (waiter->gl != NULL)
     {
-        fil_scheduler_gl_switch(waiter->sched, NULL, waiter->gl);
+        /* Wake the waiting greenlet by enqueuing a switch on its scheduler.
+         * This is only reached for greenlet-backed waiters, whose scheduler is
+         * the current thread's scheduler, so the gl_switch thread guard passes.
+         * gl_switch cleans up its own reference and sets a Python error if the
+         * enqueue fails (OOM); the scheduler loop surfaces that error. */
+        (void)fil_scheduler_gl_switch(waiter->sched, NULL, waiter->gl);
     }
 
     return;

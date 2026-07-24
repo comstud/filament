@@ -244,7 +244,18 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
     return 0;
 }
 
-/* this will block, if there are things waiting to run */
+/*
+ * FOOT-GUN: if the pool was never explicitly shut down, deallocation triggers
+ * a shutdown here. _thrpool_shutdown_async(..., wait=1) BLOCKS until all queued
+ * work drains and worker threads join. Because tp_dealloc can run at arbitrary
+ * points during garbage collection (whenever the last reference drops), this
+ * can stall the interpreter at an unexpected time and, if any pending task
+ * needs the GIL/this thread, deadlock. The correct usage is to call
+ * shutdown() explicitly before dropping the last reference. We intentionally
+ * do NOT change the blocking behaviour here (callers may rely on tasks
+ * completing), but the hazard is documented so it is not mistaken for correct
+ * lifecycle management.
+ */
 static void _thrpool_dealloc(PyFilThrPool *self)
 {
     if (self->tpool != NULL && !self->is_shutdown)
@@ -423,7 +434,7 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
 
     if (self->is_shutdown)
     {
-        PyErr_SetString(PyExc_Exception, "ThreadPool is (or is being) shutdown and cannot run anything.");
+        PyErr_SetString(PyExc_RuntimeError, "ThreadPool is (or is being) shutdown and cannot run anything.");
         return NULL;
     }
 
@@ -540,7 +551,7 @@ static PyObject *_thrpool_shutdown(PyFilThrPool *self, PyObject *args, PyObject 
 
     if (self->is_shutdown)
     {
-        PyErr_SetString(PyExc_Exception, "shutdown() has already been called");
+        PyErr_SetString(PyExc_RuntimeError, "shutdown() has already been called");
         return NULL;
     }
 

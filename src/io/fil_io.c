@@ -107,7 +107,12 @@ static PyObject *_os_read(PyObject *self, PyObject *args)
 {
     int fd;
     ssize_t result = -1;
-    size_t size;
+    /* 'size' must be a SIGNED int: it was previously declared size_t but parsed
+     * with "i" (a 4-byte signed store), which on LP64 wrote only the low 32
+     * bits of an 8-byte unsigned and left the check "size < 0" permanently
+     * false -- a negative request became a huge unsigned allocation. Match
+     * CPython's os.read(): read a signed count and reject negatives. */
+    int size;
     PyFilIOThread *iothr;
 
     PyObject *buffer;
@@ -230,18 +235,9 @@ static PyObject *_abstimeout_from_timeout(PyObject *self, PyObject *arg)
         return NULL;
     }
 
-    if (PyTuple_SET_ITEM(res, 0, sec) < 0)
-    {
-        Py_DECREF(nsec);
-        Py_DECREF(res);
-        return NULL;
-    }
-
-    if (PyTuple_SET_ITEM(res, 1, nsec) < 0)
-    {
-        Py_DECREF(res);
-        return NULL;
-    }
+    /* PyTuple_SET_ITEM() steals the reference and cannot fail. */
+    PyTuple_SET_ITEM(res, 0, sec);
+    PyTuple_SET_ITEM(res, 1, nsec);
 
     return res;
 }

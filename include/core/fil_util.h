@@ -199,6 +199,29 @@ static inline int fil_pthread_cond_wait_min(pthread_cond_t *cond, pthread_mutex_
     return err;
 }
 
+/*
+ * Return a stable identity for the currently running execution context,
+ * used for re-entrant lock (RLock) ownership tracking.
+ *
+ * The identity combines the OS thread id with the current greenlet object
+ * pointer:
+ *   - Two greenlets on the SAME thread have different object pointers, so they
+ *     get different ids (RLock must distinguish them).
+ *   - Greenlets on DIFFERENT threads differ by thread id, so even if two
+ *     greenlet objects ever shared an address across threads the ids differ.
+ *   - For a given live greenlet the id is stable across calls.
+ *
+ * Note on lifetime: PyGreenlet_GetCurrent() returns a NEW reference, but the
+ * greenlet runtime independently keeps the *current* greenlet alive for the
+ * duration of this call, so reading its pointer before we drop our temporary
+ * reference is safe -- our Py_DECREF cannot free the object out from under us.
+ * (The previous implementation returned the bare pointer and relied on that
+ * same fact, but without folding in the thread id the value was ambiguous and
+ * more prone to cross-thread aliasing.) The only residual caveat -- a greenlet
+ * that dies while still holding an RLock, whose address is later reused on the
+ * same thread -- is a pre-existing "released-by-death" hazard shared with
+ * CPython's thread-ident-based RLock and is out of scope here.
+ */
 static inline uint64_t fil_get_ident(void)
 {
     PyGreenlet *gl;
@@ -210,7 +233,7 @@ static inline uint64_t fil_get_ident(void)
     }
 
     gl = PyGreenlet_GetCurrent();
-    result = (uint64_t)gl;
+    result = ((uint64_t)PyThread_get_thread_ident() << 1) ^ (uint64_t)(uintptr_t)gl;
     Py_XDECREF(gl);
 
     return result;

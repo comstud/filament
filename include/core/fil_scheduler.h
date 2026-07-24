@@ -49,6 +49,12 @@ typedef struct _pyfil_scheduler
     PyObject *system_exceptions;
     int running;
     int aborting;
+    /* OS thread that owns this scheduler. A scheduler and its greenlet are
+     * bound to the thread that created them; switching to a greenlet from a
+     * different thread is illegal in greenlet and crashes. We record the
+     * owner here so cross-thread misuse can be rejected instead of crashing.
+     */
+    unsigned long thread_id;
 } PyFilScheduler;
 
 #ifdef __FIL_BUILDING_CORE__
@@ -59,15 +65,15 @@ int fil_scheduler_init(PyObject *module, PyFilCore_CAPIObject *capi);
 PyFilScheduler *fil_scheduler_get(int create);
 int fil_scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint32_t event_flags, fil_event_cb_t cb, void *cb_arg);
 int fil_scheduler_switch(PyFilScheduler *sched);
-void fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
+int fil_scheduler_gl_switch(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
 PyGreenlet *fil_scheduler_greenlet(PyFilScheduler *sched);
 
 #else
 
-PyFilScheduler *(*fil_scheduler_get)(int create);
+static PyFilScheduler *(*fil_scheduler_get)(int create);
 static int (*fil_scheduler_add_event)(PyFilScheduler *sched, struct timespec *ts, uint32_t event_flags, fil_event_cb_t cb, void *cb_arg);
 static int (*fil_scheduler_switch)(PyFilScheduler *sched);
-static void (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
+static int (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
 static PyGreenlet *(*fil_scheduler_greenlet)(PyFilScheduler *sched);
 
 #endif

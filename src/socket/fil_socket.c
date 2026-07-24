@@ -686,6 +686,17 @@ static int _sock_init(PyFilSocket *self, PyObject *args, PyObject *kwargs)
         _sock = _new_internal_socket(family, type, proto, fileno);
     }
 
+    /* _new_internal_socket() can fail and return NULL (with an exception set).
+     * Guard here: the code below dereferences _sock via
+     * _fileno_from_internal_socket()/_sock_init_from_sock_and_fileno(), which
+     * ultimately call PyObject_CallMethod(_sock, ...) and would crash on NULL.
+     * (This mirrors the NULL handling already present in
+     * _create_new_socket_from_sock().) */
+    if (_sock == NULL)
+    {
+        return -1;
+    }
+
     if (fileno < 0)
     {
         if (_fileno_from_internal_socket(_sock, &fileno) < 0)
@@ -715,7 +726,20 @@ static void _sock_dealloc(PyFilSocket *self)
     _sock_clear_methods(self);
     Py_CLEAR(self->_sock);
 
-    PyObject_Del(self);
+    /*
+     * Free via the type's own tp_free, NOT PyObject_Del().
+     *
+     * The C base type (_filament.socket.socket / PyFilSocket) is not
+     * GC-tracked, but the high-level stdlib-derived socket that user code
+     * actually instantiates is a Python subclass with a __dict__ and is
+     * therefore GC-tracked (tp_free == PyObject_GC_Del).  By the time this
+     * base dealloc runs, subtype_dealloc() has already untracked the object
+     * and cleared the instance dict, so we simply hand the block back to the
+     * *correct* allocator for the concrete type.  Using PyObject_Del() here
+     * frees a GC object with the non-GC deallocator, corrupting the heap
+     * (an interior-pointer free of the GC header).  See fil_socket.c dealloc bug.
+     */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 PyDoc_STRVAR(_sock_accept_doc,
@@ -726,6 +750,13 @@ connection, and the address of the client.  For IP sockets, the address\n\
 info is a pair (hostaddr, port).");
 
 #if _FIL_PYTHON3
+PyDoc_STRVAR(_sock__accept_doc,
+"_accept() -> (integer, address info)\n\
+\n\
+Cooperative low-level accept primitive matching _socket.socket._accept().\n\
+Waits (yielding to the filament scheduler) for an incoming connection and\n\
+returns a raw (new file descriptor, peer address) pair. The stdlib\n\
+socket.socket.accept() wraps the returned fd into a high-level socket.");
 FIL_CPROXY_POLL(_accept, (PyFilSocket *self), (attr, _EMPTY_TUPLE, NULL), read)
 #else
 FIL_CPROXY_POLL(accept, (PyFilSocket *self), (attr, _EMPTY_TUPLE, NULL), read)
@@ -1574,6 +1605,27 @@ FIL_PROXY_ARG(shutdown)
 
 static PyMethodDef _sock_methods[] = {
     { "accept", (PyCFunction)_sock_accept_real, METH_NOARGS, _sock_accept_doc },
+#if _FIL_PYTHON3
+    /*
+     * Python 3's high-level stdlib socket.socket subclasses the low-level
+     * _socket.socket and implements accept() on top of the low-level
+     * primitive self._accept(), which returns (fd, addr) -- a *raw* file
+     * descriptor plus the peer address -- and then wraps that fd in a new
+     * high-level socket itself. Since filament masquerades this C type as
+     * _socket.socket, we must expose _accept() with exactly that contract so
+     * the stdlib wrapper composes correctly.
+     *
+     * _sock__accept (generated above by FIL_CPROXY_POLL(_accept, ...)) already
+     * does the right thing: it cooperatively waits for the listening fd to
+     * become readable (yielding this greenthread to the scheduler via the io
+     * thread rather than blocking the whole process) and then calls the wrapped
+     * real _socket.socket's _accept(), which returns (fd, addr). We simply
+     * publish it under the name the stdlib expects. (The high-level "accept"
+     * above is left in place for callers using the raw C socket directly; the
+     * stdlib subclass shadows it with its own accept() that uses _accept.)
+     */
+    { "_accept", (PyCFunction)_sock__accept, METH_NOARGS, _sock__accept_doc },
+#endif
     { "bind", (PyCFunction)_sock_bind, METH_O, _sock_bind_doc },
     { "close", (PyCFunction)_sock_close, METH_NOARGS, _sock_close_doc },
     { "connect", (PyCFunction)_sock_connect, METH_VARARGS, _sock_connect_doc },
@@ -1740,20 +1792,9 @@ static PyObject *_socket_socketpair(PyObject *self, PyObject *args)
         return NULL;
     }
 
-    /* steals sock1 reference even on failure */
-    if (PyTuple_SET_ITEM(res, 0, sock1) < 0)
-    {
-        Py_DECREF(sock2);
-        Py_DECREF(res);
-        return NULL;
-    }
-
-    /* steals sock2 reference even on failure */
-    if (PyTuple_SET_ITEM(res, 1, sock2) < 0)
-    {
-        Py_DECREF(res);
-        return NULL;
-    }
+    /* steals the references; cannot fail */
+    PyTuple_SET_ITEM(res, 0, sock1);
+    PyTuple_SET_ITEM(res, 1, sock2);
 
     return res;
 }

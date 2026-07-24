@@ -213,6 +213,17 @@ static PyObject *_lock_acquire(PyFilLock *self, PyObject *args, PyObject *kwargs
         return Py_True;
     }
 
+    /*
+     * On timeout, fil_waiterlist_wait() has left an exc.Timeout set as the
+     * pending Python exception.  Since acquire() reports a timeout by returning
+     * False (not by raising), clear it -- otherwise CPython raises
+     * "SystemError: <built-in> returned a result with an exception set".
+     */
+    if (err == -ETIMEDOUT)
+    {
+        PyErr_Clear();
+    }
+
     Py_INCREF(Py_False);
     return Py_False;
 }
@@ -291,6 +302,13 @@ static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *args, PyObject *kwar
     {
         Py_INCREF(Py_True);
         return Py_True;
+    }
+
+    /* See _lock_acquire: clear the pending exc.Timeout so returning False
+     * (the timeout signal) doesn't trip CPython's "result with exception set". */
+    if (err == -ETIMEDOUT)
+    {
+        PyErr_Clear();
     }
 
     Py_INCREF(Py_False);
