@@ -26,6 +26,8 @@ from __future__ import absolute_import
 
 import filament
 import filament.socket as _green_socket
+from filament.gevent_compat import greenlet as _greenlet
+from filament.gevent_compat import pool as _pool
 
 
 class StreamServer(object):
@@ -36,15 +38,17 @@ class StreamServer(object):
         green socket) or an already-listening green socket.
     :param handle: ``handle(socket, address)`` called for each connection.  May
         instead be provided by subclassing and overriding :meth:`handle`.
-    :param spawn: concurrency control.  An int (or None) builds an internal
-        :class:`filament.Pool` of that size; ``'default'`` uses an unbounded
-        pool; a Pool/Group instance is used directly.
-    :param backlog: listen backlog.
+    :param backlog: listen backlog (third positional, like gevent).
+    :param spawn: concurrency control (gevent semantics):
+        ``'default'`` -> a new untracked greenlet per connection;
+        an int -> an internal bounded :class:`gevent.pool.Pool` of that size;
+        a Pool/Group instance -> used directly;
+        ``None`` -> handle inline in the accept loop (no spawning).
     """
 
-    def __init__(self, listener, handle=None, spawn='default', backlog=256,
+    def __init__(self, listener, handle=None, backlog=None, spawn='default',
                  **ssl_args):
-        self.backlog = backlog
+        self.backlog = backlog if backlog is not None else 256
         self._ssl_args = ssl_args
         self.started = False
         self._stopped = False
@@ -52,7 +56,7 @@ class StreamServer(object):
 
         # Resolve the listening socket.
         if isinstance(listener, tuple):
-            self.socket = self._make_listener(listener, backlog)
+            self.socket = self._make_listener(listener, self.backlog)
         else:
             # An already-prepared socket.
             self.socket = listener
@@ -66,11 +70,15 @@ class StreamServer(object):
         if handle is not None:
             self.handle = handle
 
-        # Resolve the concurrency pool.
-        if spawn == 'default' or spawn is None:
-            self.pool = filament.Pool()          # unbounded
+        # Resolve the concurrency strategy (gevent semantics).
+        self._inline = False
+        if spawn == 'default':
+            self.pool = None                     # untracked greenlet per conn
+        elif spawn is None:
+            self.pool = None
+            self._inline = True                  # no spawning at all
         elif isinstance(spawn, int):
-            self.pool = filament.Pool(spawn)
+            self.pool = _pool.Pool(spawn)
         else:
             self.pool = spawn                    # a Pool/Group instance
 
@@ -131,8 +139,15 @@ class StreamServer(object):
                 if self._stopped:
                     break
                 raise
-            # Spawn the handler in the concurrency pool.
-            self.pool.spawn(self.wrap_socket_and_handle, client, address)
+            # Dispatch per the configured spawn strategy.
+            if self._inline:
+                # spawn=None: handle in the accept greenlet itself.
+                self.wrap_socket_and_handle(client, address)
+            elif self.pool is None:
+                # spawn='default': a fresh untracked greenlet per connection.
+                _greenlet.spawn(self.wrap_socket_and_handle, client, address)
+            else:
+                self.pool.spawn(self.wrap_socket_and_handle, client, address)
 
     def serve_forever(self):
         """Start the server and block until :meth:`stop` is called."""
@@ -144,7 +159,11 @@ class StreamServer(object):
             pass
 
     def stop(self, timeout=None):
-        """Stop accepting, kill the accept loop, and close the socket."""
+        """
+        Stop accepting and close the socket; with a pool, wait up to
+        ``timeout`` for in-flight handlers, then kill the stragglers (gevent
+        contract).
+        """
         self._stopped = True
         if self._accept_greenlet is not None:
             filament.kill(self._accept_greenlet)
@@ -153,6 +172,9 @@ class StreamServer(object):
             self.socket.close()
         except Exception:
             pass
+        if self.pool is not None:
+            self.pool.join(timeout=timeout)
+            self.pool.kill()
         self.started = False
 
     def close(self):

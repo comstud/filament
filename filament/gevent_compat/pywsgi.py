@@ -40,6 +40,71 @@ from filament.gevent_compat.server import StreamServer
 # on Py2 native str *is* bytes so decoding is a no-op passthrough.
 _PY3 = sys.version_info[0] >= 3
 
+if _PY3:
+    from urllib.parse import unquote as _unquote_compat
+
+    def _unquote_latin1(s):
+        # gevent decodes percent-escapes as latin-1 (raw bytes semantics).
+        return _unquote_compat(s, encoding="latin-1")
+else:  # pragma: no cover - Python 2
+    from urllib import unquote as _unquote_latin1  # noqa: F401
+
+
+class Input(object):
+    """
+    Content-Length-bounded request body reader (gevent.pywsgi.Input shape).
+
+    Wraps the connection's buffered reader so that ``read()`` with no argument
+    returns exactly the request body instead of blocking until the client
+    closes the connection.  Chunked request decoding is not modelled
+    (documented limitation).
+    """
+
+    def __init__(self, rfile, content_length):
+        self.rfile = rfile
+        self.content_length = content_length
+        self.position = 0
+
+    def _remaining(self):
+        if self.content_length is None:
+            return 0                # no body advertised: nothing to read
+        return max(0, self.content_length - self.position)
+
+    def read(self, length=None):
+        remaining = self._remaining()
+        if length is None or length < 0:
+            length = remaining
+        else:
+            length = min(length, remaining)
+        if length == 0:
+            return b""
+        data = self.rfile.read(length)
+        self.position += len(data)
+        return data
+
+    def readline(self, size=None):
+        remaining = self._remaining()
+        if remaining == 0:
+            return b""
+        line = self.rfile.readline(
+            remaining if size is None else min(size, remaining))
+        self.position += len(line)
+        return line
+
+    def readlines(self, hint=None):
+        return list(self)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
+    next = __next__            # Py2
+
 
 def _to_native(b):
     """bytes -> native str (latin-1 on py3, identity on py2)."""
@@ -62,13 +127,17 @@ class WSGIHandler(object):
     A fresh handler is created per connection by :class:`WSGIServer`.
     """
 
-    def __init__(self, sock, address, server):
+    def __init__(self, sock, address, server, rfile=None):
         self.sock = sock
         self.address = address
         self.server = server
         self.application = server.application
         # Buffered reader over the (cooperative) socket for line-oriented parse.
-        self.rfile = sock.makefile("rb", 0) if not _PY3 else sock.makefile("rb")
+        if rfile is not None:
+            self.rfile = rfile
+        else:
+            self.rfile = \
+                sock.makefile("rb", 0) if not _PY3 else sock.makefile("rb")
         self._status = None
         self._headers = []
         self._headers_sent = False
@@ -118,24 +187,43 @@ class WSGIHandler(object):
         # Assemble a PEP-3333 WSGI environ dict.
         headers = req["headers"]
         server_host, server_port = self.server.address[0], self.server.address[1]
+        content_length = None
+        if "CONTENT-LENGTH" in headers:
+            try:
+                content_length = int(headers["CONTENT-LENGTH"])
+            except (TypeError, ValueError):
+                content_length = None
         environ = {
             "REQUEST_METHOD": req["method"],
             "SCRIPT_NAME": "",
-            "PATH_INFO": req["path"],
+            # gevent decodes percent-escapes in the path (latin-1).
+            "PATH_INFO": _unquote_latin1(req["path"]),
             "QUERY_STRING": req["query"],
             "SERVER_PROTOCOL": req["protocol"],
             "SERVER_NAME": str(server_host),
             "SERVER_PORT": str(server_port),
+            "SERVER_SOFTWARE": "filament-pywsgi",
+            "GATEWAY_INTERFACE": "CGI/1.1",
             "REMOTE_ADDR": str(self.address[0]) if self.address else "",
             "REMOTE_PORT": str(self.address[1]) if self.address else "",
             "wsgi.version": (1, 0),
-            "wsgi.url_scheme": "http",
-            "wsgi.input": self.rfile,
-            "wsgi.errors": sys.stderr,
+            "wsgi.url_scheme":
+                "https" if getattr(self.server, "ssl_enabled", False)
+                else "http",
+            # Bounded body reader: read() returns the request body and then
+            # EOF, rather than blocking until the client closes.
+            "wsgi.input": Input(self.rfile, content_length),
+            "wsgi.errors": self.server.error_log
+                if getattr(self.server, "error_log", None) is not None
+                else sys.stderr,
             "wsgi.multithread": False,
             "wsgi.multiprocess": False,
             "wsgi.run_once": False,
         }
+        # Server-level environ overrides/additions (gevent's environ= kwarg).
+        extra = getattr(self.server, "environ", None)
+        if extra:
+            environ.update(extra)
         # Content-Type / Content-Length get un-prefixed names per WSGI.
         if "CONTENT-TYPE" in headers:
             environ["CONTENT_TYPE"] = headers["CONTENT-TYPE"]
@@ -224,27 +312,52 @@ class WSGIHandler(object):
         self.sock.sendall(payload)
 
 
+class _NoopLog(object):
+    """Discard-everything log sink (gevent uses a similar null log)."""
+
+    def write(self, *args, **kwargs):
+        pass
+
+    def writelines(self, *args, **kwargs):
+        pass
+
+    def flush(self):
+        pass
+
+
 class WSGIServer(StreamServer):
     """
     Minimal cooperative WSGI/HTTP-1.1 server (gevent.pywsgi.WSGIServer).
 
     Construct with ``WSGIServer((host, port), app)`` then call
     :meth:`serve_forever` (or :meth:`start`).  Each accepted connection is
-    handled by a :class:`WSGIHandler` in the StreamServer's concurrency pool.
+    handled by a :class:`WSGIHandler` per the StreamServer spawn strategy.
+
+    The positional parameter order matches gevent's:
+    ``(listener, application, backlog, spawn, log, error_log, handler_class,
+    environ, **ssl_args)``.  ``ssl_args`` (keyfile/certfile) and ``backlog``
+    are forwarded to :class:`StreamServer` -- never silently dropped.
     """
 
-    def __init__(self, listener, application=None, log=None, handler_class=None,
-                 spawn='default', **kwargs):
-        # StreamServer builds the listening socket + pool; we route each
-        # connection through our WSGI handler instead of a bare handle().
+    def __init__(self, listener, application=None, backlog=None,
+                 spawn='default', log='default', error_log='default',
+                 handler_class=None, environ=None, **ssl_args):
         self.application = application
         self.handler_class = handler_class or WSGIHandler
+        # gevent: 'default' logs access to stderr and errors to stderr; None
+        # silences.  Both attributes always exist on the server object.
+        self.log = sys.stderr if log == 'default' else (log or _NoopLog())
+        self.error_log = sys.stderr if error_log == 'default' \
+            else (error_log or _NoopLog())
+        self.environ = dict(environ) if environ else {}
+        self.ssl_enabled = bool(
+            ssl_args.get("keyfile") or ssl_args.get("certfile"))
         StreamServer.__init__(self, listener, handle=self._handle_wsgi,
-                              spawn=spawn)
+                              backlog=backlog, spawn=spawn, **ssl_args)
 
     def _handle_wsgi(self, sock, address):
         handler = self.handler_class(sock, address, self)
         handler.run()
 
 
-__all__ = ["WSGIServer", "WSGIHandler"]
+__all__ = ["WSGIServer", "WSGIHandler", "Input"]
