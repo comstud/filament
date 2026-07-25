@@ -151,10 +151,22 @@ static void** _PyGreenlet_API = NULL;
 /* NOTE: This has actually moved to ``greenlet._greenlet._C_API``, but we
    keep the older definition to be sure older code that might have a copy of
    the header still works. */
+/* filament: on Pythons too old for the vendored greenlet sources (< 3.9)
+   the ``_fil_greenlet`` extension is only an ImportError stub, so consumers
+   compiled against this header must resolve the *classic* installed
+   greenlet's C API instead.  The API table layout (indices 0..8) has been
+   stable across greenlet releases, so the two are interchangeable here. */
+#if PY_VERSION_HEX >= 0x03090000
 #    define PyGreenlet_Import()                                               \
         {                                                                     \
             _PyGreenlet_API = (void**)PyCapsule_Import("_fil_greenlet._C_API", 0); \
         }
+#else
+#    define PyGreenlet_Import()                                               \
+        {                                                                     \
+            _PyGreenlet_API = (void**)PyCapsule_Import("greenlet._C_API", 0); \
+        }
+#endif
 
 #endif /* GREENLET_MODULE */
 

@@ -52,11 +52,31 @@ using greenlet::refs::BorrowedGreenlet;
 #endif
 #endif
 
+/* filament: runtime debug mode.  Non-zero => every switch eagerly
+ * materializes the origin's top frame and exposes its frame chain
+ * (classic greenlet behavior).  Zero (the default) => that work is
+ * deferred until somebody actually reads gr_frame.  Defined in
+ * greenlet.cpp; toggled by the module-level set_debug()/get_debug()
+ * and seeded from the FILAMENT_DEBUG environment variable. */
+extern "C" { extern int vgl_debug_mode; }
+
 // XXX: TODO: Work to remove all virtual functions
 // for speed of calling and size of objects (no vtable).
 // One pattern is the Curiously Recurring Template
 namespace greenlet
 {
+    /* Per-switch debug decision: the global flag, or "auto-arm" when the
+     * switching thread has a trace or profile function installed (so
+     * debuggers/profilers always see fully materialized frames).  Two
+     * pointer loads from memory we're already touching -- cheap enough
+     * to evaluate on every switch. */
+    static inline bool vgl_debug_active(const PyThreadState *const tstate) noexcept
+    {
+        return vgl_debug_mode != 0
+            || tstate->c_tracefunc != nullptr
+            || tstate->c_profilefunc != nullptr;
+    }
+
     class ExceptionState
     {
     private:
@@ -114,6 +134,7 @@ namespace greenlet
         }
     };
     class SwitchingArgs;
+    class StackState;
     class PythonState : public PythonStateContext
     {
     public:
@@ -192,6 +213,34 @@ namespace greenlet
         // You can use this for testing whether we have a frame
         // or not. It returns const so they can't modify it.
         const OwnedFrame& top_frame() const noexcept;
+
+#if VGL_RUNTIME_LAZY
+        // filament lazy-debug support.  The raw interpreter frame pointer
+        // saved at switch-out; the anchor for on-demand reconstruction of
+        // gr_frame while parked (Greenlet::vgl_materialize_frames).
+        inline _PyInterpreterFrame* vgl_saved_frame() const noexcept
+        {
+            return this->current_frame;
+        }
+        // Adopt a lazily materialized top frame.  Mirrors the eager
+        // operator<< convention exactly: the pointer is stored without
+        // taking a new reference (the frame object is kept alive by its
+        // iframe's strong frame_obj reference for as long as the greenlet
+        // stays suspended), and operator>> forgets it on resume via
+        // relinquish_ownership().
+        inline void vgl_adopt_top_frame(PyFrameObject* frame) noexcept
+        {
+            this->_top_frame.steal(reinterpret_cast<struct _frame*>(frame));
+        }
+        // Visit every reference held by this suspended greenlet's
+        // interpreter frame chain (locals, evaluation stack, function,
+        // code, f_locals, frame_obj) so reference cycles that pass
+        // through a parked greenlet's frames are collectable.  Runs in
+        // BOTH debug modes; must only be called while the greenlet is
+        // suspended (its saved current_frame chain is stale otherwise).
+        int vgl_traverse_suspended_frames(visitproc visit, void* arg,
+                                          const StackState& stack_state) noexcept;
+#endif
 
         inline void operator<<(const PyThreadState *const tstate) noexcept;
         inline void operator>>(PyThreadState* tstate) noexcept;
@@ -478,6 +527,24 @@ namespace greenlet
         // important to the bytecode eval loop, they're superfluous for
         // introspection purposes.
         void expose_frames();
+
+#if GREENLET_PY312
+        // The body of expose_frames(), generalized over the starting
+        // iframe so the lazy path can start from the raw saved
+        // current_frame instead of an already-materialized top frame.
+        // Returns the first complete iframe encountered (which is
+        // guaranteed to have a frame_obj afterwards), or null if the
+        // chain contains no complete frame.
+        _PyInterpreterFrame* vgl_expose_frames_from(_PyInterpreterFrame* iframe);
+#endif
+#if VGL_RUNTIME_LAZY
+        // On-demand reconstruction of the introspection state that debug
+        // mode would have built eagerly at switch-out: materializes the
+        // top frame object and exposes the frame chain of a *suspended*
+        // greenlet.  No-op if already materialized, never started,
+        // finished, or currently running.
+        void vgl_materialize_frames();
+#endif
 
 
         // TODO: Figure out how to make these non-public.

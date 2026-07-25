@@ -189,10 +189,29 @@ void PythonState::operator<<(const PyThreadState *const tstate) noexcept
     this->datastack_limit = tstate->datastack_limit;
 
 #ifndef VGL_NO_TOPFRAME
+#if VGL_RUNTIME_LAZY
+    if (vgl_debug_active(tstate)) {
+        PyFrameObject *frame = PyThreadState_GetFrame((PyThreadState *)tstate);
+        Py_XDECREF(frame);  // PyThreadState_GetFrame gives us a new
+                            // reference.
+        this->_top_frame.steal(frame);
+    }
+    else {
+        // Fast path: leave _top_frame null.  gr_frame reads of the
+        // parked greenlet reconstruct it on demand from
+        // this->current_frame (Greenlet::vgl_materialize_frames), and
+        // expose_frames()/unexpose_frames() self-guard on a null top
+        // frame so the exposure bookkeeping stays paired.
+        // _top_frame is always null while we are the running greenlet
+        // (operator>> relinquished it on resume), so nothing to clear.
+        assert(!this->_top_frame);
+    }
+#else
     PyFrameObject *frame = PyThreadState_GetFrame((PyThreadState *)tstate);
     Py_XDECREF(frame);  // PyThreadState_GetFrame gives us a new
                         // reference.
     this->_top_frame.steal(frame);
+#endif
 #endif
   #if GREENLET_PY314
     if (this->top_frame()) {
@@ -416,6 +435,54 @@ void PythonState::set_initial_state(const PyThreadState* const tstate) noexcept
     this->recursion_depth = tstate->recursion_depth;
 #endif
 }
+#if VGL_RUNTIME_LAZY
+int PythonState::vgl_traverse_suspended_frames(visitproc visit, void* arg,
+                                               const StackState& stack_state) noexcept
+{
+    // Walk the suspended greenlet's raw interpreter frame chain the same
+    // way expose_frames() does: each iframe pointer may refer to a
+    // portion of the greenlet's C stack that was spilled to the heap, so
+    // we must go through StackState::copy_from_stack before looking at
+    // it.  Complete FRAME_OWNED_BY_THREAD iframes live in the (heap)
+    // datastack chunks, which stay valid while the greenlet is parked,
+    // so their flexible localsplus array is addressable through the real
+    // pointer.
+    //
+    // Reference accounting: every pointer visited here is a strong
+    // reference owned by the iframe (f_code/f_executable, f_funcobj,
+    // f_locals, frame_obj, locals + evaluation stack), and nothing else
+    // traverses them for a THREAD-owned frame (frameobject.c's
+    // frame_traverse only descends when OWNED_BY_FRAME_OBJECT), so each
+    // is visited exactly once.  Generator/coroutine frames are skipped:
+    // the generator object's own tp_traverse already visits their
+    // contents and double-visiting would corrupt the collector's
+    // gc_refs accounting.  This runs in BOTH debug modes; it is what
+    // makes reference cycles through a parked greenlet's frame locals
+    // collectable.
+    _PyInterpreterFrame* iframe = this->current_frame;
+    while (iframe) {
+        _PyInterpreterFrame iframe_copy;
+        stack_state.copy_from_stack(&iframe_copy, iframe, sizeof(iframe_copy));
+        if (!_PyFrame_IsIncomplete(&iframe_copy)
+            && iframe_copy.owner == FRAME_OWNED_BY_THREAD) {
+            Py_VISIT(iframe_copy.frame_obj);
+            Py_VISIT(iframe_copy.f_locals);
+            Py_VISIT(iframe_copy.f_funcobj);
+#if GREENLET_PY313
+            Py_VISIT(iframe_copy.f_executable);
+#else
+            Py_VISIT(iframe_copy.f_code);
+#endif
+            for (int i = 0; i < iframe_copy.stacktop; i++) {
+                Py_VISIT(iframe->localsplus[i]);
+            }
+        }
+        iframe = iframe_copy.previous;
+    }
+    return 0;
+}
+#endif
+
 // TODO: Better state management about when we own the top frame.
 int PythonState::tp_traverse(visitproc visit, void* arg, bool visit_top_frame) noexcept
 {

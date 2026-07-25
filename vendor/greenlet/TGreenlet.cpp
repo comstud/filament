@@ -602,6 +602,28 @@ Greenlet::tp_traverse(visitproc visit, void* arg)
     if ((result = this->python_state.tp_traverse(visit, arg, visit_top_frame)) != 0) {
         return result;
     }
+#if VGL_RUNTIME_LAZY
+    // Walk the suspended frame chain's own references (locals, stack,
+    // function, code, f_locals, frame_obj) in BOTH debug modes so that
+    // reference cycles passing through a parked greenlet's frames are
+    // visible to the collector.  Skipped while running: the saved
+    // current_frame is stale then (the live chain belongs to the thread
+    // state), and under-visiting is always safe (it can only keep
+    // objects alive, never free something in use).  Also skipped when
+    // the owning thread has exited: a dead thread's main greenlet has a
+    // saved current_frame pointing into the datastack CPython freed at
+    // thread exit, so walking it would touch freed memory.  (Upstream
+    // parity there: only the refcounted _top_frame is visited, via
+    // visit_top_frame above.)
+    if (this->stack_state.active()
+        && this->thread_state() != nullptr
+        && !this->is_currently_running_in_some_thread()) {
+        if ((result = this->python_state.vgl_traverse_suspended_frames(
+                 visit, arg, this->stack_state)) != 0) {
+            return result;
+        }
+    }
+#endif
     return 0;
 }
 
@@ -620,8 +642,50 @@ Greenlet::tp_clear()
 
 bool Greenlet::is_currently_running_in_some_thread() const
 {
+#if VGL_RUNTIME_LAZY
+    // With lazy top-frame materialization, "active but no top frame" no
+    // longer implies running: a parked greenlet in fast mode also has a
+    // null top frame.  Ask the thread state directly instead; a greenlet
+    // is running iff it is some live thread's current greenlet.
+    if (!this->stack_state.active()) {
+        return false;
+    }
+    ThreadState* ts = this->thread_state();
+    return ts && ts->borrow_current() == this->self();
+#else
     return this->stack_state.active() && !this->python_state.top_frame();
+#endif
 }
+
+#if VGL_RUNTIME_LAZY
+void Greenlet::vgl_materialize_frames()
+{
+    if (this->python_state.top_frame()   // already materialized (or eager)
+        || !this->stack_state.active()   // never started, or finished
+        || this->is_currently_running_in_some_thread()
+        // A greenlet abandoned by a dead thread can never resume; a
+        // previous GC pass may already have collected objects its
+        // frames reference, so rebuilding frame objects from its saved
+        // chain could touch freed memory.  gr_frame degrades to None
+        // there (debug mode, having materialized at switch-out, may
+        // still show it).
+        || this->was_running_in_dead_thread()) {
+        return;
+    }
+    _PyInterpreterFrame* start = this->python_state.vgl_saved_frame();
+    if (!start) {
+        return;
+    }
+    // Frame-object creation allocates; forbid a GC from re-entering us
+    // (or from walking this chain via tp_traverse) mid-rewrite.
+    GCDisabledGuard no_gc;
+    _PyInterpreterFrame* first_complete = this->vgl_expose_frames_from(start);
+    if (first_complete) {
+        assert(first_complete->frame_obj);
+        this->python_state.vgl_adopt_top_frame(first_complete->frame_obj);
+    }
+}
+#endif
 
 #if GREENLET_PY312
 void GREENLET_NOINLINE(Greenlet::expose_frames)()
@@ -629,9 +693,13 @@ void GREENLET_NOINLINE(Greenlet::expose_frames)()
     if (!this->python_state.top_frame()) {
         return;
     }
+    this->vgl_expose_frames_from(this->python_state.top_frame()->f_frame);
+}
 
+_PyInterpreterFrame* GREENLET_NOINLINE(Greenlet::vgl_expose_frames_from)(_PyInterpreterFrame* iframe)
+{
+    _PyInterpreterFrame* first_complete_iframe = nullptr;
     _PyInterpreterFrame* last_complete_iframe = nullptr;
-    _PyInterpreterFrame* iframe = this->python_state.top_frame()->f_frame;
     while (iframe) {
         // We must make a copy before looking at the iframe contents,
         // since iframe might point to a portion of the greenlet's C stack
@@ -700,6 +768,9 @@ void GREENLET_NOINLINE(Greenlet::expose_frames)()
             // reuse it for our own purposes.
             assert(iframe->owner == FRAME_OWNED_BY_THREAD
                    || iframe->owner == FRAME_OWNED_BY_GENERATOR);
+            if (!first_complete_iframe) {
+                first_complete_iframe = iframe;
+            }
             if (last_complete_iframe) {
                 assert(last_complete_iframe->frame_obj);
                 memcpy(&last_complete_iframe->frame_obj->_f_frame_data[0],
@@ -725,6 +796,7 @@ void GREENLET_NOINLINE(Greenlet::expose_frames)()
                &last_complete_iframe->previous, sizeof(void *));
         last_complete_iframe->previous = nullptr;
     }
+    return first_complete_iframe;
 }
 #else
 void Greenlet::expose_frames()

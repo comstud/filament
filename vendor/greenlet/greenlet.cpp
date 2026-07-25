@@ -23,9 +23,27 @@ PyMODINIT_FUNC init_fil_greenlet(void)
                     "_fil_greenlet (vendored greenlet) is Python 3 only");
 }
 
-#else  /* Python 3: the real vendored greenlet */
+#elif PY_VERSION_HEX < 0x03090000
+
+/* Python 3 too old for the vendored greenlet 3.5.4 sources (e.g. 3.8):
+ * build an ImportError stub so the overall extension build succeeds and
+ * the Python layer's ``import _fil_greenlet`` falls back to the
+ * installed classic greenlet (filament's C core then resolves the
+ * classic ``greenlet._C_API`` capsule; see vendor/greenlet/greenlet.h).
+ */
+extern "C" PyMODINIT_FUNC PyInit__fil_greenlet(void);
+PyMODINIT_FUNC PyInit__fil_greenlet(void)
+{
+    PyErr_SetString(PyExc_ImportError,
+                    "_fil_greenlet (vendored greenlet) requires Python >= 3.9; "
+                    "falling back to the installed greenlet");
+    return NULL;
+}
+
+#else  /* Python 3.9+: the real vendored greenlet */
 
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <algorithm>
 #include <exception>
@@ -45,6 +63,9 @@ PyMODINIT_FUNC init_fil_greenlet(void)
 #include "greenlet_thread_support.hpp"
 #include "TGreenlet.hpp"
 extern PyMethodDef vgl_stats_def;
+extern PyMethodDef vgl_set_debug_def;
+extern PyMethodDef vgl_get_debug_def;
+extern PyMethodDef vgl_frame_materialized_def;
 extern "C" PyObject* vgl_fast_switch(PyObject* self_);
 
 #include "TGreenletGlobals.cpp"
@@ -304,6 +325,21 @@ greenlet_internal_mod_init() noexcept
                                          "_fil_greenlet._C_FAST_API", NULL);
             PyModule_AddObject(m.borrow(), "_C_FAST_API", fc);
         }
+        {
+            /* Runtime debug mode: default off (fast switches); seeded
+             * from the environment so FILAMENT_DEBUG=1 arms it before
+             * any greenlet ever switches. */
+            const char* dbg = std::getenv("FILAMENT_DEBUG");
+            if (dbg && dbg[0] && strcmp(dbg, "0") != 0) {
+                vgl_debug_mode = 1;
+            }
+            PyModule_AddObject(m.borrow(), "set_debug",
+                               PyCFunction_New(&vgl_set_debug_def, NULL));
+            PyModule_AddObject(m.borrow(), "get_debug",
+                               PyCFunction_New(&vgl_get_debug_def, NULL));
+            PyModule_AddObject(m.borrow(), "_frame_materialized",
+                               PyCFunction_New(&vgl_frame_materialized_def, NULL));
+        }
         assert(c_api_object.REFCNT() == 2);
 
         // cerr << "Sizes:"
@@ -356,7 +392,54 @@ extern "C" {
 unsigned long long vgl_bytes_saved = 0;
 unsigned long long vgl_bytes_restored = 0;
 unsigned long long vgl_switch_count = 0;
+/* Runtime debug mode (see TGreenlet.hpp vgl_debug_active): when 0 (the
+ * default), switches skip eager top-frame materialization and the 3.12+
+ * expose_frames() chain walk; introspection state is rebuilt lazily on
+ * gr_frame access.  When 1, classic fully-eager greenlet behavior. */
+int vgl_debug_mode = 0;
 }
+
+/* --- runtime debug mode module functions --- */
+static PyObject* vgl_set_debug(PyObject*, PyObject* arg)
+{
+    int v = PyObject_IsTrue(arg);
+    if (v < 0) {
+        return nullptr;
+    }
+    vgl_debug_mode = v;
+    Py_RETURN_NONE;
+}
+PyMethodDef vgl_set_debug_def = {
+    "set_debug", vgl_set_debug, METH_O,
+    "set_debug(flag) -> None\n\n"
+    "Enable/disable eager per-switch frame materialization + exposure.\n"
+    "Off (default): frames of parked greenlets are reconstructed lazily\n"
+    "when gr_frame is read.  Pre-existing parked greenlets are NOT\n"
+    "swept here; filament.set_debug() performs that sweep."};
+
+static PyObject* vgl_get_debug(PyObject*, PyObject*)
+{
+    return PyBool_FromLong(vgl_debug_mode != 0);
+}
+PyMethodDef vgl_get_debug_def = {
+    "get_debug", vgl_get_debug, METH_NOARGS,
+    "get_debug() -> bool\n\nReturn the runtime debug-mode flag."};
+
+static PyObject* vgl_frame_materialized(PyObject*, PyObject* arg)
+{
+    if (!PyObject_TypeCheck(arg, &PyGreenlet_Type)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "_frame_materialized() expects a greenlet");
+        return nullptr;
+    }
+    PyGreenlet* g = (PyGreenlet*)arg;
+    /* Pure inspection for tests: does this greenlet currently hold a
+     * materialized top frame?  Never triggers materialization. */
+    return PyBool_FromLong(g->pimpl && g->pimpl->top_frame() ? 1 : 0);
+}
+PyMethodDef vgl_frame_materialized_def = {
+    "_frame_materialized", vgl_frame_materialized, METH_O,
+    "_frame_materialized(g) -> bool  (testing hook; no side effects)"};
 
 static PyObject* vgl_stats(PyObject*, PyObject*)
 {

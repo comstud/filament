@@ -90,6 +90,69 @@ except ImportError:  # pragma: no cover
     Timer = None
 
 
+# ---------------------------------------------------------------------------
+# Runtime debug mode.
+#
+# With the vendored greenlet (Python 3 builds), switches skip the eager
+# per-switch introspection work (top-frame materialization and, on 3.12+,
+# the expose_frames() chain walk) unless debug mode is on.  Reading a parked
+# greenthread's ``gr_frame`` always works in either mode: with debug off the
+# frame info is reconstructed lazily on access.  Debug mode is also
+# auto-armed per switch whenever the switching thread has a trace or profile
+# function installed (e.g. ``sys.settrace``), so debuggers see fully
+# materialized frames without any explicit toggle.
+#
+# The FILAMENT_DEBUG environment variable (any value other than empty/"0")
+# turns debug mode on at interpreter start.
+#
+# On classic-greenlet builds (Python 2.7 / 3.8) greenlet is always fully
+# eager, so these functions only track the flag and have no behavioral
+# effect.
+# ---------------------------------------------------------------------------
+try:  # vendored greenlet build (Python 3)
+    import _fil_greenlet as _fil_greenlet  # noqa: N813
+except ImportError:  # pragma: no cover - classic greenlet build (py2.7/py3.8)
+    _fil_greenlet = None
+
+if _fil_greenlet is not None and hasattr(_fil_greenlet, "set_debug"):
+    def set_debug(enabled):
+        """Enable/disable eager frame introspection on every switch.
+
+        ``set_debug(True)`` additionally sweeps greenthreads that are
+        *already* parked (found via ``gc.get_objects()``) and materializes
+        their frames immediately, so their ``gr_frame`` state is as if they
+        had been parked with debug on.
+        """
+        enabled = bool(enabled)
+        _fil_greenlet.set_debug(enabled)
+        if enabled:
+            import gc
+            greenlet_type = _fil_greenlet.greenlet
+            for obj in gc.get_objects():
+                if isinstance(obj, greenlet_type):
+                    try:
+                        # Touching gr_frame materializes a parked
+                        # greenlet's frames; harmless otherwise.
+                        obj.gr_frame
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+
+    def get_debug():
+        """Return whether eager frame-introspection debug mode is on."""
+        return _fil_greenlet.get_debug()
+else:  # pragma: no cover - classic greenlet is always eager
+    import os as _os
+    _classic_debug = [_os.environ.get("FILAMENT_DEBUG", "") not in ("", "0")]
+
+    def set_debug(enabled):
+        """No-op flag mirror: classic-greenlet builds are always eager."""
+        _classic_debug[0] = bool(enabled)
+
+    def get_debug():
+        """Return the (behaviorally inert) debug flag on classic builds."""
+        return _classic_debug[0]
+
+
 __all__ = [
     # C core
     "spawn", "sleep", "yield_thread", "Filament", "Scheduler", "Message",
@@ -104,6 +167,8 @@ __all__ = [
     # re-exported C primitives
     "Lock", "RLock", "Condition", "Semaphore",
     "Queue", "SimpleQueue", "Empty", "Full", "Timer",
+    # runtime debug mode
+    "set_debug", "get_debug",
     # exceptions module
     "exc",
 ]

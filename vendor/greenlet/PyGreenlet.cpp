@@ -665,7 +665,14 @@ static PyObject*
 green_getframe(PyGreenlet* self, void* UNUSED(context))
 {
     PyCriticalObjectSection cs(self);
-    const PythonState::OwnedFrame& top_frame = BorrowedGreenlet(self)->top_frame();
+    BorrowedGreenlet glet(self);
+#if VGL_RUNTIME_LAZY
+    // Fast (non-debug) switches don't materialize the parked top frame;
+    // reconstruct it on demand so gr_frame/tracebacks keep working with
+    // zero steady-state switch cost.
+    glet->vgl_materialize_frames();
+#endif
+    const PythonState::OwnedFrame& top_frame = glet->top_frame();
     return top_frame.acquire_or_None();
 }
 

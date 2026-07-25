@@ -114,4 +114,34 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
 #  define Py_IsFinalizing() _Py_IsFinalizing()
 #endif
 
+/* filament: runtime-selectable lazy frame materialization.
+ *
+ * When enabled, the per-switch introspection work (eager top-frame
+ * materialization via PyThreadState_GetFrame plus the 3.12+
+ * expose_frames() walk of the interpreter frame chain) is skipped
+ * unless debug mode is armed (vgl_debug_mode global, or a per-thread
+ * trace/profile function).  A parked greenlet's frames are then
+ * reconstructed on demand from the saved PythonState::current_frame
+ * (see Greenlet::vgl_materialize_frames).
+ *
+ * Version gating -- deliberate, not an oversight:
+ *  - < 3.11: saving tstate->frame is mandatory state management (the
+ *    restore path needs it), and it is a free pointer steal.  Always
+ *    eager; the runtime flag has no effect.
+ *  - 3.11: no expose/unexpose machinery exists and we have no 3.11
+ *    interpreter in the test matrix; stays eager.
+ *  - 3.12/3.13 (GIL builds): lazy path implemented and tested.
+ *  - 3.14+: operator<< must capture this->stackpointer *through* the
+ *    materialized top frame at switch-out for a correct restore, so
+ *    materialization genuinely cannot be deferred there.  Stays eager.
+ *  - free-threaded builds: the C-stack-ref snapshot / stackref GC
+ *    interactions have not been validated with lazy frames.  Eager.
+ */
+#if GREENLET_PY312 && !GREENLET_PY314 && !defined(Py_GIL_DISABLED) \
+    && !defined(VGL_NO_RUNTIME_LAZY)
+#  define VGL_RUNTIME_LAZY 1
+#else
+#  define VGL_RUNTIME_LAZY 0
+#endif
+
 #endif /* GREENLET_CPYTHON_COMPAT_H */
