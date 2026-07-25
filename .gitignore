@@ -12,3 +12,4 @@ __pycache__/
 vendor/greenlet/fil_fiber_config.h
 .uv/
 uv.toml
+.eggs/
