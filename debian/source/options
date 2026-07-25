@@ -1,0 +1,12 @@
+# Native source package: keep dev-tree junk out of the source tarball when
+# a full (non -b) build is run from a working checkout.
+tar-ignore
+tar-ignore = .uv
+tar-ignore = .venvs
+tar-ignore = build
+tar-ignore = dist
+tar-ignore = *.egg-info
+tar-ignore = __pycache__
+tar-ignore = *.pyc
+tar-ignore = *.so
+tar-ignore = *~

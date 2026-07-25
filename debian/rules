@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+# Builds python3-filament for the default system Python 3 at build time
+# (dh-python/pybuild pick the interpreter; nothing is hardcoded).
+
+export PYBUILD_NAME = filament
+
+# The pytest suite needs pytest + testtools and exercises timing-sensitive
+# scheduler/I-O behavior, so it is skipped during package builds. To run it
+# anyway: add python3-pytest and python3-testtools to Build-Depends and
+# delete the next line.
+export PYBUILD_DISABLE = test
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild

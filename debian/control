@@ -1,0 +1,28 @@
+Source: filament
+Section: python
+Priority: optional
+Maintainer: Chris Behrens <cbehrens@codestud.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               libbluetooth-dev,
+               libevent-dev,
+               pybuild-plugin-pyproject,
+               python3-dev,
+               python3-setuptools (>= 64),
+               python3-wheel,
+Standards-Version: 4.7.0
+Homepage: https://github.com/comstud/filament
+Rules-Requires-Root: no
+
+Package: python3-filament
+Architecture: any
+Depends: ${misc:Depends}, ${python3:Depends}, ${shlibs:Depends}
+Description: Microthreads for Python (greenlet-based, C-accelerated)
+ Filament is a greenlet-based cooperative concurrency library for Python --
+ an efficient alternative to gevent and eventlet built around a small C
+ core. It provides lightweight "greenthreads" that yield to a scheduler on
+ I/O and synchronization instead of blocking OS threads, plus cooperative
+ drop-in replacements for the standard library and compatibility shims for
+ the gevent and eventlet APIs.
+ .
+ This package is built for the default system Python 3.

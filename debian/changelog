@@ -1,0 +1,6 @@
+filament (0.1.0) unstable; urgency=medium
+
+  * Initial packaging: python3-filament, built for the default system
+    Python 3 at build time.
+
+ -- Chris Behrens <cbehrens@codestud.com>  Sat, 25 Jul 2026 22:17:49 +0000
