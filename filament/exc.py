@@ -4,8 +4,14 @@ defined here.
 """
 
 
-class Timeout(Exception):
-    """Timeout has occurred."""
+class Timeout(BaseException):
+    """Timeout has occurred.
+
+    A ``BaseException`` (not ``Exception``) exactly like gevent's and
+    eventlet's Timeout, so that application-level ``except Exception:``
+    handlers cannot accidentally swallow a timeout meant for an outer
+    ``with Timeout(...):`` block.
+    """
     pass
 
 

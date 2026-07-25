@@ -18,6 +18,7 @@ from filament import _util as _fil_util
 from filament import patcher as _fil_patcher
 import filament as _fil
 import _filament.io as _fil_io
+from filament import exc
 
 __filament__ = {'patch': 'select'}
 
@@ -67,16 +68,17 @@ def select(rlist, wlist, xlist, timeout=None):
         try:
             _fil_io.fd_wait_read_ready(fd, timeout=timeout)
             readable.append(obj)
-        except Exception:
+        except (exc.Timeout, Exception):
             # A timeout or error just means "not ready"; select() reports that
-            # by omission, so swallow it here.
+            # by omission, so swallow it here.  (exc.Timeout is a BaseException
+            # and must be named explicitly.)
             pass
 
     def _wait_write(fd, obj):
         try:
             _fil_io.fd_wait_write_ready(fd, timeout=timeout)
             writable.append(obj)
-        except Exception:
+        except (exc.Timeout, Exception):
             pass
 
     helpers = []
@@ -90,6 +92,9 @@ def select(rlist, wlist, xlist, timeout=None):
     for helper in helpers:
         try:
             helper.join()
+        except exc.Timeout as e:
+            if type(e) is not exc.Timeout:
+                raise          # an outer with-Timeout fired in *us*; propagate
         except Exception:
             pass
 

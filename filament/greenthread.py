@@ -69,7 +69,10 @@ def _fire_and_forget(fn, args, kwargs):
         fn(*args, **kwargs)
     except GreenletExit:
         pass
-    except Exception:
+    except BaseException:
+        # BaseException so a Timeout (which deliberately does not derive from
+        # Exception) is still printed here rather than escaping into the
+        # scheduler greenlet.
         traceback.print_exc()
 
 

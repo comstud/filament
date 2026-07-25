@@ -110,9 +110,13 @@ class Timeout(exc.Timeout):
             return
         self._timer = None
         exception = self.exception
-        if exception is None or exception is False:
-            # Default / silent-sentinel: raise ourselves.  The silent case is
-            # suppressed in __exit__.
+        if exception is None or exception is False or \
+                not (isinstance(exception, BaseException) or
+                     (isinstance(exception, type) and
+                      issubclass(exception, BaseException))):
+            # Default, silent-sentinel, or a non-exception payload (gevent
+            # allows e.g. a string message): raise ourselves; __str__ carries
+            # the payload.  The silent case is suppressed in __exit__.
             self._target.throw(self)
         else:
             # Raise the caller supplied exception (class or instance).
@@ -151,7 +155,12 @@ class Timeout(exc.Timeout):
     def __str__(self):
         if self.seconds is None:
             return ""
-        return "%s seconds" % (self.seconds,)
+        if self.exception is None or self.exception is False or \
+                isinstance(self.exception, BaseException) or \
+                isinstance(self.exception, type):
+            return "%s seconds" % (self.seconds,)
+        # Non-exception payload (e.g. a message string) -- gevent format.
+        return "%s seconds: %s" % (self.seconds, self.exception)
 
 
 def with_timeout(seconds, function, *args, **kwargs):
