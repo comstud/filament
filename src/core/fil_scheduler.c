@@ -484,6 +484,12 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
 
         pthread_mutex_unlock(&(self->sched_lock));
 
+        /* NOTE: we deliberately keep the per-event RestoreThread/SaveThread
+         * pair (rather than holding the GIL across the whole batch): the
+         * voluntary GIL release after every event is an important scheduling
+         * point for real OS threads (thread-pool workers, io users) that are
+         * competing for the GIL -- batching it measured ~3x slower on the
+         * logging-from-threadpool (#137) workload. */
         while((event = ready_events) != NULL)
         {
             ready_events = event->next;

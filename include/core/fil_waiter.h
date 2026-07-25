@@ -19,18 +19,22 @@ struct _fil_waiter {
 #define fil_waiter_signaled(waiter) ((waiter)->flags & FIL_WAITER_FLAGS_SIGNALED)
 #define fil_waiter_set_waiting(waiter) (waiter)->flags |= FIL_WAITER_FLAGS_WAITING
 #define fil_waiter_waiting(waiter)  ((waiter)->flags & FIL_WAITER_FLAGS_WAITING)
+#define fil_waiter_set_timed(waiter) (waiter)->flags |= FIL_WAITER_FLAGS_TIMED
+#define fil_waiter_timed(waiter)  ((waiter)->flags & FIL_WAITER_FLAGS_TIMED)
     #define FIL_WAITER_FLAGS_SIGNALED   0x001
     #define FIL_WAITER_FLAGS_WAITING    0x002
+    #define FIL_WAITER_FLAGS_TIMED      0x004
     unsigned int flags;
     /* 'refcnt' is a plain (non-atomic) counter. This is safe because of a
      * strict invariant: a waiter is only ever incref'd/decref'd while holding
      * the GIL, and every one of those operations happens on the thread that
      * owns the waiter's scheduler (the greenlet-driven producer/consumer both
-     * run under that single scheduler thread). The only cross-thread wakeup
-     * path (sched == NULL, i.e. a real OS-thread waiter) synchronises via
-     * waiter_lock/waiter_cond and does not touch refcnt off-thread. If a code
-     * path ever needs to change refcnt from another thread, this must become
-     * atomic. */
+     * run under that single scheduler thread). Signalers (which may run on
+     * another thread, possibly WITHOUT the GIL -- e.g. the io thread) never
+     * touch refcnt; the waiter side re-acquires waiter_lock after waking and
+     * before dropping its reference, which orders any concurrent signaler's
+     * last touch of the waiter strictly before the free. If a code path ever
+     * needs to change refcnt from another thread, this must become atomic. */
     unsigned int refcnt;
     pthread_mutex_t waiter_lock;
     pthread_cond_t waiter_cond;
@@ -68,45 +72,68 @@ static inline void fil_waiter_decref(FilWaiter *waiter)
 
 static inline void _fil_waiter_handle_timeout(PyFilScheduler *sched, FilWaiter *waiter)
 {
-    if (waiter->gl)
+    PyGreenlet *gl;
+
+    /* Runs as a scheduler event callback, i.e. on the scheduler's own thread,
+     * with the GIL held. Serialize against off-thread signalers: if the waiter
+     * has already been signaled, its wakeup switch is (or will be) enqueued by
+     * the signaler, so enqueuing a second one here would switch to the
+     * greenlet again after it completed. */
+    pthread_mutex_lock(&(waiter->waiter_lock));
+    gl = fil_waiter_signaled(waiter) ? NULL : waiter->gl;
+    if (gl != NULL)
     {
-        /* Runs as a scheduler event callback, i.e. on the scheduler's own
-         * thread, so the gl_switch thread guard always passes here. On the
-         * rare enqueue (OOM) failure gl_switch drops its own reference and
-         * sets a Python error, which the scheduler loop surfaces after the
-         * callback returns; there is no ref leak. */
-        (void)fil_scheduler_gl_switch(sched, NULL, waiter->gl);
+        /* On the rare enqueue (OOM) failure gl_switch drops its own reference
+         * and sets a Python error, which the scheduler loop surfaces after
+         * the callback returns; there is no ref leak. */
+        (void)fil_scheduler_gl_switch(sched, NULL, gl);
     }
+    pthread_mutex_unlock(&(waiter->waiter_lock));
     fil_waiter_decref(waiter);
+}
+
+/*
+ * Scheduler event callback used for GIL-free wakeups: switch to the parked
+ * greenlet using a BORROWED reference. This is safe because the reference is
+ * backed by waiter->gl, which the parked greenlet only releases after it
+ * resumes -- i.e. after this switch has happened -- and while it is running it
+ * is kept alive by the greenlet runtime itself.
+ */
+static inline void _fil_waiter_switch_event_cb(PyFilScheduler *sched, void *cb_arg)
+{
+    PyObject *result = PyGreenlet_Switch((PyGreenlet *)cb_arg, NULL, NULL);
+    Py_XDECREF(result);
 }
 
 static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObject *timeout_exc)
 {
+    int err;
+
     if (fil_waiter_signaled(waiter))
     {
         return 0;
     }
 
-    fil_waiter_set_waiting(waiter);
-
     Py_XSETREF(waiter->sched, fil_scheduler_get(0));
     if (waiter->sched == NULL)
     {
         PyThreadState *thr_state;
-        int err;
 
         for(;;)
         {
             thr_state = PyEval_SaveThread();
             pthread_mutex_lock(&(waiter->waiter_lock));
 
-            /* race with GIL unlocked? */
+            /* race with GIL unlocked?  (signalers may run without the GIL,
+             * so the SIGNALED/WAITING handshake happens under waiter_lock) */
             if (fil_waiter_signaled(waiter))
             {
                 pthread_mutex_unlock(&(waiter->waiter_lock));
                 PyEval_RestoreThread(thr_state);
                 break;
             }
+
+            fil_waiter_set_waiting(waiter);
 
             err = fil_pthread_cond_wait_min(&(waiter->waiter_cond),
                                             &(waiter->waiter_lock), ts);
@@ -137,6 +164,24 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
 
     waiter->gl = PyGreenlet_GetCurrent();
 
+    /* Publish the parked state under waiter_lock. A signaler (possibly on
+     * another thread, possibly WITHOUT the GIL -- e.g. the io thread) either
+     * observes WAITING+gl and enqueues our wakeup, or wins the race by
+     * setting SIGNALED first, which we observe here before parking. */
+    pthread_mutex_lock(&(waiter->waiter_lock));
+    if (fil_waiter_signaled(waiter))
+    {
+        pthread_mutex_unlock(&(waiter->waiter_lock));
+        Py_CLEAR(waiter->gl);
+        return 0;
+    }
+    fil_waiter_set_waiting(waiter);
+    if (ts != NULL)
+    {
+        fil_waiter_set_timed(waiter);
+    }
+    pthread_mutex_unlock(&(waiter->waiter_lock));
+
     if (ts != NULL)
     {
         waiter->refcnt++;
@@ -146,9 +191,18 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
 
     fil_scheduler_switch(waiter->sched);
 
+    /* Synchronization barrier: a signaler's last touch of this waiter happens
+     * under waiter_lock (see fil_waiter_signal), and we can only have resumed
+     * after it enqueued our switch from inside that critical section. Taking
+     * the lock here therefore guarantees the signaler is completely done with
+     * the waiter before we release our references / potentially free it. */
+    pthread_mutex_lock(&(waiter->waiter_lock));
+    err = fil_waiter_signaled(waiter) ? 1 : 0;
+    pthread_mutex_unlock(&(waiter->waiter_lock));
+
     Py_CLEAR(waiter->gl);
 
-    if (!fil_waiter_signaled(waiter))
+    if (!err)
     {
         if (PyErr_Occurred())
         {
@@ -174,10 +228,45 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
     return 0;
 }
 
-static inline void fil_waiter_signal(FilWaiter *waiter)
+/*
+ * Wake the waiter (common implementation).
+ *
+ * 'have_gil' says whether the CALLER holds the GIL:
+ *   - fil_waiter_signal()       -- caller holds the GIL (all Python-driven
+ *     signalers: the locking / queue / message primitives, thread-pool
+ *     workers, socket teardown).
+ *   - fil_waiter_signal_nogil() -- caller does NOT hold the GIL (the io
+ *     thread's event callbacks). Such callers may only ever signal UNTIMED
+ *     waiters (io waits never pass a ts), which keeps this path free of any
+ *     Python API calls.
+ *
+ * Wakeup mechanics:
+ *   - For UNTIMED greenlet waiters the wakeup switch is enqueued with a
+ *     BORROWED greenlet reference; see _fil_waiter_switch_event_cb for why
+ *     that is safe: an untimed parked greenlet can only be resumed by the
+ *     event we enqueue here, so waiter->gl keeps it alive until then.
+ *   - For TIMED waiters the concurrent timeout event can resume (and
+ *     potentially finish) the greenlet before our enqueued switch runs, so
+ *     we take a real reference via fil_scheduler_gl_switch (GIL required --
+ *     guaranteed because timed waiters are only ever signaled by GIL-holding
+ *     callers).
+ *   - For OS-thread waiters (sched == NULL) a GIL-holding caller drops the
+ *     GIL around the condvar signal: the woken thread almost always needs
+ *     the GIL next, and this voluntary release is a scheduling point that
+ *     matters a lot for lock-heavy multi-thread workloads (e.g. logging from
+ *     thread-pool workers under a monkey-patched hub).
+ */
+static inline void _fil_waiter_signal_common(FilWaiter *waiter, int have_gil)
 {
+    PyFilScheduler *sched;
+    PyGreenlet *gl;
+    PyThreadState *thr_state;
+
+    pthread_mutex_lock(&(waiter->waiter_lock));
+
     if (fil_waiter_signaled(waiter))
     {
+        pthread_mutex_unlock(&(waiter->waiter_lock));
         return;
     }
 
@@ -185,35 +274,73 @@ static inline void fil_waiter_signal(FilWaiter *waiter)
 
     if (!fil_waiter_waiting(waiter))
     {
-        return;
-    }
-
-    if (waiter->sched == NULL)
-    {
-        /* We don't necessarily need to release the GIL but this
-         * might be better to wake up other threads sooner
-         */
-        PyThreadState *thr_state = PyEval_SaveThread();
-
-        pthread_mutex_lock(&(waiter->waiter_lock));
-        pthread_cond_signal(&(waiter->waiter_cond));
         pthread_mutex_unlock(&(waiter->waiter_lock));
-
-        PyEval_RestoreThread(thr_state);
         return;
     }
 
-    if (waiter->gl != NULL)
+    sched = waiter->sched;
+
+    if (sched == NULL)
     {
-        /* Wake the waiting greenlet by enqueuing a switch on its scheduler.
-         * This is only reached for greenlet-backed waiters, whose scheduler is
-         * the current thread's scheduler, so the gl_switch thread guard passes.
-         * gl_switch cleans up its own reference and sets a Python error if the
-         * enqueue fails (OOM); the scheduler loop surfaces that error. */
-        (void)fil_scheduler_gl_switch(waiter->sched, NULL, waiter->gl);
+        if (have_gil)
+        {
+            /* We don't necessarily need to release the GIL but this
+             * might be better to wake up other threads sooner. */
+            thr_state = PyEval_SaveThread();
+            pthread_cond_signal(&(waiter->waiter_cond));
+            pthread_mutex_unlock(&(waiter->waiter_lock));
+            PyEval_RestoreThread(thr_state);
+        }
+        else
+        {
+            pthread_cond_signal(&(waiter->waiter_cond));
+            pthread_mutex_unlock(&(waiter->waiter_lock));
+        }
+        return;
     }
+
+    gl = waiter->gl;
+    if (gl != NULL)
+    {
+        /* Wake the waiting greenlet by enqueuing a switch onto its home
+         * scheduler; the scheduler greenlet performs the actual switch on its
+         * own thread (never here). Enqueue while still holding waiter_lock so
+         * the resumed greenlet's barrier (see fil_waiter_wait) cannot
+         * complete -- and free the waiter -- until we are done with it. */
+        if (fil_waiter_timed(waiter))
+        {
+            /* GIL held (timed waiters are only signaled by GIL-holding
+             * callers); takes its own greenlet reference. */
+            (void)fil_scheduler_gl_switch(sched, NULL, gl);
+        }
+        else
+        {
+            /* Works with or without the GIL; borrowed reference (see the
+             * contract above). On the catastrophic OOM enqueue failure there
+             * is nothing safe we can do without the GIL; the wakeup is lost
+             * (as it would be lost by the process dying of OOM moments later
+             * anyway). */
+            (void)fil_scheduler_add_event(sched, NULL, 0,
+                                          _fil_waiter_switch_event_cb, gl);
+        }
+    }
+
+    pthread_mutex_unlock(&(waiter->waiter_lock));
 
     return;
+}
+
+/* Signal from a GIL-holding caller. */
+static inline void fil_waiter_signal(FilWaiter *waiter)
+{
+    _fil_waiter_signal_common(waiter, 1);
+}
+
+/* Signal from a caller that does NOT hold the GIL (io thread). The waiter
+ * MUST be untimed. */
+static inline void fil_waiter_signal_nogil(FilWaiter *waiter)
+{
+    _fil_waiter_signal_common(waiter, 0);
 }
 
 #define _fil_waiterlist_empty(waiter_list) ((waiter_list)->next == (waiter_list))

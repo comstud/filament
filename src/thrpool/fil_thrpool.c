@@ -280,6 +280,7 @@ typedef struct _pyfil_thrpool_run_info
 #define PYFIL_THRPOOL_RUN_INFO_FLAGS_FAILURE    0x00000001
 #define PYFIL_THRPOOL_RUN_INFO_FLAGS_CANCEL     0x00000002
 #define PYFIL_THRPOOL_RUN_INFO_FLAGS_EXC        0x00000004
+#define PYFIL_THRPOOL_RUN_INFO_FLAGS_TIMED      0x00000008
     uint32_t flags;
 } PyFilThrPoolRunInfo;
 
@@ -345,6 +346,11 @@ static void _thrpool_run_async(PyFilThrState *thr_state, PyFilThrPoolRunInfo *in
 
     if (!(info->flags & PYFIL_THRPOOL_RUN_INFO_FLAGS_CANCEL) && info->waiter != NULL)
     {
+        /* NOTE: the CANCEL check above, this signal, and the waiting side's
+         * error path (which sets CANCEL and then fil_waiter_decref()s the
+         * waiter) are serialized BY THE GIL: we must not release the GIL
+         * between the check and the signal, or an exception-resumed waiter
+         * could free the waiter out from under us. */
         fil_waiter_signal(info->waiter);
     }
     else
@@ -473,6 +479,12 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
     info->args = method_args;
     info->kwargs = mkwargs;
     info->waiter = waiter;
+    if (ts != NULL)
+    {
+        /* The waiter will be a TIMED wait; the worker must then signal it
+         * with the GIL held (see _thrpool_run_async). */
+        info->flags |= PYFIL_THRPOOL_RUN_INFO_FLAGS_TIMED;
+    }
 
     err = fil_thrpool_run(self->tpool, (FilThrPoolCallback)_thrpool_run_async, info);
     if (err)

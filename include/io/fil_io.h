@@ -17,6 +17,10 @@ typedef struct _pyfilio_capi
     int (*fil_iothread_read_ready)(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
     int (*fil_iothread_write_ready)(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
 
+    int (*fil_iothread_wait_cached)(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq);
+    unsigned int (*fil_iothread_fdwait_seq)(FilIOFDWait *cache);
+    void (*fil_iothread_fdwait_destroy)(FilIOFDWait *cache);
+
     ssize_t (*fil_iothread_read)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, struct timespec *timeout, PyObject *timeout_exc);
     ssize_t (*fil_iothread_write)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, struct timespec *timeout, PyObject *timeout_exc);
 
@@ -53,6 +57,9 @@ static PyFilIO_CAPIObject *_PY_FIL_IO_API;
     _FIL_COPY_IO_API(fil_iothread_get);         \
     _FIL_COPY_IO_API(fil_iothread_read_ready);  \
     _FIL_COPY_IO_API(fil_iothread_write_ready); \
+    _FIL_COPY_IO_API(fil_iothread_wait_cached); \
+    _FIL_COPY_IO_API(fil_iothread_fdwait_seq); \
+    _FIL_COPY_IO_API(fil_iothread_fdwait_destroy); \
     _FIL_COPY_IO_API(fil_iothread_read);        \
     _FIL_COPY_IO_API(fil_iothread_write);       \
     _FIL_COPY_IO_API(fil_iothread_connect);     \

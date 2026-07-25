@@ -147,6 +147,13 @@ static PyObject *_sock_ ## NAME(PyFilSocket *self, PyObject *args)          \
     return res;                                                             \
 }
 
+/* Token-pasting helpers so FIL_CPROXY_POLL can pick the right cached-waiter
+ * slot / direction flag from its READ_OR_WRITE argument. */
+#define _FIL_FDWAIT_SLOT_read(__self)  (&((__self)->fdwait_read))
+#define _FIL_FDWAIT_SLOT_write(__self) (&((__self)->fdwait_write))
+#define _FIL_FDWAIT_ISWR_read  0
+#define _FIL_FDWAIT_ISWR_write 1
+
 #define FIL_CPROXY_POLL(NAME, SIG, CALLARG, READ_OR_WRITE)                  \
 static PyObject *_sock_ ## NAME SIG                                         \
 {                                                                           \
@@ -154,6 +161,7 @@ static PyObject *_sock_ ## NAME SIG                                         \
     PyObject *res = NULL;                                                   \
     PyFilIOThread *iothr;                                                   \
     struct timespec ts_buf, *ts;                                            \
+    unsigned int fdw_seq = 0;                                               \
     int err;                                                                \
     if ((attr = self->_sock_ ## NAME) == NULL)                              \
     {                                                                       \
@@ -168,12 +176,48 @@ static PyObject *_sock_ ## NAME SIG                                         \
     if (self->timeout == 0.0 ||                                             \
             self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)              \
     {                                                                       \
+        if (self->timeout < 0.0)                                            \
+        {                                                                   \
+            fdw_seq = fil_iothread_fdwait_seq(                              \
+                    *_FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self));             \
+        }                                                                   \
         res = PyObject_Call CALLARG;                                        \
         if ((res != NULL) || (self->timeout == 0.0) || !_exc_is_eagain(1))  \
         {                                                                   \
             goto out;                                                       \
         }                                                                   \
         self->first_misses++;                                               \
+        /* Blocking with no timeout: use the cheap cached-edge wait (the    \
+         * optimistic call above just EAGAINed, so ET semantics are safe).  \
+         * Falls through to the classic path if unavailable. */             \
+        if (self->timeout < 0.0 && (iothr = fil_iothread_get()) != NULL)    \
+        {                                                                   \
+            for (;;)                                                        \
+            {                                                               \
+                err = fil_iothread_wait_cached(iothr,                       \
+                        _FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self),           \
+                        self->_sock_fd,                                     \
+                        _FIL_FDWAIT_ISWR_ ## READ_OR_WRITE,                 \
+                        fdw_seq);                                           \
+                if (err != 0)                                               \
+                {                                                           \
+                    break;                                                  \
+                }                                                           \
+                fdw_seq = fil_iothread_fdwait_seq(                          \
+                        *_FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self));         \
+                res = PyObject_Call CALLARG;                                \
+                if ((res != NULL) || !_exc_is_eagain(1))                    \
+                {                                                           \
+                    Py_DECREF(iothr);                                       \
+                    goto out;                                               \
+                }                                                           \
+            }                                                               \
+            Py_DECREF(iothr);                                               \
+            if (err < 0)                                                    \
+            {                                                               \
+                goto out;                                                   \
+            }                                                               \
+        }                                                                   \
     }                                                                       \
     if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))     \
     {                                                                       \
@@ -212,6 +256,11 @@ typedef struct _pyfil_socket {
 
     PyObject *_sock; /* built-in _socket object */
     SOCKET_T _sock_fd;
+    /* Cached persistent edge-triggered readiness waiters (one per
+     * direction); see fil_iothread_wait_cached(). Owned by this socket and
+     * torn down whenever _sock_fd changes/closes. */
+    FilIOFDWait *fdwait_read;
+    FilIOFDWait *fdwait_write;
 #if _FIL_PYTHON3
     PyObject *_sock__accept;
 #else
@@ -462,6 +511,24 @@ static inline int _fileno_from_internal_socket(PyObject *_sock, SOCKET_T *fileno
 }
 
 
+/* Tear down the cached readiness waiters; call whenever _sock_fd is closed,
+ * detached, or replaced. */
+static void _sock_clear_fdwaits(PyFilSocket *self)
+{
+    FilIOFDWait *fdw;
+
+    if ((fdw = self->fdwait_read) != NULL)
+    {
+        self->fdwait_read = NULL;
+        fil_iothread_fdwait_destroy(fdw);
+    }
+    if ((fdw = self->fdwait_write) != NULL)
+    {
+        self->fdwait_write = NULL;
+        fil_iothread_fdwait_destroy(fdw);
+    }
+}
+
 static void _sock_clear_methods(PyFilSocket *self)
 {
 #if _FIL_PYTHON3
@@ -556,6 +623,7 @@ static inline int _sock_init_from_sock_and_fileno(PyFilSocket *self, PyObject *_
 
     Py_INCREF(_sock);
     Py_XSETREF(self->_sock, _sock);
+    _sock_clear_fdwaits(self);
     self->_sock_fd = fileno;
     self->timeout = timeout;
 
@@ -723,6 +791,7 @@ static int _sock_init(PyFilSocket *self, PyObject *args, PyObject *kwargs)
 
 static void _sock_dealloc(PyFilSocket *self)
 {
+    _sock_clear_fdwaits(self);
     _sock_clear_methods(self);
     Py_CLEAR(self->_sock);
 
@@ -823,6 +892,11 @@ static PyObject *_sock_close(PyFilSocket *self)
         return NULL;
     }
 
+    /* Tear the cached readiness waiters down BEFORE the fd is closed so the
+     * persistent epoll registration is removed cleanly (and any greenlet
+     * still parked on it is woken instead of hanging). */
+    _sock_clear_fdwaits(self);
+
     res = PyObject_Call(close_meth, _EMPTY_TUPLE, NULL);
     Py_DECREF(close_meth);
 
@@ -855,6 +929,9 @@ static PyObject *_sock_detach(PyFilSocket *self)
     {
         return NULL;
     }
+
+    /* The fd is leaving our ownership; drop the persistent registrations. */
+    _sock_clear_fdwaits(self);
 
     res = PyObject_Call(detach_meth, _EMPTY_TUPLE, NULL);
     Py_DECREF(detach_meth);
@@ -1139,9 +1216,15 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
     ssize_t outlen;
     PyFilIOThread *iothr;
     struct timespec ts_buf, *ts;
+    unsigned int fdw_seq = 0;
 
     if (self->timeout == 0.0 || self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)
     {
+        if (self->timeout < 0.0)
+        {
+            fdw_seq = fil_iothread_fdwait_seq(self->fdwait_read);
+        }
+
         Py_BEGIN_ALLOW_THREADS
 
         outlen = recv(self->_sock_fd, buf, len, flags);
@@ -1158,6 +1241,49 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
         }
 
         self->first_misses++;
+
+        /* Blocking with no timeout: use the cheap cached-edge wait (the
+         * optimistic recv above just EAGAINed, so ET semantics are safe).
+         * Falls through to the classic path if unavailable. */
+        if (self->timeout < 0.0 && (iothr = fil_iothread_get()) != NULL)
+        {
+            int werr;
+
+            for (;;)
+            {
+                werr = fil_iothread_wait_cached(iothr, &self->fdwait_read,
+                                                self->_sock_fd, 0, fdw_seq);
+                if (werr != 0)
+                {
+                    break;
+                }
+
+                fdw_seq = fil_iothread_fdwait_seq(self->fdwait_read);
+
+                Py_BEGIN_ALLOW_THREADS
+
+                outlen = recv(self->_sock_fd, buf, len, flags);
+
+                Py_END_ALLOW_THREADS
+
+                if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
+                {
+                    Py_DECREF(iothr);
+                    if (outlen < 0)
+                    {
+                        PyErr_SetFromErrno(_SOCK_ERROR);
+                    }
+                    return outlen;
+                }
+            }
+
+            Py_DECREF(iothr);
+
+            if (werr < 0)
+            {
+                return -1;
+            }
+        }
     }
 
     if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))
@@ -1360,11 +1486,17 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
+    unsigned int fdw_seq = 0;
 
     if (ts_buf != NULL)
     {
         if (self->timeout == 0.0 || self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)
         {
+            if (self->timeout < 0.0)
+            {
+                fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
+            }
+
             Py_BEGIN_ALLOW_THREADS
 
             outlen = send(self->_sock_fd, buf, len, flags);
@@ -1381,6 +1513,48 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
             }
 
             self->first_misses++;
+
+            /* Blocking with no timeout: cached-edge wait; see
+             * _sock_recv_common. */
+            if (self->timeout < 0.0 && (iothr = fil_iothread_get()) != NULL)
+            {
+                int werr;
+
+                for (;;)
+                {
+                    werr = fil_iothread_wait_cached(iothr, &self->fdwait_write,
+                                                    self->_sock_fd, 1, fdw_seq);
+                    if (werr != 0)
+                    {
+                        break;
+                    }
+
+                    fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
+
+                    Py_BEGIN_ALLOW_THREADS
+
+                    outlen = send(self->_sock_fd, buf, len, flags);
+
+                    Py_END_ALLOW_THREADS
+
+                    if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
+                    {
+                        Py_DECREF(iothr);
+                        if (outlen < 0)
+                        {
+                            PyErr_SetFromErrno(_SOCK_ERROR);
+                        }
+                        return outlen;
+                    }
+                }
+
+                Py_DECREF(iothr);
+
+                if (werr < 0)
+                {
+                    return -1;
+                }
+            }
         }
 
         if (fil_timespec_from_double_interval(self->timeout, ts_buf, tsptr))
