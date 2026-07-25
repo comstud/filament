@@ -83,10 +83,12 @@ if gl_inc:
     cflags = "%s%s-I%s" % (cflags or '', ' ' if cflags else '', gl_inc)
     os.environ['CFLAGS'] = cflags
 
-# Opt-in private-stack fiber core for the vendored greenlet (Python 3.13,
-# aarch64/x86_64 only; other configurations silently keep the classic
-# stack-slicing core -- see vendor/greenlet/greenlet_cpython_compat.hpp).
-# Usage: FIL_FIBER_CORE=1 python setup.py build_ext --inplace
+# Private-stack fiber core for the vendored greenlet.  ON by default;
+# configurations the core does not support (see
+# vendor/greenlet/greenlet_cpython_compat.hpp for the exact gate)
+# silently keep the classic stack-slicing core, so the flag only
+# matters where the fiber core is actually eligible.
+# Opt out with: FIL_FIBER_CORE=0 python setup.py build_ext --inplace
 # (remember to `rm -rf build` when flipping the flag).
 #
 # The selection is materialized as a tiny generated header rather than a
@@ -94,8 +96,7 @@ if gl_inc:
 # environment variable to C++ compiles.  The header is (re)written on
 # every setup.py run so a flag flip always takes effect.
 def _write_fiber_config():
-    _fiber = os.environ.get('FIL_FIBER_CORE')
-    enabled = bool(_fiber) and _fiber != '0'
+    enabled = os.environ.get('FIL_FIBER_CORE') != '0'
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'vendor', 'greenlet', 'fil_fiber_config.h')
     body = (
