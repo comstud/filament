@@ -27,6 +27,7 @@ lets us implement ``.value`` / ``.exception`` / ``.successful()`` / ``.get()``
 from __future__ import absolute_import
 
 import filament
+from _filament.timer import Timer as _Timer
 
 # gevent re-uses greenlet.GreenletExit; filament exposes the same object.
 GreenletExit = filament.GreenletExit
@@ -48,6 +49,8 @@ class Greenlet(object):
     def __init__(self, run=None, *args, **kwargs):
         # ``run`` may be None if a subclass overrides ``_run``; gevent supports
         # subclassing Greenlet and defining ``_run``.
+        if run is not None and not callable(run):
+            raise TypeError("The run argument must be callable, not %r" % (run,))
         self._run = run
         self._args = args
         self._kwargs = kwargs
@@ -57,6 +60,8 @@ class Greenlet(object):
         self._exc_info = None       # (type, value, tb) if it raised
         self._finished = False
         self._started = False
+        self._start_cancelled = False   # killed before it ever ran
+        self._done = filament.Event()   # set exactly once, when finished
         self._links = []
 
     # -- construction helpers ------------------------------------------------
@@ -88,6 +93,7 @@ class Greenlet(object):
             self._value = value
         finally:
             self._finished = True
+            self._done.set()
             self._fire_links()
 
     def run(self, *args, **kwargs):  # pragma: no cover - subclass hook
@@ -98,7 +104,8 @@ class Greenlet(object):
 
     def start(self):
         """Schedule the greenlet to run (gevent.Greenlet.start)."""
-        if self._started:
+        if self._started or self._start_cancelled:
+            # gevent: a greenlet killed before starting can never be started.
             return
         self._started = True
         self._filament = filament.spawn(self._target)
@@ -110,7 +117,7 @@ class Greenlet(object):
         Implemented via filament.spawn_later; ``kill()`` before the delay
         elapses cancels the pending start.  Faithful mapping.
         """
-        if self._started:
+        if self._started or self._start_cancelled:
             return
         self._started = True
         self._start_handle = filament.spawn_later(seconds, self._run_deferred)
@@ -126,53 +133,73 @@ class Greenlet(object):
         Block until the greenlet finishes, or ``timeout`` seconds pass.
 
         Never raises the greenlet's exception (use :meth:`get` for that); on
-        timeout it simply returns.  Faithful to gevent.
+        timeout it simply returns.  Like gevent, joining a not-yet-started
+        greenlet waits (bounded by ``timeout``) rather than returning at once.
         """
-        if self._finished or not self._started:
+        if self._finished:
             return
-        with filament.Timeout(timeout, False):
-            if self._filament is not None:
-                # wait() re-raises the body's exception, but our _target never
-                # lets one escape, so this just blocks until completion.
-                self._filament.wait()
-            else:
-                # Started via start_later but not yet running: poll cooperatively.
-                while not self._finished:
-                    filament.sleep(0)
+        self._done.wait(timeout)
+
+    # filament's ``iwait``/``wait`` drive anything exposing ``.wait()``; gevent
+    # has no public Greenlet.wait, so this is a harmless superset that makes
+    # ``gevent.wait([greenlet])`` genuinely block until completion.
+    def wait(self, timeout=None):
+        self.join(timeout)
 
     def get(self, block=True, timeout=None):
         """
         Return the greenlet's value, or re-raise its exception (gevent.get).
 
-        With ``block=False`` and no result yet, raises the timeout/loop error
-        gevent raises -- here filament's Timeout.
+        With ``block=False`` and no result yet, raises a bare Timeout exactly
+        like gevent; with a ``timeout``, raises Timeout(timeout) on expiry.
         """
         if not self._finished:
             if not block:
-                raise filament.Timeout("Greenlet is not ready")
-            self.join(timeout)
-            if not self._finished:
+                raise filament.Timeout(exception=None)
+            if not self._done.wait(timeout):
                 raise filament.Timeout(timeout)
         if self._exc_info is not None:
             _reraise(*self._exc_info)
-        return self._value
+        return self.value
+
+    def _record_kill_outcome(self, exception):
+        # gevent __handle_death_before_start semantics: GreenletExit (class or
+        # instance) counts as a *successful* value; anything else is a failure
+        # recorded as the greenlet's exception.
+        if isinstance(exception, type):
+            exception = exception()
+        if isinstance(exception, GreenletExit):
+            self._value = exception
+        else:
+            self._exc_info = (type(exception), exception, None)
+        self._start_cancelled = True
+        self._finished = True
+        self._done.set()
+        self._fire_links()
 
     def kill(self, exception=GreenletExit, block=True, timeout=None):
         """Kill the greenlet (gevent.Greenlet.kill)."""
         if self._finished:
             return
         if self._start_handle is not None and self._filament is None:
-            # Not yet started (delayed): cancel the pending start instead.
+            # Started via start_later but not yet running: cancel the pending
+            # start and record the outcome.
             self._start_handle.cancel()
-            self._value = exception if isinstance(exception, BaseException) \
-                else exception()
-            self._finished = True
-            self._fire_links()
+            self._record_kill_outcome(exception)
+            return
+        if not self._started:
+            # Never started: mark dead now and refuse any future start().
+            self._record_kill_outcome(exception)
             return
         if self._filament is not None:
-            filament.kill(self._filament, exception)
             if block:
+                filament.kill(self._filament, exception)
                 self.join(timeout)
+            else:
+                # Asynchronous kill: schedule the throw without yielding, so
+                # (like gevent) the target is not dead yet when we return.
+                if not self._filament.dead:
+                    _Timer(0, self._filament.throw, exception)
 
     # -- state ---------------------------------------------------------------
 
@@ -186,8 +213,20 @@ class Greenlet(object):
 
     @property
     def dead(self):
-        """True if it never started, or has finished."""
-        return (not self._started) or self._finished
+        """
+        True once the greenlet has finished or its start was cancelled.
+
+        gevent parity: a freshly created, never-started greenlet is NOT dead
+        (it can still be started); one killed before starting is.
+        """
+        return self._start_cancelled or (self._started and self._finished)
+
+    def __bool__(self):
+        # gevent: True from start() until the greenlet finishes/dies.
+        return self._started and not self._finished and \
+            not self._start_cancelled
+
+    __nonzero__ = __bool__  # Py2
 
     @property
     def value(self):
@@ -274,51 +313,125 @@ def spawn_later(seconds, function, *args, **kwargs):
 
 def spawn_raw(function, *args, **kwargs):
     """
-    gevent.spawn_raw: fire-and-forget spawn returning a raw greenlet.
+    gevent.spawn_raw: cheap spawn returning a raw greenlet (no links/values).
 
-    Maps to filament.spawn_n (no result tracking), matching gevent's "cheap,
-    no callbacks" contract.  Returns None (filament's spawn_n has no handle).
+    Returns the underlying filament greenthread so callers can pass it to
+    ``gevent.kill``/``killall`` like gevent's raw greenlets.
     """
-    return filament.spawn_n(function, *args, **kwargs)
+    if not callable(function):
+        raise TypeError("function must be callable")
+    return filament.spawn(function, *args, **kwargs)
 
 
-def kill(greenlet_, exception=GreenletExit, block=True, timeout=None):
-    """gevent.kill: kill a Greenlet (or raw filament greenthread)."""
+def kill(greenlet_, exception=GreenletExit):
+    """
+    gevent.kill: *asynchronously* kill a greenlet.
+
+    gevent's module-level kill schedules the throw and returns without
+    blocking (unlike Greenlet.kill's block=True default).
+    """
     if isinstance(greenlet_, Greenlet):
-        return greenlet_.kill(exception, block=block, timeout=timeout)
-    return filament.kill(greenlet_, exception)
+        return greenlet_.kill(exception, block=False)
+    if not greenlet_.dead:
+        _Timer(0, greenlet_.throw, exception)
 
 
 def killall(greenlets, exception=GreenletExit, block=True, timeout=None):
-    """gevent.killall: kill a collection of greenlets."""
+    """
+    gevent.killall: kill a collection of greenlets.
+
+    With ``block=True`` waits for them to die; if ``timeout`` expires first,
+    raises Timeout (gevent contract).
+    """
     greenlets = list(greenlets)
     for g in greenlets:
-        if isinstance(g, Greenlet):
-            g.kill(exception, block=False)
-        else:
-            filament.kill(g, exception)
+        kill(g, exception)
     if block:
         joinall(greenlets, timeout=timeout)
+        if not all(_is_done(g) for g in greenlets):
+            raise filament.Timeout(timeout)
+    else:
+        # One yield so the scheduler picks up the queued throws.
+        filament.sleep(0)
 
 
-def joinall(greenlets, timeout=None, raise_error=False, count=None):
-    """gevent.joinall: wait for all greenlets to finish."""
-    greenlets = list(greenlets)
-    with filament.Timeout(timeout, False):
-        for g in greenlets:
-            try:
-                g.join()
-            except Exception:
-                if raise_error:
-                    raise
-    return greenlets
-
-
-def wait(objects=None, timeout=None, count=None):
-    """gevent.wait: wait for waitables; delegates to filament.wait."""
-    return filament.wait(objects, timeout=timeout, count=count)
+def _is_done(obj):
+    ready = getattr(obj, "ready", None)
+    if ready is not None:
+        return ready()
+    return bool(getattr(obj, "dead", False))
 
 
 def iwait(objects, timeout=None, count=None):
-    """gevent.iwait: iterator form of :func:`wait`."""
-    return filament.iwait(objects, timeout=timeout, count=count)
+    """
+    gevent.iwait: yield each waitable AS IT COMPLETES (completion order),
+    stopping after ``count`` results or when ``timeout`` expires.
+    """
+    objects = list(objects)
+    if count is None:
+        count = len(objects)
+    count = min(count, len(objects))
+
+    done_q = filament.Queue()
+
+    def _watch(obj):
+        waiter = getattr(obj, "join", None) or getattr(obj, "wait", None)
+        if waiter is not None:
+            try:
+                waiter()
+            except BaseException:
+                # BaseException: a killed greenlet's wait() re-raises
+                # GreenletExit, and that still counts as "completed".  The
+                # value/exception stays on the object for the caller to fetch.
+                pass
+        done_q.put(obj)
+
+    watchers = [filament.spawn(_watch, obj) for obj in objects]
+    timer = filament.Timeout(timeout, False)
+    timer.start()
+    try:
+        yielded = 0
+        while yielded < count:
+            try:
+                obj = done_q.get()
+            except BaseException as e:
+                if e is timer:
+                    return          # overall budget exhausted -> stop yielding
+                raise
+            yield obj
+            yielded += 1
+    finally:
+        timer.cancel()
+        leftovers = [w for w in watchers if not w.dead]
+        if leftovers:
+            filament.killall(leftovers, block=False)
+
+
+def wait(objects=None, timeout=None, count=None):
+    """
+    gevent.wait: wait for waitables; returns those that completed in time.
+
+    ``objects=None`` (gevent: wait for the event loop to drain) returns []
+    immediately -- filament has no global loop to drain (documented stub).
+    """
+    if objects is None:
+        return []
+    return list(iwait(objects, timeout=timeout, count=count))
+
+
+def joinall(greenlets, timeout=None, raise_error=False, count=None):
+    """
+    gevent.joinall: wait for greenlets to finish; returns the FINISHED subset.
+
+    With ``raise_error=True`` re-raises the first failure encountered (in
+    completion order), like gevent.
+    """
+    if not raise_error:
+        return wait(greenlets, timeout=timeout, count=count)
+
+    done = []
+    for obj in iwait(greenlets, timeout=timeout, count=count):
+        if getattr(obj, "exception", None) is not None:
+            raise obj.exception
+        done.append(obj)
+    return done

@@ -34,7 +34,11 @@ iwait = _greenlet.iwait
 GreenletExit = _greenlet.GreenletExit
 
 # -- sleeping / current greenlet --------------------------------------------
-sleep = filament.sleep
+def sleep(seconds=0, ref=True):
+    """gevent.sleep; ``ref`` is accepted for parity and ignored (no libev)."""
+    return filament.sleep(seconds)
+
+
 getcurrent = filament.getcurrent
 idle = lambda priority=0: filament.sleep(0)  # noqa: E731 - gevent.idle parity
 
