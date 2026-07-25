@@ -22,6 +22,7 @@ All of the historic bugs are fixed here:
 
 import collections
 import heapq
+import time as _time
 
 # ``Empty``/``Full`` live in ``queue`` (Py3) or ``Queue`` (Py2).
 try:
@@ -82,13 +83,39 @@ class LiteQueue(object):
                     raise Empty()
                 try:
                     self.not_empty_cond.wait(timeout=timeout)
-                except _fil_exc.Timeout:
+                except _fil_exc.Timeout as e:
+                    if type(e) is not _fil_exc.Timeout:
+                        raise      # an outer with-Timeout fired; propagate
                     # Cooperative wait timed out -> nothing to get.
                     raise Empty()
             return self._get_guts()
 
     def get_nowait(self):
         return self.get(block=False)
+
+    # -- iteration (gevent parity) -----------------------------------------
+    # ``for item in q`` blocks on get() and ends when the ``StopIteration``
+    # class itself is pulled from the queue.
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        result = self.get()
+        if result is StopIteration:
+            raise result
+        return result
+
+    next = __next__            # Py2
+
+    def __len__(self):
+        return self.qsize()
+
+    def __bool__(self):
+        # gevent queues are unconditionally truthy; with __len__ defined an
+        # empty queue would otherwise be falsy.
+        return True
+
+    __nonzero__ = __bool__     # Py2
 
     def _put_guts(self, item, block, timeout):
         # LiteQueue is unbounded, so put never blocks; just store and wake one
@@ -107,38 +134,47 @@ class LiteQueue(object):
 class Queue(LiteQueue):
     """A bounded FIFO queue with ``task_done``/``join`` support."""
 
-    __slots__ = ('not_full_cond', 'tasks_done_cond', 'maxsize',
+    __slots__ = ('not_full_cond', 'tasks_done_cond', 'maxsize', '_bound',
                  'unfinished_tasks')
 
-    def __init__(self, maxsize=0):
+    def __init__(self, maxsize=None):
         super(Queue, self).__init__()
         self.not_full_cond = locking.Condition(lock=self.lock)
         self.tasks_done_cond = locking.Condition(lock=self.lock)
-        self.maxsize = maxsize
+        # gevent semantics: None, 0, and negatives all mean unbounded, and the
+        # public ``maxsize`` attribute reads None when unbounded.
+        if maxsize is None or maxsize <= 0:
+            self.maxsize = None
+            self._bound = 0
+        else:
+            self.maxsize = maxsize
+            self._bound = maxsize
         self.unfinished_tasks = 0
 
     def full(self):
-        if self.maxsize <= 0:
+        if self._bound <= 0:
             return False
         with self.lock:
-            return len(self.queue) >= self.maxsize
+            return len(self.queue) >= self._bound
 
     def _get_guts(self):
         item = self._get()
         # We just freed a slot; wake a blocked putter.
-        if self.maxsize > 0:
+        if self._bound > 0:
             self.not_full_cond.notify()
         return item
 
     def _put_guts(self, item, block, timeout):
-        if self.maxsize > 0:
+        if self._bound > 0:
             # Wait (cooperatively) for room, honouring block/timeout.
-            while len(self.queue) >= self.maxsize:
+            while len(self.queue) >= self._bound:
                 if not block:
                     raise Full()
                 try:
                     self.not_full_cond.wait(timeout=timeout)
-                except _fil_exc.Timeout:
+                except _fil_exc.Timeout as e:
+                    if type(e) is not _fil_exc.Timeout:
+                        raise      # an outer with-Timeout fired; propagate
                     raise Full()
         self._put(item)
         self.unfinished_tasks += 1
@@ -153,10 +189,29 @@ class Queue(LiteQueue):
                 self.tasks_done_cond.notify_all()
             self.unfinished_tasks = unfinished
 
-    def join(self):
+    def join(self, timeout=None):
+        """
+        Block until all items have been processed (or ``timeout`` elapses).
+
+        Returns True when the task count hit zero, False on timeout (gevent
+        parity).
+        """
+        deadline = None if timeout is None else _time.time() + timeout
         with self.lock:
             while self.unfinished_tasks:
-                self.tasks_done_cond.wait()
+                if deadline is None:
+                    remaining = None
+                else:
+                    remaining = deadline - _time.time()
+                    if remaining <= 0:
+                        return False
+                try:
+                    self.tasks_done_cond.wait(remaining)
+                except _fil_exc.Timeout as e:
+                    if type(e) is not _fil_exc.Timeout:
+                        raise      # an outer with-Timeout fired; propagate
+                    return False
+            return True
 
 
 class PriorityQueue(Queue):

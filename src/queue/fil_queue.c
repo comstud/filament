@@ -33,13 +33,26 @@ static PyFilQueue *_queue_new(PyTypeObject *type, PyObject *args, PyObject *kwar
     PyFilQueue *self;
 
     static char *keywords[] = {"maxsize", NULL};
-    long maxsize = -1;
+    PyObject *maxsize_obj = NULL;
+    long maxsize = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|l:Queue",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O:Queue",
                                      keywords,
-                                     &maxsize))
+                                     &maxsize_obj))
     {
         return NULL;
+    }
+
+    /* gevent's default maxsize is None; None, 0, and negatives all mean
+     * "unbounded", and callers pass any of them explicitly.
+     */
+    if (maxsize_obj != NULL && maxsize_obj != Py_None)
+    {
+        maxsize = PyInt_AsLong(maxsize_obj);
+        if (maxsize == -1 && PyErr_Occurred())
+        {
+            return NULL;
+        }
     }
 
     if ((self = (PyFilQueue *)type->tp_alloc(type, 0)) != NULL)
@@ -277,7 +290,8 @@ FILAMENT EXTENSION:\n\
 A 'timeout' keyword argument can be specified to only wait a specific\n\
 period of time. It may be None to wait forever, or a number >= 0 representing\n\
 number of seconds to wait. floats are accepted. If the time expires before\n\
-the tasks are done, False will be returned. The normal return value is None.\n");
+the tasks are done, False will be returned. The normal return value is True\n\
+(gevent parity).\n");
 static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 {
     static char *keywords[] = {"timeout", NULL};
@@ -319,7 +333,7 @@ static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
             Py_RETURN_FALSE;
         }
     }
-    Py_RETURN_NONE;
+    Py_RETURN_TRUE;
 }
 
 static PyMethodDef _queue_methods[] = {
@@ -358,6 +372,44 @@ static PySequenceMethods _queue_as_sequence = {
     0,                                          /*sq_ass_slice*/
 };
 
+/* gevent queues are unconditionally truthy: with sq_length defined, an empty
+ * queue would otherwise be falsy, silently inverting ``if q:`` guards.
+ */
+static int _queue_bool(PyFilQueue *self)
+{
+    return 1;
+}
+
+static PyNumberMethods _queue_as_number = {
+#ifdef _FIL_PYTHON3
+    .nb_bool = (inquiry)_queue_bool,
+#else
+    .nb_nonzero = (inquiry)_queue_bool,
+#endif
+};
+
+/* Iteration protocol (gevent parity): ``for item in q`` blocks on get() and
+ * ends when the ``StopIteration`` class itself is pulled from the queue.
+ */
+static PyObject *_queue_iternext(PyFilQueue *self)
+{
+    PyObject *item = fil_wfifoq_get(&(self->queue), NULL);
+
+    if (item == NULL)
+    {
+        return NULL;
+    }
+
+    if (item == PyExc_StopIteration)
+    {
+        Py_DECREF(item);
+        /* Returning NULL with no exception set signals normal end. */
+        return NULL;
+    }
+
+    return item;
+}
+
 static PyTypeObject _queue_type = {
     PyVarObject_HEAD_INIT(0, 0)
     "filament.queue.Queue",                     /* tp_name */
@@ -369,7 +421,7 @@ static PyTypeObject _queue_type = {
     0,                                          /* tp_setattr */
     0,                                          /* tp_compare */
     0,                                          /* tp_repr */
-    0,                                          /* tp_as_number */
+    &_queue_as_number,                          /* tp_as_number */
     &_queue_as_sequence,                        /* tp_as_sequence */
     0,                                          /* tp_as_mapping */
     0,                                          /* tp_hash */
@@ -384,8 +436,8 @@ static PyTypeObject _queue_type = {
     0,                                          /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
-    0,                                          /* tp_iter */
-    0,                                          /* tp_iternext */
+    PyObject_SelfIter,                          /* tp_iter */
+    (iternextfunc)_queue_iternext,              /* tp_iternext */
     _queue_methods,                             /* tp_methods */
     0,                                          /* tp_members */
     0,                                          /* tp_getset */

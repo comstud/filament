@@ -35,7 +35,11 @@ Queue = filament.Queue
 # gevent's JoinableQueue is just a Queue with task_done/join, which filament's
 # Queue already has.
 JoinableQueue = filament.Queue
-SimpleQueue = filament.SimpleQueue
+# In gevent 25.x, SimpleQueue is the full former-Queue class (bounded ctor,
+# iteration, ...) minus task_done/join.  filament.Queue is the closest match;
+# carrying task_done/join as extras is a harmless superset.  The zero-arg C
+# filament.SimpleQueue cannot even accept gevent's ``SimpleQueue(maxsize)``.
+SimpleQueue = filament.Queue
 PriorityQueue = _pyqueue.PriorityQueue
 LifoQueue = _pyqueue.LifoQueue
 Empty = filament.Empty
