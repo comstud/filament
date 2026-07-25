@@ -269,3 +269,10 @@ asserts there is no `greenlet.error` and no deadlock.
 ## License
 
 MIT. Copyright (c) 2013–2026, Chris Behrens. See `LICENSE`.
+
+`vendor/greenlet/` contains a vendored copy of
+[greenlet](https://github.com/python-greenlet/greenlet) 3.5.4 with
+filament-specific modifications; it remains under greenlet's own licenses
+(MIT-style, plus the PSF license for its Stackless-derived platform files) —
+see `vendor/greenlet/LICENSE`, `vendor/greenlet/LICENSE.PSF`, and
+`vendor/greenlet/VENDORED.md` for provenance and the list of local changes.
