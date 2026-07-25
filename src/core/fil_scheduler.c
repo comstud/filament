@@ -95,10 +95,25 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     FilSchedEventList *elist = &sched->events;
     FilSchedEvent *event;
 
-    event = malloc(sizeof(*event));
-    if (event == NULL)
+    pthread_mutex_lock(&(sched->sched_lock));
+
+    /* Pop a recycled event if we have one; otherwise malloc under the lock
+     * (rare after warmup, and glibc tcache makes it cheap anyway). Avoiding
+     * a malloc/free per enqueued switch measurably helps signal-heavy
+     * cross-thread workloads. */
+    if ((event = sched->free_events) != NULL)
     {
-        return -1;
+        sched->free_events = event->next;
+        sched->free_event_count--;
+    }
+    else
+    {
+        event = malloc(sizeof(*event));
+        if (event == NULL)
+        {
+            pthread_mutex_unlock(&(sched->sched_lock));
+            return -1;
+        }
     }
 
     event->flags = flags;
@@ -114,8 +129,6 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
         event->ts = *ts;
     }
 
-    pthread_mutex_lock(&(sched->sched_lock));
-
     /* FIXME: Convert to a priority queue */
     if (elist->head == NULL ||
         FIL_EVENT_COMPARE(event, elist->head, <))
@@ -127,8 +140,14 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
             event->next->prev = event;
         elist->head = event;
 
-        pthread_cond_signal(&(sched->sched_cond));
+        /* Signal AFTER dropping sched_lock: waking the scheduler while we
+         * still hold the mutex just makes it collide with the held lock and
+         * costs an extra futex round trip. The predicate (a ready head
+         * event) was published under the lock, so this is safe; 'sched'
+         * remains valid for the duration of the call by the caller's
+         * contract (it holds a reference directly or transitively). */
         pthread_mutex_unlock(&(sched->sched_lock));
+        pthread_cond_signal(&(sched->sched_cond));
         return 0;
     }
 
@@ -229,6 +248,8 @@ static PyObject *_sched_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     self->greenlet = NULL;
     self->thread_state = NULL;
     self->events.head = self->events.tail = NULL;
+    self->free_events = NULL;
+    self->free_event_count = 0;
     self->running = 0;
     self->aborting = 0;
     /* Bind this scheduler to the creating OS thread. All greenlet switches
@@ -296,6 +317,14 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
 
 static void _sched_dealloc(PyFilScheduler *self)
 {
+    FilSchedEvent *event;
+
+    while ((event = self->free_events) != NULL)
+    {
+        self->free_events = event->next;
+        free(event);
+    }
+
     pthread_mutex_destroy(&(self->sched_lock));
     pthread_cond_destroy(&(self->sched_cond));
     Py_CLEAR(self->system_exceptions);
@@ -450,6 +479,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     struct timespec *wait_time;
     FilSchedEvent *event;
     FilSchedEvent *ready_events;
+    FilSchedEvent *done_events;
     int err;
 
     /* Allow other threads to run. */
@@ -490,6 +520,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
          * point for real OS threads (thread-pool workers, io users) that are
          * competing for the GIL -- batching it measured ~3x slower on the
          * logging-from-threadpool (#137) workload. */
+        done_events = NULL;
         while((event = ready_events) != NULL)
         {
             ready_events = event->next;
@@ -515,10 +546,31 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
 
                 self->thread_state = PyEval_SaveThread();
             }
-            free(event);
+            /* Collect processed events for recycling below. */
+            event->next = done_events;
+            done_events = event;
         }
 
         pthread_mutex_lock(&(self->sched_lock));
+
+        /* Return processed events to the freelist (bounded); enqueuers pop
+         * them instead of malloc'ing. Overflow (only with >MAX simultaneous
+         * ready events) is freed here -- rare, and free() under the lock is
+         * cheap. */
+        while ((event = done_events) != NULL)
+        {
+            done_events = event->next;
+            if (self->free_event_count < FIL_SCHED_EVENT_FREELIST_MAX)
+            {
+                event->next = self->free_events;
+                self->free_events = event;
+                self->free_event_count++;
+            }
+            else
+            {
+                free(event);
+            }
+        }
     }
 
     self->running = 0;

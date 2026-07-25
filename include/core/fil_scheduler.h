@@ -38,6 +38,11 @@ typedef struct
     FilSchedEvent *tail;
 } FilSchedEventList;
 
+/* Cap on the per-scheduler freelist of FilSchedEvent structs (see
+ * _scheduler_add_event / _sched_main). 256 * ~64B is negligible memory and
+ * covers any realistic ready-batch size. */
+#define FIL_SCHED_EVENT_FREELIST_MAX 256
+
 typedef struct _pyfil_scheduler
 {
     PyObject_HEAD
@@ -46,6 +51,12 @@ typedef struct _pyfil_scheduler
     pthread_mutex_t sched_lock;
     pthread_cond_t sched_cond;
     FilSchedEventList events;
+    /* Freelist of switch-event structs, protected by sched_lock. Events are
+     * pushed back by the scheduler thread after processing and popped by
+     * (possibly foreign-thread) enqueuers, avoiding a malloc/free per
+     * cross-thread wakeup. Singly linked via ->next. */
+    FilSchedEvent *free_events;
+    unsigned int free_event_count;
     PyObject *system_exceptions;
     int running;
     int aborting;
