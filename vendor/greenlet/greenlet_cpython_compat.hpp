@@ -156,10 +156,25 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
  * low-level switch differ.
  *
  * Version/platform gating:
- *  - 3.13 only for now: <=3.12 still has tstate->cframe, whose nodes are
+ *  - 3.13 and 3.14: <=3.12 still has tstate->cframe, whose nodes are
  *    chained across greenlet C stacks by g_initialstub in a way that is
- *    only correct when the child borrows the parent's stack; 3.14+ has
- *    not been validated (stackpointer/current_executor interplay).
+ *    only correct when the child borrows the parent's stack.  On 3.14
+ *    the two version-specific pieces are core-independent and run
+ *    identically under the fiber core:
+ *      - tstate->current_executor (JIT) is saved/restored by
+ *        PythonState::operator<< / operator>> exactly as in the classic
+ *        core (g_switchstack performs both around the asm switch);
+ *      - the stackpointer capture through the materialized top frame at
+ *        switch-out only reads _top_frame->f_frame, which lives in the
+ *        heap datastack chunks -- and with private stacks nothing is
+ *        sliced anyway (_stack_saved stays 0, copy_from_stack is plain
+ *        memcpy), so the frame addresses operator<< sees are the true
+ *        ones.
+ *  - 3.15: same layout as 3.14 for everything the fiber core touches
+ *    (c_stack_{top,soft_limit,hard_limit} bounds swap included); the
+ *    3.15-only changes (stackref-walking tp_traverse/tp_clear,
+ *    FRAME_OWNED_BY_CSTACK removal, tp_is_gc removal) are
+ *    core-independent.  Validated against 3.15.0b4.
  *  - GIL builds only: the free-threaded C-stack-ref machinery snapshots
  *    assume the classic core.
  *  - aarch64 + x86_64 System V only (the two asm switch flavors below).
@@ -171,7 +186,7 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
 #    include "fil_fiber_config.h"
 #  endif
 #endif
-#if defined(FIL_FIBER_CORE) && GREENLET_PY313 && !GREENLET_PY314 \
+#if defined(FIL_FIBER_CORE) && GREENLET_PY313 \
     && !defined(Py_GIL_DISABLED) \
     && (defined(__aarch64__) || (defined(__x86_64__) && !defined(_WIN64)))
 #  define VGL_FIBER 1

@@ -298,6 +298,14 @@ UserGreenlet::g_initialstub(void* mark)
         // failure paths in this function (caller releases args).
         throw PyErrOccurred();
     }
+#if GREENLET_PY314
+    /* 3.14 compares the machine SP against per-thread C-stack bounds
+     * (recursion check, trashcan trigger); seed our saved copy from the
+     * private stack we just allocated so the first switch-in installs
+     * bounds describing the stack we actually run on. */
+    this->python_state.fil_set_stack_limits(this->stack_state.fil_lo(),
+                                            this->stack_state.fil_top());
+#endif
 #else
     this->stack_state = StackState(mark,
                                    thread_state.borrow_current()->stack_state);

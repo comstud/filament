@@ -30,6 +30,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* AddressSanitizer support: ASan tracks shadow state for every byte an
+ * instrumented frame touches.  When a fiber dies, the redzone poison
+ * its frames left on the private stack stays behind; a later fiber
+ * reusing the pooled stack then trips false "stack-buffer-overflow"
+ * reports on its very first writes.  Unpoison the whole usable region
+ * whenever a stack is recycled.  (Full fidelity -- fake-stack tracking
+ * across fil_fiber_asm_switch -- would need the
+ * __sanitizer_{start,finish}_switch_fiber annotations; this is the
+ * minimal contract that makes ASan runs usable for heap checking.) */
+#if defined(__SANITIZE_ADDRESS__)
+#  define FIL_HAS_ASAN 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define FIL_HAS_ASAN 1
+#  endif
+#endif
+#ifndef FIL_HAS_ASAN
+#  define FIL_HAS_ASAN 0
+#endif
+#if FIL_HAS_ASAN
+extern "C" void __asan_unpoison_memory_region(void const volatile*, size_t);
+#  define FIL_ASAN_UNPOISON(lo, sz) __asan_unpoison_memory_region((lo), (sz))
+#else
+#  define FIL_ASAN_UNPOISON(lo, sz) ((void)0)
+#endif
+
 extern "C" {
 /* The switch primitive.  Saves the callee-saved register set + SP of
  * the calling context into *save_sp, installs restore_sp and returns
@@ -243,6 +269,9 @@ inline char* stack_alloc() noexcept
         fil_pool_head = f->next;
         fil_pool_count--;
         pthread_mutex_unlock(&fil_pool_lock);
+        // Clear any shadow poison the previous tenant's frames left
+        // behind (no-op outside ASan builds).
+        FIL_ASAN_UNPOISON(reinterpret_cast<char*>(f), fil_usable_size);
         return reinterpret_cast<char*>(f);
     }
     pthread_mutex_unlock(&fil_pool_lock);

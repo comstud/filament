@@ -39,8 +39,17 @@ using greenlet::refs::BorrowedGreenlet;
 #else
 #  include "internal/pycore_interpframe.h"
 #endif
-#ifdef Py_GIL_DISABLED
+#if defined(Py_GIL_DISABLED) || VGL_FIBER
+/* _PyThreadStateImpl: the free-threaded build needs c_stack_refs; the
+ * fiber core (GIL builds too) needs c_stack_top/c_stack_soft_limit/
+ * c_stack_hard_limit, which 3.14 compares against the machine stack
+ * pointer and which must therefore track the fiber's private stack. */
 #   include "internal/pycore_tstate.h"
+#endif
+#if VGL_FIBER
+#   include "internal/pycore_pythonrun.h"  /* _PyOS_STACK_MARGIN_BYTES */
+#endif
+#ifdef Py_GIL_DISABLED
 #   include "internal/pycore_critical_section.h"
 #endif
 #endif
@@ -161,6 +170,24 @@ namespace greenlet
         // see https://github.com/python-greenlet/greenlet/issues/460
         PyObject* current_executor;
         _PyStackRef* stackpointer;
+    #if VGL_FIBER
+        /* filament fiber core: 3.14 turned the C-recursion check and the
+         * trashcan trigger into machine-stack-pointer comparisons against
+         * _PyThreadStateImpl.c_stack_{top,soft_limit,hard_limit}, which
+         * CPython derives from the OS thread's *real* stack.  While a
+         * greenlet runs on its private mmap'd stack those bounds are
+         * bogus (a stack mapped below the thread stack makes
+         * _Py_ReachedRecursionLimit() permanently true, so every
+         * container dealloc gets deposited on tstate->delete_later);
+         * hence the bounds are per-execution-context state that must
+         * switch with the greenlet.  Captured by operator<< (a running
+         * context's values never change, so this is a plain reload) and
+         * restored by operator>>; fiber greenlets are seeded from their
+         * own stack bounds by fil_set_stack_limits() at start. */
+        uintptr_t fil_c_stack_top;
+        uintptr_t fil_c_stack_soft_limit;
+        uintptr_t fil_c_stack_hard_limit;
+    #endif
     #ifdef Py_GIL_DISABLED
         _PyCStackRef* c_stack_refs;
         // Strong references to the objects held by the _PyCStackRef nodes on
@@ -214,6 +241,16 @@ namespace greenlet
         // You can use this for testing whether we have a frame
         // or not. It returns const so they can't modify it.
         const OwnedFrame& top_frame() const noexcept;
+
+#if VGL_FIBER && GREENLET_PY314
+        // Seed the saved 3.14 C-stack bounds from this fiber's private
+        // stack [lo, top) so the first operator>> installs bounds that
+        // describe the stack the greenlet actually runs on.  Layout
+        // mirrors _Py_InitializeRecursionLimits(): hard limit one
+        // margin above the lowest usable byte (the guard page sits just
+        // below lo), soft limit one margin above that.
+        void fil_set_stack_limits(const char* lo, const char* top) noexcept;
+#endif
 
 #if VGL_RUNTIME_LAZY
         // filament lazy-debug support.  The raw interpreter frame pointer
@@ -314,6 +351,11 @@ namespace greenlet
         inline void** fil_sp_addr() noexcept { return &this->fil_sp; }
         inline void* fil_resume_sp() const noexcept { return this->fil_sp; }
         inline bool fil_has_stack() const noexcept { return this->fil_stack_lo != nullptr; }
+        /* Bounds of the private stack (valid only after fil_init_fiber):
+         * lowest usable byte, and the top that fil_init_fiber recorded
+         * in stack_stop. */
+        inline char* fil_lo() const noexcept { return this->fil_stack_lo; }
+        inline char* fil_top() const noexcept { return this->stack_stop; }
 #endif
         /**
          * Creates a started, but inactive, state, using *current*
