@@ -98,8 +98,13 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
         return EAGAIN;
     }
 
-    if (fil_waiterlist_wait(sema->waiters, ts, NULL)) {
-        return -1;
+    /* Preserve the error code (-ETIMEDOUT vs other) so acquire() can report
+     * a timeout by returning False like Lock/RLock do.
+     */
+    int err = fil_waiterlist_wait(sema->waiters, ts, NULL);
+    if (err < 0)
+    {
+        return err;
     }
 
     return 0;
@@ -143,12 +148,28 @@ static PyObject *_semaphore_acquire_common(PyFilSemaphore *self, PyObject *block
 
     blocking = (blockingobj == NULL || blockingobj == Py_True);
     err = __semaphore_acquire(self, blocking, ts);
-    if (err)
+    if (err < 0 && err != -ETIMEDOUT)
     {
         return NULL;
     }
 
-    Py_RETURN_NONE;
+    if (err == 0)
+    {
+        Py_RETURN_TRUE;
+    }
+
+    /*
+     * EAGAIN (non-blocking, unavailable) or -ETIMEDOUT: acquire() reports
+     * failure by returning False, never by raising -- matching Lock/RLock,
+     * gevent, and the stdlib.  On timeout, fil_waiterlist_wait() left an
+     * exc.Timeout pending; clear it or CPython raises SystemError.
+     */
+    if (err == -ETIMEDOUT)
+    {
+        PyErr_Clear();
+    }
+
+    Py_RETURN_FALSE;
 }
 
 #ifdef _FIL_PYTHON3
@@ -191,8 +212,38 @@ static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *args, PyObje
 }
 #endif
 
-PyDoc_STRVAR(_semaphore_release_doc, "Release the semaphore.");
+PyDoc_STRVAR(_semaphore_release_doc, "Release the semaphore.  Returns the new counter (gevent parity).");
 static PyObject *_semaphore_release(PyFilSemaphore *self, PyObject *args)
+{
+    __semaphore_release(self);
+    return PyInt_FromSsize_t(self->counter);
+}
+
+PyDoc_STRVAR(_semaphore_locked_doc, "True if the semaphore cannot be acquired immediately.");
+static PyObject *_semaphore_locked(PyFilSemaphore *self)
+{
+    PyObject *res = (self->counter <= 0) ? Py_True : Py_False;
+    Py_INCREF(res);
+    return res;
+}
+
+static PyObject *_semaphore_enter(PyFilSemaphore *self)
+{
+    int err = __semaphore_acquire(self, 1, NULL);
+    if (err)
+    {
+        if (!PyErr_Occurred())
+        {
+            PyErr_Format(PyExc_RuntimeError, "unexpected failure in Semaphore.__enter__: %d", err);
+        }
+        return NULL;
+    }
+
+    Py_INCREF(self);
+    return (PyObject *)self;
+}
+
+static PyObject *_semaphore_exit(PyFilSemaphore *self, PyObject *args)
 {
     __semaphore_release(self);
     Py_RETURN_NONE;
@@ -205,7 +256,15 @@ static PyMethodDef _semaphore_methods[] = {
     {"acquire", (PyCFunction)_semaphore_acquire, METH_VARARGS|METH_KEYWORDS, _semaphore_acquire_doc},
 #endif
     {"release", (PyCFunction)_semaphore_release, METH_NOARGS, _semaphore_release_doc},
+    {"locked", (PyCFunction)_semaphore_locked, METH_NOARGS, _semaphore_locked_doc},
+    {"__enter__", (PyCFunction)_semaphore_enter, METH_NOARGS, NULL},
+    {"__exit__", (PyCFunction)_semaphore_exit, METH_VARARGS, NULL},
     { NULL, NULL }
+};
+
+static PyMemberDef _semaphore_memberlist[] = {
+    { "counter", T_PYSSIZET, offsetof(PyFilSemaphore, counter), READONLY, "current semaphore counter" },
+    { NULL, },
 };
 
 static PyTypeObject _semaphore_type = {
@@ -237,7 +296,7 @@ static PyTypeObject _semaphore_type = {
     0,                                          /* tp_iter */
     0,                                          /* tp_iternext */
     _semaphore_methods,                         /* tp_methods */
-    0,                                          /* tp_members */
+    _semaphore_memberlist,                      /* tp_members */
     0,                                          /* tp_getset */
     0,                                          /* tp_base */
     0,                                          /* tp_dict */

@@ -66,10 +66,8 @@ class BoundedSemaphore(Semaphore):
         self._initial_value = value
 
     def release(self):
-        # NOTE: this mirrors the stdlib contract; the underlying C Semaphore
-        # does not expose its count, so we track an initial value only for the
-        # common misuse check.  If the C type ever exposes its count we should
-        # use it here.
+        if self.counter >= self._initial_value:
+            raise ValueError("Semaphore released too many times")
         return super(BoundedSemaphore, self).release()
 
 

@@ -40,15 +40,16 @@ class BoundedSemaphore(object):
         self._count = value
 
     def acquire(self, blocking=True, timeout=None):
-        # filament's Semaphore.acquire signature is acquire(timeout=None); we
-        # honour the eventlet/threading (blocking, timeout) call shape.
+        # Honour the eventlet/threading (blocking, timeout) call shape.  The C
+        # primitive returns True on success and False on timeout/unavailable
+        # (matching gevent/stdlib); only decrement our mirror on success.
         if not blocking:
-            timeout = 0
-        acquired = self._sem.acquire(timeout=timeout)
-        # The C primitive returns None on success / raises on timeout; normalise
-        # to a bool and keep our mirror in step.
-        self._count -= 1
-        return True if acquired is None else acquired
+            acquired = self._sem.acquire(blocking=False)
+        else:
+            acquired = self._sem.acquire(timeout=timeout)
+        if acquired:
+            self._count -= 1
+        return acquired
 
     def release(self):
         if self._count >= self._initial:

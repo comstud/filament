@@ -310,11 +310,28 @@ def test_semaphore_limits_concurrency():
     assert run(body) == 2
 
 
-def test_semaphore_acquire_timeout_raises():
+def test_semaphore_acquire_timeout_returns_false():
+    # Like Lock/RLock (and gevent/stdlib), acquire reports failure by
+    # returning False -- never by raising.
     def body():
         sem = locking.Semaphore(0)
-        with pytest.raises(exc.Timeout):
-            sem.acquire(timeout=0.02)
+        assert sem.acquire(timeout=0.02) is False
+        assert sem.acquire(blocking=False) is False
+        sem.release()
+        assert sem.acquire() is True
+    run(body)
+
+
+def test_semaphore_context_manager_and_introspection():
+    def body():
+        sem = locking.Semaphore(1)
+        assert sem.locked() is False
+        assert sem.counter == 1
+        with sem:
+            assert sem.locked() is True
+            assert sem.counter == 0
+        assert sem.counter == 1
+        assert sem.release() == 2  # release returns the new counter
     run(body)
 
 

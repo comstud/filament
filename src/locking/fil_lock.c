@@ -373,11 +373,13 @@ static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *args, PyObject *kwar
 }
 #endif
 
-PyDoc_STRVAR(_rlock_locked_doc, "Is the lock locked (by someone else)?");
+PyDoc_STRVAR(_rlock_locked_doc, "Is the lock held by anyone (including the caller)?");
 static PyObject *_rlock_locked(PyFilRLock *self)
 {
-    uint64_t owner = fil_get_ident();
-    PyObject *res = ((self->lock.locked && self->owner != owner) ||
+    /* gevent (and the stdlib RLock intent) report True whenever the lock is
+     * held -- even by the current greenlet -- not just when held by others.
+     */
+    PyObject *res = (self->lock.locked ||
             !fil_waiterlist_empty(self->lock.waiters)) ? Py_True : Py_False;
     Py_INCREF(res);
     return res;
