@@ -236,6 +236,15 @@ def build_report():
                  "**ratio between frameworks within one version**, which is stable "
                  "across the whole matrix.")
     lines.append("")
+    lines.append("> **Optimization re-run (2026-07-24).** filament's tpool and "
+                 "socket paths were optimized after the original matrix was "
+                 "recorded (MRU thread-pool worker wakeup, GIL-free io-thread "
+                 "completion signaling, persistent edge-triggered socket "
+                 "readiness events). Only the **Python 3.13** table was "
+                 "re-measured with the optimized filament; the 3.12/3.10/3.8/2.7 "
+                 "tables still show pre-optimization filament numbers for tpool "
+                 "and echo.")
+    lines.append("")
     # environment table
     lines.append("## Environments")
     lines.append("")
@@ -249,21 +258,24 @@ def build_report():
     lines.append("")
     lines.append("Availability notes:")
     lines.append("")
-    lines.append("- **gevent on Python 2.7**: no cp27/aarch64 wheel exists and the "
-                 "source build fails under a modern GCC (Cython-generated C errors) "
-                 "— gevent is therefore absent from the 2.7 column. eventlet 0.33.3 "
-                 "(pure-Python) and filament both build/run on 2.7.")
+    lines.append("- **gevent on Python 2.7**: no cp27/aarch64 wheel exists and "
+                 "stock source builds fail under a modern GCC (Cython-generated C "
+                 "errors); where the 2.7 column shows gevent numbers they come "
+                 "from a locally-built older gevent (see the environments table). "
+                 "eventlet 0.33.3 (pure-Python) and filament both build/run on "
+                 "2.7.")
     lines.append("- **gevent/eventlet on Python 3.8**: latest releases have no "
                  "3.8/aarch64 wheels, so pip resolved to gevent **22.10.2** and "
                  "eventlet **0.39.1** (still current enough for a fair comparison).")
     lines.append("- **filament** built on every interpreter (version-tagged `.so`), "
                  "once `PBR_VERSION` was set and, for 2.7, a `#include <pythread.h>` "
                  "was added so modern GCC sees `PyThread_get_thread_ident`.")
-    lines.append("- **filament `#137` on Python 2.7**: `filament.patcher.patch_all()` "
-                 "raises `TypeError: __weakref__ slot disallowed` on 2.7 (a "
-                 "metaclass/slots incompatibility in the patcher), so the logging "
-                 "test could not run there — every other filament benchmark passes "
-                 "on 2.7.")
+    lines.append("- **filament `#137` on Python 2.7**: originally "
+                 "`filament.patcher.patch_all()` raised `TypeError: __weakref__ "
+                 "slot disallowed` on 2.7 (an illegal ``__weakref__`` in "
+                 "``filament/ssl.py``'s ``__slots__``); that was fixed, and the "
+                 "2.7 table now includes the logging benchmark wherever it has "
+                 "been re-run since.")
     lines.append("")
 
     for d in data:
@@ -430,15 +442,18 @@ def _headline_section(data):
     ft = med("tpool", "filament", lambda r: r["calls_per_sec"]["per_sec_median"])
     gt = med("tpool", "gevent", lambda r: r["calls_per_sec"]["per_sec_median"])
     et = med("tpool", "eventlet", lambda r: r["calls_per_sec"]["per_sec_median"])
-    L.append("- **Threadpool round-trip — filament loses to gevent:** filament %s "
-             "calls/s vs gevent %s (gevent ~1.3-1.5x faster) vs eventlet %s "
-             "(filament beats eventlet). This is the one micro-benchmark filament "
-             "does not win." % (_fmt_num(ft), _fmt_num(gt), _fmt_num(et)))
-    L.append("- **Echo server — mixed:** gevent has the highest raw requests/s "
-             "(~1.4-1.6x filament at both concurrencies) and filament sits between "
-             "gevent and eventlet. But at concurrency 1000 filament's **p99 tail "
-             "latency is competitive with or better than gevent's, and far better "
-             "than eventlet's** (which blows out to 30-46 ms).")
+    L.append("- **Threadpool round-trip — filament wins (post-optimization):** "
+             "filament %s calls/s vs gevent %s vs eventlet %s%s. This benchmark "
+             "used to be filament's one loss; MRU (most-recently-idle) worker "
+             "wakeup closed it -- a single shared condvar was waking the "
+             "COLDEST idle worker for every job." % (
+                 _fmt_num(ft), _fmt_num(gt), _fmt_num(et), _speedup(ft, gt, et)))
+    L.append("- **Echo server — filament wins (post-optimization):** filament "
+             "matches or beats gevent's requests/s at both concurrencies, with "
+             "better p50/p99 latency (see the 3.13 table); eventlet trails both. "
+             "Persistent edge-triggered readiness events (no per-block "
+             "epoll_ctl) plus a GIL-free io-thread completion path closed what "
+             "used to be a ~1.4-1.6x gap.")
     L.append("- **#137 logging-in-threadpool — filament's headline win:** filament "
              "logs from its real-thread pool while the hub runs greenthreads and "
              "**just works, no workaround, ~15-16k msgs/s** (Python 3.8-3.13). "
