@@ -42,7 +42,11 @@ jobs:
           # asm). If the fiber path fails on x86_64, pin FIL_FIBER_CORE=0 via
           # CIBW_ENVIRONMENT for that leg until the asm is validated.
           CIBW_TEST_REQUIRES: "pytest testtools greenlet"
-          CIBW_TEST_COMMAND: "pytest {project}/tests -q --ignore={project}/tests/test_wsgi.py"
+          # Copy the tests out of the source tree and run them from the temp
+          # cwd: tests/ is a package, so running pytest against {project}
+          # directly would prepend {project} to sys.path and the source tree
+          # (no built extensions) would shadow the installed wheel.
+          CIBW_TEST_COMMAND: "cp -r {project}/tests . && python -m pytest tests -q --ignore=tests/test_wsgi.py"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,11 +73,14 @@ jobs:
         run: uvx --from build pyproject-build --sdist
 
       - name: Verify sdist installs from a clean tree
+        # The import check runs from a temp dir: `python -c` puts the cwd on
+        # sys.path, and from the repo root the source tree would shadow the
+        # installed package.
         run: |
           uv venv --python 3.13 .verify
           uv pip install --python .verify greenlet pytest
           uv pip install --python .verify dist/*.tar.gz
-          uv run --python .verify python -c "import filament, _filament.core, _fil_greenlet"
+          cd "$(mktemp -d)" && "$GITHUB_WORKSPACE/.verify/bin/python" -c "import filament, _filament.core, _fil_greenlet"
 
       - uses: actions/upload-artifact@v4
         with:
