@@ -20,7 +20,13 @@ from __future__ import absolute_import
 import sys
 import traceback
 
-import greenlet
+try:
+    # Python 3: filament's private vendored greenlet runtime.  All of
+    # filament's switching happens on this runtime, so getcurrent() /
+    # GreenletExit must come from it, not from an installed greenlet.
+    import _fil_greenlet as greenlet
+except ImportError:  # Python 2 / stock-greenlet build
+    import greenlet
 
 from _filament.core import spawn as _core_spawn
 from _filament.core import sleep as _sleep
