@@ -177,23 +177,12 @@ static int __rlock_release(PyFilRLock *lock)
 }
 
 PyDoc_STRVAR(_lock_acquire_doc, "Acquire the lock.");
-static PyObject *_lock_acquire(PyFilLock *self, PyObject *args, PyObject *kwargs)
+static PyObject *_lock_acquire_common(PyFilLock *self, PyObject *blockingobj, PyObject *timeout)
 {
-    static char *keywords[] = {"blocking", "timeout", NULL};
-    PyObject *blockingobj = NULL;
-    PyObject *timeout = NULL;
     struct timespec tsbuf;
     struct timespec *ts;
     int blocking;
     int err;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O",
-                                     keywords,
-                                     &PyBool_Type,
-                                     &blockingobj, &timeout))
-    {
-        return NULL;
-    }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
@@ -227,6 +216,46 @@ static PyObject *_lock_acquire(PyFilLock *self, PyObject *args, PyObject *kwargs
     Py_INCREF(Py_False);
     return Py_False;
 }
+
+#ifdef _FIL_PYTHON3
+static PyObject *_lock_acquire(PyFilLock *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    static const char * const keywords[] = {"blocking", "timeout"};
+    PyObject *argv[2];
+
+    if (fil_fastcall_parse(args, nargs, kwnames, "acquire",
+                           0, 2, keywords, argv) < 0)
+    {
+        return NULL;
+    }
+
+    if (argv[0] != NULL && !PyBool_Check(argv[0]))
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "acquire() argument 'blocking' must be bool");
+        return NULL;
+    }
+
+    return _lock_acquire_common(self, argv[0], argv[1]);
+}
+#else
+static PyObject *_lock_acquire(PyFilLock *self, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"blocking", "timeout", NULL};
+    PyObject *blockingobj = NULL;
+    PyObject *timeout = NULL;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O",
+                                     keywords,
+                                     &PyBool_Type,
+                                     &blockingobj, &timeout))
+    {
+        return NULL;
+    }
+
+    return _lock_acquire_common(self, blockingobj, timeout);
+}
+#endif
 
 PyDoc_STRVAR(_lock_locked_doc, "Is the lock locked?");
 static PyObject *_lock_locked(PyFilLock *self)
@@ -268,23 +297,12 @@ static PyObject *_lock_exit(PyFilLock *self, PyObject *args)
 }
 
 PyDoc_STRVAR(_rlock_acquire_doc, "Acquire the lock.");
-static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *args, PyObject *kwargs)
+static PyObject *_rlock_acquire_common(PyFilRLock *self, PyObject *blockingobj, PyObject *timeout)
 {
-    static char *keywords[] = {"blocking", "timeout", NULL};
-    PyObject *blockingobj = NULL;
-    PyObject *timeout = NULL;
     struct timespec tsbuf;
     struct timespec *ts;
     int blocking;
     int err;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O",
-                                     keywords,
-                                     &PyBool_Type,
-                                     &blockingobj, &timeout))
-    {
-        return NULL;
-    }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
@@ -314,6 +332,46 @@ static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *args, PyObject *kwar
     Py_INCREF(Py_False);
     return Py_False;
 }
+
+#ifdef _FIL_PYTHON3
+static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    static const char * const keywords[] = {"blocking", "timeout"};
+    PyObject *argv[2];
+
+    if (fil_fastcall_parse(args, nargs, kwnames, "acquire",
+                           0, 2, keywords, argv) < 0)
+    {
+        return NULL;
+    }
+
+    if (argv[0] != NULL && !PyBool_Check(argv[0]))
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "acquire() argument 'blocking' must be bool");
+        return NULL;
+    }
+
+    return _rlock_acquire_common(self, argv[0], argv[1]);
+}
+#else
+static PyObject *_rlock_acquire(PyFilRLock *self, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"blocking", "timeout", NULL};
+    PyObject *blockingobj = NULL;
+    PyObject *timeout = NULL;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O",
+                                     keywords,
+                                     &PyBool_Type,
+                                     &blockingobj, &timeout))
+    {
+        return NULL;
+    }
+
+    return _rlock_acquire_common(self, blockingobj, timeout);
+}
+#endif
 
 PyDoc_STRVAR(_rlock_locked_doc, "Is the lock locked (by someone else)?");
 static PyObject *_rlock_locked(PyFilRLock *self)
@@ -358,7 +416,11 @@ static PyObject *_rlock_exit(PyFilRLock *self, PyObject *args)
 
 
 static PyMethodDef _lock_methods[] = {
+#ifdef _FIL_PYTHON3
+    { "acquire", (PyCFunction)(void (*)(void))_lock_acquire, METH_FASTCALL|METH_KEYWORDS, _lock_acquire_doc },
+#else
     { "acquire", (PyCFunction)_lock_acquire, METH_VARARGS|METH_KEYWORDS, _lock_acquire_doc },
+#endif
     { "release", (PyCFunction)_lock_release, METH_NOARGS, _lock_release_doc },
     { "locked", (PyCFunction)_lock_locked, METH_NOARGS, _lock_locked_doc },
     { "__enter__", (PyCFunction)_lock_enter, METH_NOARGS, NULL },
@@ -367,7 +429,11 @@ static PyMethodDef _lock_methods[] = {
 };
 
 static PyMethodDef _rlock_methods[] = {
+#ifdef _FIL_PYTHON3
+    { "acquire", (PyCFunction)(void (*)(void))_rlock_acquire, METH_FASTCALL|METH_KEYWORDS, _rlock_acquire_doc },
+#else
     { "acquire", (PyCFunction)_rlock_acquire, METH_VARARGS|METH_KEYWORDS, _rlock_acquire_doc },
+#endif
     { "release", (PyCFunction)_rlock_release, METH_NOARGS, _rlock_release_doc },
     { "locked", (PyCFunction)_rlock_locked, METH_NOARGS, _rlock_locked_doc },
     { "__enter__", (PyCFunction)_rlock_enter, METH_NOARGS, NULL },

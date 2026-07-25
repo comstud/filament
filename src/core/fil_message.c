@@ -139,20 +139,10 @@ static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
 }
 
 PyDoc_STRVAR(_message_wait_doc, "Wait!");
-static PyObject *_message_wait(PyFilMessage *self, PyObject *args, PyObject *kwargs)
+static PyObject *_message_wait_common(PyFilMessage *self, PyObject *timeout)
 {
-    /*
-    struct timespec tsbuf;
-    */
     struct timespec tsbuf;
     struct timespec *ts;
-    PyObject *timeout = NULL;
-    static char *keywords[] = {"timeout", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O:wait", keywords, &timeout))
-    {
-        return NULL;
-    }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
@@ -161,6 +151,35 @@ static PyObject *_message_wait(PyFilMessage *self, PyObject *args, PyObject *kwa
 
     return __message_wait(self, ts);
 }
+
+#ifdef _FIL_PYTHON3
+static PyObject *_message_wait(PyFilMessage *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    static const char * const keywords[] = {"timeout"};
+    PyObject *argv[1];
+
+    if (fil_fastcall_parse(args, nargs, kwnames, "wait",
+                           0, 1, keywords, argv) < 0)
+    {
+        return NULL;
+    }
+
+    return _message_wait_common(self, argv[0]);
+}
+#else
+static PyObject *_message_wait(PyFilMessage *self, PyObject *args, PyObject *kwargs)
+{
+    PyObject *timeout = NULL;
+    static char *keywords[] = {"timeout", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O:wait", keywords, &timeout))
+    {
+        return NULL;
+    }
+
+    return _message_wait_common(self, timeout);
+}
+#endif
 
 
 PyDoc_STRVAR(_message_send_doc, "Send an object.");
@@ -190,7 +209,11 @@ static PyObject *_message_send_exception(PyFilMessage *self, PyObject *args)
 }
 
 static PyMethodDef _message_methods[] = {
+#ifdef _FIL_PYTHON3
+    {"wait", (PyCFunction)(void (*)(void))_message_wait, METH_FASTCALL|METH_KEYWORDS, _message_wait_doc},
+#else
     {"wait", (PyCFunction)_message_wait, METH_VARARGS|METH_KEYWORDS, _message_wait_doc},
+#endif
     {"send", (PyCFunction)_message_send, METH_O, _message_send_doc},
     {"send_exception", (PyCFunction)_message_send_exception, METH_VARARGS, _message_send_exc_doc},
     { NULL, NULL }

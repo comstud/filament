@@ -46,6 +46,13 @@ typedef struct _pyfil_scheduler
     pthread_mutex_t sched_lock;
     pthread_cond_t sched_cond;
     FilSchedEventList events;
+    /* Freelist of FilSchedEvent nodes, protected by sched_lock.  Every
+     * greenlet context switch allocates (and then frees) at least one
+     * event, so recycling nodes removes a malloc/free pair from the
+     * hottest path in the scheduler.  Bounded by
+     * FIL_SCHED_EVENT_FREELIST_MAX. */
+    FilSchedEvent *event_freelist;
+    int event_freelist_len;
     PyObject *system_exceptions;
     int running;
     int aborting;

@@ -28,6 +28,12 @@
 
 /****************/
 
+/* Max number of recycled FilSchedEvent nodes kept per scheduler.  Sized so
+ * even high-concurrency workloads (~1000 greenlets with an event in flight
+ * each) never touch malloc in steady state, while keeping the worst-case
+ * cached memory small (2048 * sizeof(FilSchedEvent) ~= 112KB). */
+#define FIL_SCHED_EVENT_FREELIST_MAX 2048
+
 #define _scheduler_get() \
     (PyFilScheduler *)pthread_getspecific(_scheduler_key)
 #define _scheduler_set(__x) \
@@ -51,11 +57,25 @@ static inline FilSchedEvent *_get_ready_events(FilSchedEventList *elist, struct 
 
     struct timespec now;
     FilSchedEvent *event;
+    int have_now = 0;
 
-    fil_timespec_now(&now);
+    /* 'Immediate' events carry ts == {0,0} and are by definition always
+     * ready, so only read the clock lazily -- the first time we hit an
+     * event with a real timestamp.  In switch-heavy workloads (where the
+     * queue is all immediate wakeups) this removes a clock_gettime() from
+     * every scheduler loop iteration. */
     for(event=cur_events;event;event=event->next)
+    {
+        if (event->ts.tv_sec == 0 && event->ts.tv_nsec == 0)
+            continue;
+        if (!have_now)
+        {
+            fil_timespec_now(&now);
+            have_now = 1;
+        }
         if (FIL_TIMESPEC_COMPARE(&(event->ts), &now, >))
             break;
+    }
     if (event == cur_events)
     {
         /* No events ready */
@@ -95,10 +115,25 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     FilSchedEventList *elist = &sched->events;
     FilSchedEvent *event;
 
-    event = malloc(sizeof(*event));
-    if (event == NULL)
+    pthread_mutex_lock(&(sched->sched_lock));
+
+    /* Recycle an event node if we can (freelist is protected by
+     * sched_lock).  Falling back to malloc() under the lock is fine: it
+     * only happens until the freelist warms up (or when more events are
+     * in flight than FIL_SCHED_EVENT_FREELIST_MAX). */
+    if ((event = sched->event_freelist) != NULL)
     {
-        return -1;
+        sched->event_freelist = event->next;
+        sched->event_freelist_len--;
+    }
+    else
+    {
+        event = malloc(sizeof(*event));
+        if (event == NULL)
+        {
+            pthread_mutex_unlock(&(sched->sched_lock));
+            return -1;
+        }
     }
 
     event->flags = flags;
@@ -113,8 +148,6 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     {
         event->ts = *ts;
     }
-
-    pthread_mutex_lock(&(sched->sched_lock));
 
     /* FIXME: Convert to a priority queue */
     if (elist->head == NULL ||
@@ -229,6 +262,8 @@ static PyObject *_sched_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     self->greenlet = NULL;
     self->thread_state = NULL;
     self->events.head = self->events.tail = NULL;
+    self->event_freelist = NULL;
+    self->event_freelist_len = 0;
     self->running = 0;
     self->aborting = 0;
     /* Bind this scheduler to the creating OS thread. All greenlet switches
@@ -296,6 +331,14 @@ static int _sched_init(PyFilScheduler *self, PyObject *args, PyObject *kargs)
 
 static void _sched_dealloc(PyFilScheduler *self)
 {
+    FilSchedEvent *event;
+
+    while ((event = self->event_freelist) != NULL)
+    {
+        self->event_freelist = event->next;
+        free(event);
+    }
+    self->event_freelist_len = 0;
     pthread_mutex_destroy(&(self->sched_lock));
     pthread_cond_destroy(&(self->sched_cond));
     Py_CLEAR(self->system_exceptions);
@@ -450,6 +493,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     struct timespec *wait_time;
     FilSchedEvent *event;
     FilSchedEvent *ready_events;
+    FilSchedEvent *done_events;
     int err;
 
     /* Allow other threads to run. */
@@ -490,6 +534,7 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
          * point for real OS threads (thread-pool workers, io users) that are
          * competing for the GIL -- batching it measured ~3x slower on the
          * logging-from-threadpool (#137) workload. */
+        done_events = NULL;
         while((event = ready_events) != NULL)
         {
             ready_events = event->next;
@@ -515,10 +560,28 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
 
                 self->thread_state = PyEval_SaveThread();
             }
-            free(event);
+            /* Stash processed nodes locally; they are returned to the
+             * (sched_lock protected) freelist in one batch below. */
+            event->next = done_events;
+            done_events = event;
         }
 
         pthread_mutex_lock(&(self->sched_lock));
+
+        while ((event = done_events) != NULL)
+        {
+            done_events = event->next;
+            if (self->event_freelist_len < FIL_SCHED_EVENT_FREELIST_MAX)
+            {
+                event->next = self->event_freelist;
+                self->event_freelist = event;
+                self->event_freelist_len++;
+            }
+            else
+            {
+                free(event);
+            }
+        }
     }
 
     self->running = 0;

@@ -68,7 +68,7 @@ def _greenlet_include_dir():
 gl_inc = _greenlet_include_dir()
 if gl_inc:
     cflags = os.environ.get("CFLAGS")
-    cflags = "%s-I%s" % (' ' if cflags else '', gl_inc)
+    cflags = "%s%s-I%s" % (cflags or '', ' ' if cflags else '', gl_inc)
     os.environ['CFLAGS'] = cflags
 
 if '--debug' in sys.argv:

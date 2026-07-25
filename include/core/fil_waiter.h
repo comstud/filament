@@ -41,9 +41,46 @@ struct _fil_waiter {
     FilWaiterList waiter_list;
 };
 
+/*
+ * Freelist of FilWaiter structures.
+ *
+ * Every blocking operation (lock/semaphore/queue/message wait, blocking io,
+ * thread-pool round trip) allocates one FilWaiter and frees it again when the
+ * wait completes, paying for a malloc/free pair AND a pthread mutex+cond
+ * init/destroy cycle each time.  Recycle them instead: pooled waiters keep
+ * their mutex/cond initialized, so a warm wait skips all four.
+ *
+ * Locking: NONE, deliberately.  fil_waiter_alloc() and fil_waiter_decref()
+ * are only ever called with the GIL held (see the 'refcnt' comment above:
+ * refcnt is likewise GIL-protected, and alloc/decref happen on the Python
+ * side of every path; off-GIL signalers never alloc or decref).  The GIL
+ * therefore serializes all freelist access.  NOTE: these statics are
+ * per-translation-unit (this is a header), which is fine -- each pool is
+ * just a cache of interchangeable malloc'd blocks; a block allocated via one
+ * TU's pool may be released into another's without harm.
+ */
+#ifndef FIL_WAITER_FREELIST_MAX
+#define FIL_WAITER_FREELIST_MAX 1024
+#endif
+static FilWaiter *_fil_waiter_freelist = NULL;
+static int _fil_waiter_freelist_len = 0;
+
 static inline FilWaiter *fil_waiter_alloc(void)
 {
-    FilWaiter *waiter = malloc(sizeof(FilWaiter));
+    FilWaiter *waiter;
+
+    if ((waiter = _fil_waiter_freelist) != NULL) {
+        _fil_waiter_freelist = (FilWaiter *)(void *)waiter->waiter_list.next;
+        _fil_waiter_freelist_len--;
+        /* mutex/cond are still initialized from the previous life */
+        waiter->sched = NULL;
+        waiter->gl = NULL;
+        waiter->flags = 0;
+        waiter->refcnt = 1;
+        return waiter;
+    }
+
+    waiter = malloc(sizeof(FilWaiter));
     if (waiter == NULL) {
         PyErr_SetString(PyExc_MemoryError, "failed to alloc FilWaiter");
     } else {
@@ -63,9 +100,15 @@ static inline void fil_waiter_decref(FilWaiter *waiter)
     if (--waiter->refcnt == 0) {
         Py_CLEAR(waiter->sched);
         Py_CLEAR(waiter->gl);
-        pthread_mutex_destroy(&(waiter->waiter_lock));
-        pthread_cond_destroy(&(waiter->waiter_cond));
-        free(waiter);
+        if (_fil_waiter_freelist_len < FIL_WAITER_FREELIST_MAX) {
+            waiter->waiter_list.next = (FilWaiterList *)(void *)_fil_waiter_freelist;
+            _fil_waiter_freelist = waiter;
+            _fil_waiter_freelist_len++;
+        } else {
+            pthread_mutex_destroy(&(waiter->waiter_lock));
+            pthread_cond_destroy(&(waiter->waiter_cond));
+            free(waiter);
+        }
     }
 }
 

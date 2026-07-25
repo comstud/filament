@@ -101,20 +101,10 @@ static PyObject *_queue_get_nowait(PyFilQueue *self)
 }
 
 PyDoc_STRVAR(_queue_get_doc, "Get from queue.");
-static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+static PyObject *_queue_get_common(PyFilQueue *self, PyObject *block, PyObject *timeout)
 {
-    static char *keywords[] = {"block", "timeout", NULL};
-    PyObject *block = NULL, *timeout = NULL;
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|OO",
-                                     keywords,
-                                     &block,
-                                     &timeout))
-    {
-        return NULL;
-    }
 
     if (block == NULL || PyObject_IsTrue(block))
     {
@@ -137,6 +127,38 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     return fil_wfifoq_get(&(self->queue), ts);
 }
 
+#ifdef _FIL_PYTHON3
+static PyObject *_queue_get(PyFilQueue *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    static const char * const keywords[] = {"block", "timeout"};
+    PyObject *argv[2];
+
+    if (fil_fastcall_parse(args, nargs, kwnames, "get",
+                           0, 2, keywords, argv) < 0)
+    {
+        return NULL;
+    }
+
+    return _queue_get_common(self, argv[0], argv[1]);
+}
+#else
+static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"block", "timeout", NULL};
+    PyObject *block = NULL, *timeout = NULL;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|OO",
+                                     keywords,
+                                     &block,
+                                     &timeout))
+    {
+        return NULL;
+    }
+
+    return _queue_get_common(self, block, timeout);
+}
+#endif
+
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
 static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
 {
@@ -149,21 +171,11 @@ static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
 }
 
 PyDoc_STRVAR(_queue_put_doc, "Put into queue.");
-static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *block, PyObject *timeout)
 {
-    static char *keywords[] = {"item", "block", "timeout", NULL};
-    PyObject *res, *item, *block = NULL, *timeout = NULL;
+    PyObject *res;
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|OO",
-                                     keywords,
-                                     &item,
-                                     &block,
-                                     &timeout))
-    {
-        return NULL;
-    }
 
     if (block == NULL || PyObject_IsTrue(block))
     {
@@ -190,6 +202,39 @@ static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     }
     return res;
 }
+
+#ifdef _FIL_PYTHON3
+static PyObject *_queue_put(PyFilQueue *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    static const char * const keywords[] = {"item", "block", "timeout"};
+    PyObject *argv[3];
+
+    if (fil_fastcall_parse(args, nargs, kwnames, "put",
+                           1, 3, keywords, argv) < 0)
+    {
+        return NULL;
+    }
+
+    return _queue_put_common(self, argv[0], argv[1], argv[2]);
+}
+#else
+static PyObject *_queue_put(PyFilQueue *self, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"item", "block", "timeout", NULL};
+    PyObject *item, *block = NULL, *timeout = NULL;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|OO",
+                                     keywords,
+                                     &item,
+                                     &block,
+                                     &timeout))
+    {
+        return NULL;
+    }
+
+    return _queue_put_common(self, item, block, timeout);
+}
+#endif
 
 PyDoc_STRVAR(_queue_task_done_doc,
 "Indicate that a formerly enqueued task is complete.\n\
@@ -278,9 +323,17 @@ static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 }
 
 static PyMethodDef _queue_methods[] = {
+#ifdef _FIL_PYTHON3
+    { "get", (PyCFunction)(void (*)(void))_queue_get, METH_FASTCALL|METH_KEYWORDS, _queue_get_doc },
+#else
     { "get", (PyCFunction)_queue_get, METH_VARARGS|METH_KEYWORDS, _queue_get_doc },
+#endif
     { "get_nowait", (PyCFunction)_queue_get_nowait, METH_NOARGS, _queue_get_nowait_doc },
+#ifdef _FIL_PYTHON3
+    { "put", (PyCFunction)(void (*)(void))_queue_put, METH_FASTCALL|METH_KEYWORDS, _queue_put_doc },
+#else
     { "put", (PyCFunction)_queue_put, METH_VARARGS|METH_KEYWORDS, _queue_put_doc },
+#endif
     { "put_nowait", (PyCFunction)_queue_put_nowait, METH_O, _queue_put_nowait_doc },
     { "qsize", (PyCFunction)_queue_qsize, METH_NOARGS, _queue_qsize_doc },
     { "empty", (PyCFunction)_queue_empty, METH_NOARGS, _queue_empty_doc },
