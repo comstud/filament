@@ -272,6 +272,14 @@ namespace greenlet
         char* stack_stop;
         char* stack_copy;
         intptr_t _stack_saved;
+        // How many bytes are allocated in *stack_copy*. This is
+        // usually larger than *_stack_saved* while we're running,
+        // because we keep the buffer allocated at its high-water mark
+        // instead of freeing it on every resume, saving an
+        // allocator round trip on every switch. (The buffer would
+        // grow right back the next time we're suspended, and it's
+        // small compared to the C stack slice it mirrors.)
+        intptr_t _stack_capacity;
         StackState* stack_prev;
         inline int copy_stack_to_heap_up_to(const char* const stop) noexcept;
         inline void free_stack_copy() noexcept;

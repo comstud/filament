@@ -96,16 +96,27 @@ namespace greenlet
             if (!p) {
                 return;
             }
-            if (IsShuttingDown()) {
-                return;
-            }
 
             PyTypeObject* typ = Py_TYPE(p);
             // fast, common path. (PyObject_TypeCheck is a macro or
             // static inline function, and it also does a
             // direct comparison of the type pointers, but its fast
             // path only handles one type)
+            //
+            // Do this before the ``IsShuttingDown()`` check:
+            // ``Py_IsFinalizing()`` is an out-of-line call into the
+            // interpreter, and this checker runs multiple times on
+            // every switch. An exact match needs no other
+            // verification, and reading ``ob_type`` is exactly what
+            // ``PyObject_TypeCheck`` below has always done during
+            // shutdown too (the shutdown check only guards against
+            // odd states of the *type hierarchy*, e.g., mutated or
+            // partially-cleared subclasses, not of the pointer).
             if (typ == &PyGreenlet_Type) {
+                return;
+            }
+
+            if (IsShuttingDown()) {
                 return;
             }
 

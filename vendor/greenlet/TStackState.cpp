@@ -29,6 +29,7 @@ StackState::StackState(void* mark, StackState& current)
       stack_stop((char*)mark),
       stack_copy(nullptr),
       _stack_saved(0),
+      _stack_capacity(0),
       /* Skip a dying greenlet */
       stack_prev(current._stack_start
                  ? &current
@@ -41,6 +42,7 @@ StackState::StackState()
       stack_stop(nullptr),
       stack_copy(nullptr),
       _stack_saved(0),
+      _stack_capacity(0),
       stack_prev(nullptr)
 {
 }
@@ -52,6 +54,7 @@ StackState::StackState(const StackState& other)
       stack_stop(nullptr),
       stack_copy(nullptr),
       _stack_saved(0),
+      _stack_capacity(0),
       stack_prev(nullptr)
 {
     this->operator=(other);
@@ -71,8 +74,12 @@ StackState& StackState::operator=(const StackState& other)
 
     this->_stack_start = other._stack_start;
     this->stack_stop = other.stack_stop;
-    this->stack_copy = other.stack_copy;
-    this->_stack_saved = other._stack_saved;
+    // Don't alias *other*'s retained (but logically empty) copy
+    // buffer; each StackState exclusively owns its own buffer. We
+    // know it's logically empty because of the check above.
+    this->stack_copy = nullptr;
+    this->_stack_saved = 0;
+    this->_stack_capacity = 0;
     this->stack_prev = other.stack_prev;
     return *this;
 }
@@ -82,6 +89,7 @@ inline void StackState::free_stack_copy() noexcept
     PyMem_Free(this->stack_copy);
     this->stack_copy = nullptr;
     this->_stack_saved = 0;
+    this->_stack_capacity = 0;
 }
 
 inline void StackState::copy_heap_to_stack(const StackState& current) noexcept
@@ -91,7 +99,11 @@ inline void StackState::copy_heap_to_stack(const StackState& current) noexcept
     if (this->_stack_saved != 0) {
         { vgl_bytes_restored += this->_stack_saved; }
         memcpy(this->_stack_start, this->stack_copy, this->_stack_saved);
-        this->free_stack_copy();
+        // Keep the buffer (at its high-water capacity) for the next
+        // time we're suspended; only the logical size resets. The
+        // buffer is finally released when the greenlet finishes
+        // (``set_inactive``) or is destroyed.
+        this->_stack_saved = 0;
     }
     StackState* owner = const_cast<StackState*>(&current);
     if (!owner->_stack_start) {
@@ -121,14 +133,21 @@ inline int StackState::copy_stack_to_heap_up_to(const char* const stop) noexcept
     intptr_t sz2 = stop - this->_stack_start;
     assert(this->_stack_start);
     if (sz2 > sz1) {
-        char* c = (char*)PyMem_Realloc(this->stack_copy, sz2);
-        if (!c) {
-            PyErr_NoMemory();
-            return -1;
+        if (sz2 > this->_stack_capacity) {
+            // Grow the buffer. It is retained at its high-water
+            // capacity across switches, so on steady-state switch
+            // paths this branch isn't taken and no allocator call is
+            // made.
+            char* c = (char*)PyMem_Realloc(this->stack_copy, sz2);
+            if (!c) {
+                PyErr_NoMemory();
+                return -1;
+            }
+            this->stack_copy = c;
+            this->_stack_capacity = sz2;
         }
         { vgl_bytes_saved += sz2 - sz1; }
-        memcpy(c + sz1, this->_stack_start + sz1, sz2 - sz1);
-        this->stack_copy = c;
+        memcpy(this->stack_copy + sz1, this->_stack_start + sz1, sz2 - sz1);
         this->_stack_saved = sz2;
     }
     return 0;
@@ -198,7 +217,11 @@ inline void StackState::set_inactive() noexcept
     // Those objects never get deallocated, so the destructor never
     // runs.
     // It *seems* safe to clean up the memory here?
-    if (this->_stack_saved) {
+    //
+    // Note that we check *stack_copy*, not *_stack_saved*: the
+    // buffer is retained (with ``_stack_saved == 0``) while the
+    // greenlet runs, and this is where it's finally released.
+    if (this->stack_copy) {
         this->free_stack_copy();
     }
 }
@@ -224,7 +247,7 @@ inline StackState StackState::make_main() noexcept
 
 StackState::~StackState()
 {
-    if (this->_stack_saved != 0) {
+    if (this->stack_copy) {
         this->free_stack_copy();
     }
 }

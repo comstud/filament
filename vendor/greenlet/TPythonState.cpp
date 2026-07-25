@@ -139,6 +139,32 @@ inline void PythonState::may_switch_away() noexcept
     // <=3.10 (because subsequent calls will be cached and not
     // allocate memory).
 
+#if GREENLET_PY312
+    // All of that is only needed if the frame object hasn't been
+    // materialized yet. ``PyThreadState_GetFrame`` returns the frame
+    // object of the first complete interpreter frame; if that iframe
+    // already has its ``frame_obj``, the call cannot allocate (it
+    // just returns a new reference) and there is nothing to
+    // pre-create --- later ``_GetFrame()`` calls during this switch
+    // are already safe. That's the steady state for anything that
+    // switches more than once from the same frame, so check for it
+    // first and skip toggling the GC. (We're running on our own live
+    // C stack here, so it's safe to examine the iframe chain
+    // directly.)
+    PyThreadState* tstate = PyThreadState_GET();
+  #if GREENLET_PY313
+    _PyInterpreterFrame* frame = tstate->current_frame;
+  #else
+    _PyInterpreterFrame* frame = tstate->cframe->current_frame;
+  #endif
+    while (frame && _PyFrame_IsIncomplete(frame)) {
+        frame = frame->previous;
+    }
+    if (!frame || frame->frame_obj) {
+        return;
+    }
+#endif
+
     GCDisabledGuard no_gc;
     Py_XDECREF(PyThreadState_GetFrame(PyThreadState_GET()));
 #endif
