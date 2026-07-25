@@ -227,23 +227,20 @@ def build_report():
                  "Each attempt runs under a hard 30 s subprocess watchdog; a hang "
                  "is recorded as **deadlock**.")
     lines.append("")
-    lines.append("> **Cross-version caveat.** Runs were executed sequentially "
-                 "(3.13 -> 3.12 -> 3.10 -> 3.8 -> 2.7) on a shared box. The 3.13 "
-                 "and 3.12 runs land ~3x lower in *absolute* throughput across "
-                 "**all three** frameworks (a concurrent build was using the "
-                 "machine during those runs), so absolute numbers are **not** "
+    lines.append("> **Cross-version caveat.** Each Python version's table was "
+                 "recorded in its own sequential run on the same box. Interpreter "
+                 "speed differs across versions, so absolute numbers are **not** "
                  "comparable across Python versions. The reliable signal is the "
-                 "**ratio between frameworks within one version**, which is stable "
-                 "across the whole matrix.")
+                 "**ratio between frameworks within one version**: all three "
+                 "frameworks in a table ran back-to-back under identical "
+                 "conditions.")
     lines.append("")
-    lines.append("> **Optimization re-run (2026-07-24).** filament's tpool and "
-                 "socket paths were optimized after the original matrix was "
-                 "recorded (MRU thread-pool worker wakeup, GIL-free io-thread "
-                 "completion signaling, persistent edge-triggered socket "
-                 "readiness events). Only the **Python 3.13** table was "
-                 "re-measured with the optimized filament; the 3.12/3.10/3.8/2.7 "
-                 "tables still show pre-optimization filament numbers for tpool "
-                 "and echo.")
+    lines.append("> **Full-matrix re-run (2026-07-25).** The entire matrix was "
+                 "re-measured with the optimized filament (MRU thread-pool worker "
+                 "wakeup, GIL-free io-thread completion signaling, persistent "
+                 "edge-triggered socket readiness events) and the latest "
+                 "installable greenlet per interpreter (2.0.2 on 2.7, 3.1.1 on "
+                 "3.8, 3.5.4 on 3.10+), plus gevent 22.10.2 on 2.7.")
     lines.append("")
     # environment table
     lines.append("## Environments")
@@ -264,6 +261,12 @@ def build_report():
                  "from a locally-built older gevent (see the environments table). "
                  "eventlet 0.33.3 (pure-Python) and filament both build/run on "
                  "2.7.")
+    lines.append("- **gevent tpool on Python 2.7**: gevent **22.10.2** (the last "
+                 "py2.7 release) deadlocks in the threadpool round-trip benchmark "
+                 "on 2.7 — reproducible even at small scale. Its predecessor "
+                 "21.12.0 completed the same benchmark (~23.6k calls/s), so this "
+                 "is a gevent regression in its final py2.7 release, not a "
+                 "harness artifact.")
     lines.append("- **gevent/eventlet on Python 3.8**: latest releases have no "
                  "3.8/aarch64 wheels, so pip resolved to gevent **22.10.2** and "
                  "eventlet **0.39.1** (still current enough for a fair comparison).")
