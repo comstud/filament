@@ -504,6 +504,13 @@ _FIL_MODULE_INIT_FN_NAME(core)
     PyObject *capsule;
 
     PyGreenlet_Import();
+    if (_PyGreenlet_API == NULL)
+    {
+        /* PyCapsule_Import already set an ImportError (greenlet C API not
+         * found).  Bail cleanly instead of NULL-dereferencing PyGreenlet_Type
+         * below. */
+        return _FIL_MODULE_INIT_ERROR;
+    }
 
     _fil_int_zero = PyInt_FromLong(0);
     if (_fil_int_zero == NULL)

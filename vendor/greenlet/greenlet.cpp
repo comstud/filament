@@ -23,24 +23,28 @@ PyMODINIT_FUNC init_fil_greenlet(void)
                     "_fil_greenlet (vendored greenlet) is Python 3 only");
 }
 
-#elif PY_VERSION_HEX < 0x03090000
+#elif PY_VERSION_HEX < 0x030A0000
 
-/* Python 3 too old for the vendored greenlet 3.5.4 sources (e.g. 3.8):
- * build an ImportError stub so the overall extension build succeeds and
- * the Python layer's ``import _fil_greenlet`` falls back to the
- * installed classic greenlet (filament's C core then resolves the
- * classic ``greenlet._C_API`` capsule; see vendor/greenlet/greenlet.h).
+/* Python 3 too old for the vendored greenlet 3.5.4 sources (3.8 and 3.9):
+ * the modified sources use the per-thread ``cframe`` that CPython only added
+ * in 3.10, so anything below 3.10 cannot compile the real core. Build an
+ * ImportError stub instead so the overall extension build still succeeds and
+ * the Python layer's ``import _fil_greenlet`` falls back to the installed
+ * classic greenlet (filament's C core then resolves the classic
+ * ``greenlet._C_API`` capsule; see vendor/greenlet/greenlet.h, whose capsule
+ * selection MUST use the same 3.10 boundary). The fiber core is likewise
+ * gated to 3.10+.
  */
 extern "C" PyMODINIT_FUNC PyInit__fil_greenlet(void);
 PyMODINIT_FUNC PyInit__fil_greenlet(void)
 {
     PyErr_SetString(PyExc_ImportError,
-                    "_fil_greenlet (vendored greenlet) requires Python >= 3.9; "
+                    "_fil_greenlet (vendored greenlet) requires Python >= 3.10; "
                     "falling back to the installed greenlet");
     return NULL;
 }
 
-#else  /* Python 3.9+: the real vendored greenlet */
+#else  /* Python 3.10+: the real vendored greenlet */
 
 #include <cstdlib>
 #include <cstring>
