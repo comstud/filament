@@ -201,6 +201,74 @@ def ch_producer():
     ch.put("rendezvous")
 gevent.joinall([gevent.spawn(ch_consumer), gevent.spawn(ch_producer)])
 assert received == ["rendezvous"]
+
+# Channel: gevent API surface.
+from gevent.queue import Empty, Full
+
+ch = Channel(1)          # maxsize=1 is accepted...
+try:
+    Channel(2)           # ...anything else is not
+    assert False
+except ValueError:
+    pass
+
+assert ch.qsize() == 0
+assert ch.empty() is True
+assert ch.full() is True
+assert ch.balance == 0
+
+# Non-blocking ops with no peer waiting.
+try:
+    ch.put_nowait("x")
+    assert False, "put_nowait with no getter must raise Full"
+except Full:
+    pass
+try:
+    ch.get_nowait()
+    assert False, "get_nowait with no putter must raise Empty"
+except Empty:
+    pass
+
+# put_nowait succeeds when a getter is already waiting.
+got = []
+g = gevent.spawn(lambda: got.append(ch.get()))
+gevent.sleep(0.01)       # let the getter park
+assert ch.balance == -1
+ch.put_nowait("handoff")
+g.join()
+assert got == ["handoff"]
+
+# get_nowait succeeds when a putter is already waiting.
+p = gevent.spawn(ch.put, "waiting-put")
+gevent.sleep(0.01)       # let the putter park
+assert ch.balance == 1
+assert ch.get_nowait() == "waiting-put"
+p.join()
+assert p.successful()
+
+# Timeouts raise Full / Empty.
+import time as _time
+t0 = _time.time()
+try:
+    ch.put("nope", timeout=0.05)
+    assert False
+except Full:
+    pass
+assert _time.time() - t0 < 5
+try:
+    ch.get(timeout=0.05)
+    assert False
+except Empty:
+    pass
+assert ch.balance == 0   # timed-out waiters cleaned themselves up
+
+# Iteration terminates on the StopIteration sentinel.
+def feed():
+    for x in (1, 2, 3):
+        ch.put(x)
+    ch.put(StopIteration)
+gevent.spawn(feed)
+assert [x for x in ch] == [1, 2, 3]
 print("OK")
 ''')
 

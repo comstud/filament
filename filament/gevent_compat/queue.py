@@ -17,15 +17,19 @@ Mapping summary:
   * ``PriorityQueue`` / ``LifoQueue`` -> filament's pure-Python cooperative
     subclasses (faithful mapping, different ordering discipline).
   * ``Empty`` / ``Full``          -> filament's queue exceptions.
-  * ``Channel``                   -> a small pure-Python UNBUFFERED rendezvous
-    queue implemented here (the C queue has no zero-buffer mode).
+  * ``Channel``                   -> a faithful pure-Python port of gevent's
+    unbuffered rendezvous channel (the C queue has no zero-buffer mode),
+    implemented here on the compat ``Waiter`` + ``filament.Timeout``.
 """
 
 from __future__ import absolute_import
 
+import collections
+
 import filament
 from filament import pyqueue as _pyqueue
-from filament import locking as _locking
+from filament import timeout as _timeout
+from filament.gevent_compat import hub as _hub
 
 Queue = filament.Queue
 # gevent's JoinableQueue is just a Queue with task_done/join, which filament's
@@ -38,60 +42,123 @@ Empty = filament.Empty
 Full = filament.Full
 
 
+def _safe_remove(deque_obj, item):
+    # The item may already have been removed by the peer that woke us.
+    try:
+        deque_obj.remove(item)
+    except ValueError:
+        pass
+
+
 class Channel(object):
     """
     An UNBUFFERED synchronous channel (gevent.queue.Channel).
 
     A ``put`` blocks until a ``get`` takes the item (and vice versa) -- there is
-    no internal buffer.  Implemented with a filament ``Condition``: putters
-    deposit into a one-slot handoff and wait for a getter to claim it.
+    no internal buffer.  This is a port of gevent's Channel onto filament's
+    primitives, keeping gevent's public surface: ``getters`` / ``putters``
+    deques, ``balance``, ``qsize`` / ``empty`` / ``full``, the non-blocking
+    forms, timeouts raising ``Full`` / ``Empty``, and iteration terminated by a
+    ``StopIteration`` sentinel value.
 
-    This is a faithful re-implementation of gevent's zero-buffer rendezvous
-    semantics on filament's cooperative primitives.
+    One structural difference from gevent: when the peer is already waiting we
+    hand the item over directly instead of parking and pairing via a scheduled
+    hub callback (filament has no hub greenlet to defer to).  Net semantics are
+    the same -- in particular ``put_nowait`` succeeds exactly when a getter is
+    waiting, and ``get_nowait`` exactly when a putter is.
     """
 
-    def __init__(self):
-        self._lock = _locking.Lock()
-        self._cond = _locking.Condition(lock=self._lock)
-        # The single in-flight item, wrapped so we can distinguish "no item".
-        self._item = []          # 0 or 1 element acting as the handoff slot
-        self._getters_waiting = 0
+    def __init__(self, maxsize=1):
+        # gevent accepts (and requires) maxsize=1 to simplify generic code.
+        if maxsize != 1:
+            raise ValueError("Channels have a maxsize of 1")
+        self.getters = collections.deque()   # Waiters parked in get()
+        self.putters = collections.deque()   # (item, Waiter) parked in put()
+        self.hub = _hub.get_hub()
+
+    def __repr__(self):
+        return '<%s at %s %s>' % (
+            type(self).__name__, hex(id(self)), self._format())
+
+    def __str__(self):
+        return '<%s %s>' % (type(self).__name__, self._format())
+
+    def _format(self):
+        result = ''
+        if self.getters:
+            result += ' getters[%s]' % len(self.getters)
+        if self.putters:
+            result += ' putters[%s]' % len(self.putters)
+        return result
+
+    @property
+    def balance(self):
+        return len(self.putters) - len(self.getters)
+
+    def qsize(self):
+        return 0
+
+    def empty(self):
+        return True
+
+    def full(self):
+        return True
 
     def put(self, item, block=True, timeout=None):
-        with self._lock:
-            # Wait until the slot is empty (previous item consumed).
-            while self._item:
-                self._cond.wait(timeout=timeout)
-            self._item.append(item)
-            # Wake a getter to take it.
-            self._cond.notify_all()
-            # Block until the item is actually taken (rendezvous).
-            while self._item:
-                self._cond.wait(timeout=timeout)
-
-    def get(self, block=True, timeout=None):
-        with self._lock:
-            # Wait until an item is present.
-            while not self._item:
-                self._cond.wait(timeout=timeout)
-            item = self._item.pop()
-            # Wake the blocked putter (and any other putters) now that the slot
-            # is free.
-            self._cond.notify_all()
-            return item
+        if self.getters:
+            getter = self.getters.popleft()
+            getter.switch(item)
+            return
+        if not block:
+            raise Full
+        waiter = _hub.Waiter()
+        entry = (item, waiter)
+        self.putters.append(entry)
+        timer = _timeout.Timeout(timeout, Full)
+        timer.start()
+        try:
+            waiter.get()
+        except BaseException:
+            _safe_remove(self.putters, entry)
+            raise
+        finally:
+            timer.cancel()
 
     def put_nowait(self, item):
-        # Unbuffered: a non-blocking put can only succeed if a getter is already
-        # waiting.  We approximate by attempting and raising Full otherwise.
-        raise Full()
+        self.put(item, False)
+
+    def get(self, block=True, timeout=None):
+        if self.putters:
+            item, putter = self.putters.popleft()
+            putter.switch(None)
+            return item
+        if not block:
+            raise Empty
+        waiter = _hub.Waiter()
+        self.getters.append(waiter)
+        timer = _timeout.Timeout(timeout, Empty)
+        timer.start()
+        try:
+            return waiter.get()
+        except BaseException:
+            _safe_remove(self.getters, waiter)
+            raise
+        finally:
+            timer.cancel()
 
     def get_nowait(self):
-        with self._lock:
-            if not self._item:
-                raise Empty()
-            item = self._item.pop()
-            self._cond.notify_all()
-            return item
+        return self.get(False)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        result = self.get()
+        if result is StopIteration:
+            raise result
+        return result
+
+    next = __next__  # Py2
 
 
 __all__ = ["Queue", "JoinableQueue", "SimpleQueue", "PriorityQueue",
