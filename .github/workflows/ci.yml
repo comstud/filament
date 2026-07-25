@@ -51,18 +51,20 @@ jobs:
       - name: Create venv and install deps
         run: |
           uv venv --python ${{ matrix.python }} .venv
+          # setuptools + wheel: uv venvs are bare, and the legacy
+          # `setup.py build_ext` path needs setuptools present in the venv.
           # testtools is a hard test dependency; the gevent/eventlet compat
           # tests use filament's own shims, so real gevent/eventlet are NOT
           # needed here (only for the optional wsgi comparison below).
-          uv pip install --python .venv greenlet pytest testtools
+          uv pip install --python .venv setuptools wheel greenlet pytest testtools
 
       - name: Build extensions in place
         run: |
-          uv run --python .venv python setup.py build_ext --inplace
+          .venv/bin/python setup.py build_ext --inplace
 
       - name: Run test suite
         run: |
-          uv run --python .venv pytest tests -q --ignore=tests/test_wsgi.py
+          .venv/bin/python -m pytest tests -q --ignore=tests/test_wsgi.py
 
       # tests/test_wsgi.py compares against the real gevent's pywsgi. Kept
       # separate and non-blocking so a missing gevent wheel on a pre-release
@@ -71,7 +73,7 @@ jobs:
         continue-on-error: true
         run: |
           uv pip install --python .venv gevent
-          uv run --python .venv pytest tests/test_wsgi.py -q
+          .venv/bin/python -m pytest tests/test_wsgi.py -q
 
   # Python 2.7 is test-only (no wheels are published for it). It runs in the
   # official 2.7 container. Best-effort: the image is EOL (Debian buster, whose
