@@ -10,8 +10,10 @@
  * explicitly to keep the Py2.7 build working.
  */
 #include <pythread.h>
-#if PY_VERSION_HEX >= 0x030c0000
-/* PyLongObject internals moved out of the public headers in 3.12+ */
+#if PY_VERSION_HEX >= 0x030b0000
+/* PyLongObject internals moved out of the public headers in 3.11+
+ * (top-level longintrepr.h was dropped; only cpython/longintrepr.h
+ * remains). */
 #include <cpython/longintrepr.h>
 #else
 #include <longintrepr.h>

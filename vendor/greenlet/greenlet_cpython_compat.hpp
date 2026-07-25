@@ -156,10 +156,16 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
  * low-level switch differ.
  *
  * Version/platform gating:
- *  - 3.13 only for now: <=3.12 still has tstate->cframe, whose nodes are
- *    chained across greenlet C stacks by g_initialstub in a way that is
- *    only correct when the child borrows the parent's stack; 3.14+ has
- *    not been validated (stackpointer/current_executor interplay).
+ *  - 3.10b1 .. 3.13: every version whose PyThreadState save/restore is
+ *    already covered by TPythonState.cpp.  On the tstate->cframe era
+ *    (3.10..3.12, GREENLET_USE_CFRAME) the classic core parks the
+ *    child's initial _PyCFrame in g_initialstub's stack frame -- correct
+ *    only under stack borrowing, where that frame is part of the child's
+ *    sliced stack.  The fiber core instead reserves the _PyCFrame slot
+ *    at the top of the child's OWN private stack (StackState::
+ *    fil_init_fiber), which persists for the fiber's whole lifetime, so
+ *    the relocation is what makes <=3.12 eligible.  3.14+ has not been
+ *    validated (stackpointer/current_executor interplay).
  *  - GIL builds only: the free-threaded C-stack-ref machinery snapshots
  *    assume the classic core.
  *  - aarch64 + x86_64 System V only (the two asm switch flavors below).
@@ -171,7 +177,7 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
 #    include "fil_fiber_config.h"
 #  endif
 #endif
-#if defined(FIL_FIBER_CORE) && GREENLET_PY313 && !GREENLET_PY314 \
+#if defined(FIL_FIBER_CORE) && PY_VERSION_HEX >= 0x30A00B1 && !GREENLET_PY314 \
     && !defined(Py_GIL_DISABLED) \
     && (defined(__aarch64__) || (defined(__x86_64__) && !defined(_WIN64)))
 #  define VGL_FIBER 1

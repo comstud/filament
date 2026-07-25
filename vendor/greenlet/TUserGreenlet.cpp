@@ -277,13 +277,17 @@ UserGreenlet::g_initialstub(void* mark)
     // greenlet switch: No arbitrary calls to Python, including
     // decref'ing
 
-#if GREENLET_USE_CFRAME
+#if GREENLET_USE_CFRAME && !VGL_FIBER
     /* OK, we need it, we're about to switch greenlets, save the state. */
     /*
       See green_new(). This is a stack-allocated variable used
       while *self* is in PyObject_Call().
       We want to defer copying the state info until we're sure
       we need it and are in a stable place to do so.
+
+      (Classic core only: this frame is part of the stack region the
+      child borrows, so it lives as long as the child.  The fiber core
+      relocates the cframe onto the child's own private stack below.)
     */
     _PyCFrame trace_info;
 
@@ -298,6 +302,14 @@ UserGreenlet::g_initialstub(void* mark)
         // failure paths in this function (caller releases args).
         throw PyErrOccurred();
     }
+#if GREENLET_USE_CFRAME
+    /* 3.10..3.12: the child's initial _PyCFrame must outlive this
+       function (unlike the classic core, we RETURN to the caller while
+       the child still runs), so it lives in a slot reserved at the top
+       of the child's own private stack -- carved out by fil_init_fiber
+       just above.  Same linking as the classic path otherwise. */
+    this->python_state.set_new_cframe(*this->stack_state.fil_cframe_slot());
+#endif
 #else
     this->stack_state = StackState(mark,
                                    thread_state.borrow_current()->stack_state);

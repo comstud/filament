@@ -36,6 +36,9 @@ StackState::StackState(void* mark, StackState& current)
 #if VGL_FIBER
       ,fil_sp(nullptr)
       ,fil_stack_lo(nullptr)
+#if GREENLET_USE_CFRAME
+      ,fil_cframe(nullptr)
+#endif
 #endif
 {
     /* Skip a dying greenlet (see stack_prev initializer) */
@@ -51,6 +54,9 @@ StackState::StackState()
 #if VGL_FIBER
       ,fil_sp(nullptr)
       ,fil_stack_lo(nullptr)
+#if GREENLET_USE_CFRAME
+      ,fil_cframe(nullptr)
+#endif
 #endif
 {
 }
@@ -67,6 +73,9 @@ StackState::StackState(const StackState& other)
 #if VGL_FIBER
       ,fil_sp(nullptr)
       ,fil_stack_lo(nullptr)
+#if GREENLET_USE_CFRAME
+      ,fil_cframe(nullptr)
+#endif
 #endif
 {
     this->operator=(other);
@@ -98,6 +107,9 @@ StackState& StackState::operator=(const StackState& other)
     // unstarted/dead state, or destroyed), so the stack is recyclable.
     this->fil_release_stack();
     this->fil_sp = other.fil_sp;  // null for default/main states
+#if GREENLET_USE_CFRAME
+    this->fil_cframe = other.fil_cframe;  // ditto
+#endif
 #endif
 
     this->_stack_start = other._stack_start;
@@ -124,6 +136,18 @@ bool StackState::fil_init_fiber()
     }
     char* top = lo + filfiber::usable_size();
     this->fil_stack_lo = lo;
+#if GREENLET_USE_CFRAME
+    /* 3.10..3.12: reserve the fiber's initial _PyCFrame at the very top
+     * of its private stack, above the seed context, so it lives exactly
+     * as long as the fiber can run (see the member comment in
+     * TGreenlet.hpp).  16-byte alignment keeps the seed SP contract of
+     * both asm flavors intact. */
+    {
+        size_t cfsz = (sizeof(_PyCFrame) + 15u) & ~static_cast<size_t>(15u);
+        top -= cfsz;
+        this->fil_cframe = reinterpret_cast<_PyCFrame*>(top);
+    }
+#endif
     this->fil_sp = filfiber::seed_context(top);
     // Marks started() (and can never collide with the main() sentinel).
     this->stack_stop = top;
@@ -139,6 +163,9 @@ void StackState::fil_release_stack() noexcept
         filfiber::stack_free(this->fil_stack_lo);
         this->fil_stack_lo = nullptr;
         this->fil_sp = nullptr;
+#if GREENLET_USE_CFRAME
+        this->fil_cframe = nullptr;
+#endif
     }
 }
 #endif

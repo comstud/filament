@@ -297,6 +297,19 @@ namespace greenlet
          *                unstarted / released greenlets. */
         void* fil_sp;
         char* fil_stack_lo;
+#if GREENLET_USE_CFRAME
+        /* 3.10..3.12: the fiber's initial _PyCFrame.  The classic core
+         * keeps this object in g_initialstub's C stack frame, which is
+         * only sound under stack borrowing (there, that frame belongs
+         * to the child's sliced stack and lives exactly as long as the
+         * child).  With private stacks g_initialstub RETURNS to the
+         * parent while the child is still alive, so the fiber core
+         * reserves the slot at the very top of the child's own stack
+         * instead: it persists for the fiber's whole lifetime and is
+         * recycled with the stack.  Carved out by fil_init_fiber()
+         * above the seed context; null while no stack is owned. */
+        _PyCFrame* fil_cframe;
+#endif
 #endif
         inline int copy_stack_to_heap_up_to(const char* const stop) noexcept;
         inline void free_stack_copy() noexcept;
@@ -314,6 +327,11 @@ namespace greenlet
         inline void** fil_sp_addr() noexcept { return &this->fil_sp; }
         inline void* fil_resume_sp() const noexcept { return this->fil_sp; }
         inline bool fil_has_stack() const noexcept { return this->fil_stack_lo != nullptr; }
+#if GREENLET_USE_CFRAME
+        /* The fiber's own _PyCFrame slot; valid only after
+         * fil_init_fiber() and until the stack is released. */
+        inline _PyCFrame* fil_cframe_slot() const noexcept { return this->fil_cframe; }
+#endif
 #endif
         /**
          * Creates a started, but inactive, state, using *current*
