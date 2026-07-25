@@ -448,6 +448,25 @@ static PyObject* vgl_stats(PyObject*, PyObject*)
 }
 PyMethodDef vgl_stats_def = {"vgl_stats", vgl_stats, METH_NOARGS, NULL};
 
+#if VGL_FIBER
+/* --- fiber core: first instructions of every new fiber.  Reached via
+ * the seed context's return slot (see filfiber::seed_context); we run
+ * on the fiber's fresh private stack with the GIL held.  g_switchstack
+ * on the origin side published the target in switching_thread_state
+ * right before the asm switch; consume it and complete the start
+ * protocol.  Only UserGreenlets are ever seeded (main greenlets are
+ * born started), so the downcast is safe. --- */
+extern "C" void
+fil_fiber_entry(void)
+{
+    greenlet::Greenlet* self = switching_thread_state;
+    switching_thread_state = nullptr;
+    static_cast<greenlet::UserGreenlet*>(self)->fil_start_on_fiber();
+    /* unreachable: fil_start_on_fiber never returns */
+    abort();
+}
+#endif
+
 /* --- minimal fast switch entry: no args/kwargs juggling beyond the
  * required empty-tuple result contract, no may_switch_away. --- */
 extern "C" PyObject*

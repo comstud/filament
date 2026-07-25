@@ -155,6 +155,12 @@ Greenlet::g_switchstack(void)
     // switches (people don't write code like that by hand, but with
     // gevent it's possible without realizing it)
     assert(this->args() || PyErr_Occurred());
+#if VGL_FIBER
+    /* Origin greenlet, captured inside the save block.  With private
+     * stacks this local is safe to use across the switch (our whole
+     * frame survives suspension verbatim). */
+    Greenlet* fil_origin = nullptr;
+#endif
     { /* save state */
         if (this->thread_state()->is_current(this->self())) {
             // Hmm, nothing to do.
@@ -173,6 +179,9 @@ Greenlet::g_switchstack(void)
 #ifndef VGL_NO_EXPOSE
         current->expose_frames();
 #endif
+#if VGL_FIBER
+        fil_origin = current;
+#endif
     }
     assert(this->args() || PyErr_Occurred());
     // If this is the first switch into a greenlet, this will
@@ -184,7 +193,27 @@ Greenlet::g_switchstack(void)
     }
     else {
         { vgl_switch_count++; }
+#if VGL_FIBER
+        /* Private-stack switch: save our callee-saved register context
+         * on the origin's own stack and resume the target's saved (or
+         * seeded) context.  No stack slicing happens, so -- unlike the
+         * classic core -- every local in every frame below us stays
+         * valid across the suspension; we still reload
+         * switching_thread_state afterwards because that is the
+         * protocol by which the *resumed* side learns who switched in.
+         *
+         * fil_origin still designates the origin at this point
+         * (g_switchstack_success flips the thread's notion of current
+         * later, on whichever side resumes).  For a first-time target
+         * this call does not return until somebody switches back to
+         * the origin; the target's bootstrap runs via fil_fiber_entry
+         * on its fresh stack. */
+        fil_fiber_asm_switch(fil_origin->stack_state.fil_sp_addr(),
+                             this->stack_state.fil_resume_sp());
+        err = 0;
+#else
         err = slp_switch();
+#endif
     }
 
     if (err < 0) { /* error */
@@ -214,6 +243,19 @@ Greenlet::g_switchstack(void)
 
     OwnedGreenlet origin = greenlet_that_switched_in->g_switchstack_success();
     assert(greenlet_that_switched_in->args() || PyErr_Occurred());
+#if VGL_FIBER
+    /* If the greenlet we just came from ran to completion (its final
+     * act was switching to us from inner_bootstrap, after
+     * set_inactive()), its private stack can never execute again:
+     * recycle it into the pool right away so churny spawn loops reuse
+     * hot, already-committed stacks. */
+    {
+        Greenlet* fil_origin_g = origin;
+        if (fil_origin_g) {
+            fil_origin_g->fil_release_stack_if_dead();
+        }
+    }
+#endif
     return switchstack_result_t(err, greenlet_that_switched_in, origin);
 }
 

@@ -144,4 +144,39 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
 #  define VGL_RUNTIME_LAZY 0
 #endif
 
+/* filament: private-stack fiber core (build-time opt-in).
+ *
+ * When the extension is built with -DFIL_FIBER_CORE (setup.py sets this
+ * when the FIL_FIBER_CORE environment variable is truthy at build time),
+ * greenlets run on their own mmap'd stacks (guard page + lazily
+ * committed pages, pooled across spawns) and switching is a minimal
+ * save-callee-saved-registers / swap-SP assembly primitive instead of
+ * the classic stack-slicing memcpy dance.  The PyThreadState bookkeeping
+ * (TPythonState / TExceptionState) is unchanged; only StackState and the
+ * low-level switch differ.
+ *
+ * Version/platform gating:
+ *  - 3.13 only for now: <=3.12 still has tstate->cframe, whose nodes are
+ *    chained across greenlet C stacks by g_initialstub in a way that is
+ *    only correct when the child borrows the parent's stack; 3.14+ has
+ *    not been validated (stackpointer/current_executor interplay).
+ *  - GIL builds only: the free-threaded C-stack-ref machinery snapshots
+ *    assume the classic core.
+ *  - aarch64 + x86_64 System V only (the two asm switch flavors below).
+ */
+/* setup.py materializes the FIL_FIBER_CORE build flag as a generated
+ * header (setuptools does not forward CFLAGS to C++ compiles). */
+#if defined(__has_include)
+#  if __has_include("fil_fiber_config.h")
+#    include "fil_fiber_config.h"
+#  endif
+#endif
+#if defined(FIL_FIBER_CORE) && GREENLET_PY313 && !GREENLET_PY314 \
+    && !defined(Py_GIL_DISABLED) \
+    && (defined(__aarch64__) || (defined(__x86_64__) && !defined(_WIN64)))
+#  define VGL_FIBER 1
+#else
+#  define VGL_FIBER 0
+#endif
+
 #endif /* GREENLET_CPYTHON_COMPAT_H */

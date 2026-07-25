@@ -291,14 +291,46 @@ UserGreenlet::g_initialstub(void* mark)
 #endif
     /* start the greenlet */
     ThreadState& thread_state = GET_THREAD_STATE().state();
+#if VGL_FIBER
+    (void)mark; // no stack slicing: the mark plays no role
+    if (!this->stack_state.fil_init_fiber()) {
+        // MemoryError already set; unwind exactly like the earlier
+        // failure paths in this function (caller releases args).
+        throw PyErrOccurred();
+    }
+#else
     this->stack_state = StackState(mark,
                                    thread_state.borrow_current()->stack_state);
+#endif
     this->python_state.set_initial_state(PyThreadState_GET());
     this->exception_state.clear();
     this->_main_greenlet = thread_state.get_main_greenlet();
 
+#if VGL_FIBER
+    /* Park the run callable where the child's first activation
+       (fil_fiber_entry -> fil_start_on_fiber, on the child's own fresh
+       stack) can consume it; tp_traverse visits it for this window. */
+    this->fil_start_run = run.relinquish_ownership();
+
+    /* Perform the initial switch.  Unlike the stack-slicing core this
+       "returns once": the child bootstraps on its own stack via the
+       seeded context, and this call only returns when somebody
+       switches back to us -- so the classic ``err.status == 1`` branch
+       below never runs here (fil_start_on_fiber is its counterpart). */
+    switchstack_result_t err = this->g_switchstack();
+    if (err.status < 0) {
+        /* start failed badly (before any actual switch), restore
+           greenlet state */
+        this->stack_state.fil_release_stack();
+        this->stack_state = StackState();
+        this->_main_greenlet.CLEAR();
+        Py_CLEAR(this->fil_start_run); // the child never consumed it
+    }
+    return err;
+#else
     /* perform the initial switch */
     switchstack_result_t err = this->g_switchstack();
+#endif
     /* returns twice!
        The 1st time with ``err == 1``: we are in the new greenlet.
        This one owns a greenlet that used to be current.
@@ -388,6 +420,41 @@ UserGreenlet::g_initialstub(void* mark)
     return err;
 }
 
+
+#if VGL_FIBER
+void
+UserGreenlet::fil_start_on_fiber()
+{
+    // We are the very first frames on this greenlet's own private
+    // stack (fil_fiber_entry called us).  The origin's g_switchstack
+    // already saved its Python/exception state and published us in
+    // switching_thread_state (consumed by fil_fiber_entry); complete
+    // the switch protocol exactly like the classic core's
+    // ``err.status == 1`` branch of g_initialstub, then bootstrap.
+    PyObject* run = this->fil_start_run;
+    this->fil_start_run = nullptr;
+    OwnedGreenlet origin = this->g_switchstack_success();
+    try {
+        // This never returns!  Ownership of ``run`` and the origin
+        // reference transfers to inner_bootstrap.
+        this->inner_bootstrap(origin.relinquish_ownership(), run);
+    }
+    // See the twin catch blocks in g_initialstub for the full story;
+    // abridged here because on a private stack nothing above us can
+    // catch a rethrow (the base of this stack is a hand-made context
+    // frame with no unwind info), so propagation is never useful.
+    catch (const std::exception& e) {
+        std::string base = "greenlet: Unhandled C++ exception: ";
+        base += e.what();
+        Py_FatalError(base.c_str());
+    }
+    catch (...) {
+        Py_FatalError("greenlet: unknown C++ exception during fiber "
+                      "bootstrap; cannot unwind a fiber stack.");
+    }
+    Py_FatalError("greenlet: inner_bootstrap returned with no exception.\n");
+}
+#endif
 
 void
 UserGreenlet::inner_bootstrap(PyGreenlet* origin_greenlet, PyObject* run)
@@ -647,6 +714,11 @@ UserGreenlet::tp_traverse(visitproc visit, void* arg)
     Py_VISIT(this->_parent.borrow_o());
     Py_VISIT(this->_main_greenlet.borrow_o());
     Py_VISIT(this->_run_callable.borrow_o());
+#if VGL_FIBER
+    // Owned only for the short window between g_initialstub parking it
+    // and fil_start_on_fiber consuming it on the child's stack.
+    Py_VISIT(this->fil_start_run);
+#endif
 
     return Greenlet::tp_traverse(visit, arg);
 }

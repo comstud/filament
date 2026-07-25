@@ -30,11 +30,15 @@ StackState::StackState(void* mark, StackState& current)
       stack_copy(nullptr),
       _stack_saved(0),
       _stack_capacity(0),
-      /* Skip a dying greenlet */
       stack_prev(current._stack_start
                  ? &current
                  : current.stack_prev)
+#if VGL_FIBER
+      ,fil_sp(nullptr)
+      ,fil_stack_lo(nullptr)
+#endif
 {
+    /* Skip a dying greenlet (see stack_prev initializer) */
 }
 
 StackState::StackState()
@@ -44,6 +48,10 @@ StackState::StackState()
       _stack_saved(0),
       _stack_capacity(0),
       stack_prev(nullptr)
+#if VGL_FIBER
+      ,fil_sp(nullptr)
+      ,fil_stack_lo(nullptr)
+#endif
 {
 }
 
@@ -56,6 +64,10 @@ StackState::StackState(const StackState& other)
       _stack_saved(0),
       _stack_capacity(0),
       stack_prev(nullptr)
+#if VGL_FIBER
+      ,fil_sp(nullptr)
+      ,fil_stack_lo(nullptr)
+#endif
 {
     this->operator=(other);
 }
@@ -68,9 +80,25 @@ StackState& StackState::operator=(const StackState& other)
     if (other._stack_saved) {
         throw std::runtime_error("Refusing to steal memory.");
     }
+#if VGL_FIBER
+    if (other.fil_stack_lo) {
+        // Copying ownership of a live fiber stack is never valid; the
+        // only assignments performed on fiber states carry empty/main
+        // right-hand sides (deactivate_and_free, murder_in_place,
+        // failed-start cleanup).
+        throw std::runtime_error("Refusing to steal a fiber stack.");
+    }
+#endif
 
     //If we have memory allocated, dispose of it
     this->free_stack_copy();
+#if VGL_FIBER
+    // Ditto for our private stack: assignment only ever happens when
+    // this greenlet cannot run again (it is being reset to the
+    // unstarted/dead state, or destroyed), so the stack is recyclable.
+    this->fil_release_stack();
+    this->fil_sp = other.fil_sp;  // null for default/main states
+#endif
 
     this->_stack_start = other._stack_start;
     this->stack_stop = other.stack_stop;
@@ -83,6 +111,37 @@ StackState& StackState::operator=(const StackState& other)
     this->stack_prev = other.stack_prev;
     return *this;
 }
+
+#if VGL_FIBER
+bool StackState::fil_init_fiber()
+{
+    assert(!this->fil_stack_lo);
+    assert(!this->stack_stop); // not started
+    char* lo = filfiber::stack_alloc();
+    if (!lo) {
+        PyErr_NoMemory();
+        return false;
+    }
+    char* top = lo + filfiber::usable_size();
+    this->fil_stack_lo = lo;
+    this->fil_sp = filfiber::seed_context(top);
+    // Marks started() (and can never collide with the main() sentinel).
+    this->stack_stop = top;
+    // Not active() until inner_bootstrap's set_active() on first run.
+    this->_stack_start = nullptr;
+    this->stack_prev = nullptr;
+    return true;
+}
+
+void StackState::fil_release_stack() noexcept
+{
+    if (this->fil_stack_lo) {
+        filfiber::stack_free(this->fil_stack_lo);
+        this->fil_stack_lo = nullptr;
+        this->fil_sp = nullptr;
+    }
+}
+#endif
 
 inline void StackState::free_stack_copy() noexcept
 {
@@ -250,6 +309,13 @@ StackState::~StackState()
     if (this->stack_copy) {
         this->free_stack_copy();
     }
+#if VGL_FIBER
+    // By the time a Greenlet is destroyed its fiber (if any) can no
+    // longer run: green_dealloc kills active non-main greenlets first,
+    // and finished fibers already released their stack on the switch
+    // away.  This catches murdered/abandoned ones.
+    this->fil_release_stack();
+#endif
 }
 
 void StackState::copy_from_stack(void* vdest, const void* vsrc, size_t n) const

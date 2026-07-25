@@ -14,6 +14,7 @@
 #include "greenlet_refs.hpp"
 #include "greenlet_cpython_compat.hpp"
 #include "greenlet_allocator.hpp"
+#include "fil_fiber.hpp"
 
 using greenlet::refs::OwnedObject;
 using greenlet::refs::OwnedGreenlet;
@@ -281,10 +282,39 @@ namespace greenlet
         // small compared to the C stack slice it mirrors.)
         intptr_t _stack_capacity;
         StackState* stack_prev;
+#if VGL_FIBER
+        /* Private-stack fiber core state.  While the classic members
+         * above stay for the started()/active()/main() flag encoding
+         * (and _stack_saved stays 0 forever, which collapses
+         * copy_from_stack into plain memcpy -- a parked fiber's frames
+         * remain valid at their true addresses), a fiber additionally
+         * owns:
+         *   fil_sp       saved machine context (SP into its own stack)
+         *                while suspended, or the seed context before
+         *                first activation; stale while running.
+         *   fil_stack_lo low usable address of the mmap'd stack (just
+         *                above the guard page), or null for main /
+         *                unstarted / released greenlets. */
+        void* fil_sp;
+        char* fil_stack_lo;
+#endif
         inline int copy_stack_to_heap_up_to(const char* const stop) noexcept;
         inline void free_stack_copy() noexcept;
 
     public:
+#if VGL_FIBER
+        /* Allocate (from the pool) and seed a private stack; marks the
+         * greenlet started.  On failure returns false with a Python
+         * MemoryError set. */
+        bool fil_init_fiber();
+        /* Return the private stack to the pool.  Safe only when this
+         * fiber cannot run again (finished, murdered, unstarted-failed,
+         * or being destroyed); no-op without a stack. */
+        void fil_release_stack() noexcept;
+        inline void** fil_sp_addr() noexcept { return &this->fil_sp; }
+        inline void* fil_resume_sp() const noexcept { return this->fil_sp; }
+        inline bool fil_has_stack() const noexcept { return this->fil_stack_lo != nullptr; }
+#endif
         /**
          * Creates a started, but inactive, state, using *current*
          * as the previous.
@@ -473,6 +503,21 @@ namespace greenlet
         {
             return this->stack_state.stack_saved();
         }
+
+#if VGL_FIBER
+        /* Called on the resumed side of a switch for the greenlet we
+         * just came from: if it finished (started but no longer
+         * active), its private stack can never be executed again, so
+         * recycle it into the pool immediately.  This is the prompt
+         * release point for the common run-to-completion path; dealloc/
+         * murder paths release through ~StackState / operator=. */
+        inline void fil_release_stack_if_dead() noexcept
+        {
+            if (this->stack_state.started() && !this->stack_state.active()) {
+                this->stack_state.fil_release_stack();
+            }
+        }
+#endif
 
         // This is used by the macro SLP_SAVE_STATE to compute the
         // difference in stack sizes. It might be nice to handle the
@@ -799,6 +844,19 @@ public:
 
         UserGreenlet(PyGreenlet* p, BorrowedGreenlet the_parent);
         virtual ~UserGreenlet();
+
+#if VGL_FIBER
+        /* Start payload: the resolved ``run`` callable, owned, parked
+         * here by g_initialstub across the initial context switch and
+         * consumed by fil_start_on_fiber() on the child's stack.
+         * Visited by tp_traverse for the (brief) window it is held. */
+        PyObject* fil_start_run = nullptr;
+        /* First-activation bootstrap, called from fil_fiber_entry() on
+         * this greenlet's own fresh stack.  Runs the equivalent of the
+         * classic core's ``err.status == 1`` branch of g_initialstub
+         * (g_switchstack_success + inner_bootstrap).  Never returns. */
+        void fil_start_on_fiber();
+#endif
 
         virtual refs::BorrowedMainGreenlet find_main_greenlet_in_lineage() const;
         virtual bool was_running_in_dead_thread() const noexcept;
