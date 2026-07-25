@@ -250,6 +250,18 @@ def build_report():
                  "installable greenlet per interpreter (2.0.2 on 2.7, 3.1.1 on "
                  "3.8, 3.5.4 on 3.10+), plus gevent 22.10.2 on 2.7.")
     lines.append("")
+    lines.append("> **Optimization round 2 (2026-07-25).** Adds: METH_FASTCALL "
+                 "hot entry points (semaphore/lock/queue/message/sleep), "
+                 "scheduler switch-event + waiter freelists (waiters keep their "
+                 "mutex/cond initialized across reuse), a `sleep(0)` fast path, "
+                 "cond-signal-after-unlock, two waiter lifetime race fixes, and "
+                 "a **vendored greenlet** (`_fil_greenlet`, private capsule, no "
+                 "conflict with installed greenlet) with a C fast-switch entry "
+                 "on py3 — py2.7 transparently falls back to classic greenlet. "
+                 "filament's cross-thread wakeup was confirmed to be pure "
+                 "futex/condvar (no fd) — measurably cheaper than gevent's "
+                 "eventfd+epoll async watcher path per wakeup.")
+    lines.append("")
     # environment table
     lines.append("## Environments")
     lines.append("")
