@@ -162,6 +162,88 @@ static inline int fil_timespec_from_pyobj_interval(PyObject *timeoutobj, struct 
     return _fil_ts_from_double(timeout, ts_buf, ts_ret);
 }
 
+#ifdef _FIL_PYTHON3
+/*
+ * Minimal argument parser for METH_FASTCALL|METH_KEYWORDS entry points.
+ *
+ * The hot filament primitives (Semaphore.acquire, Queue.put/get, ...) were
+ * profiled spending more cycles inside PyArg_ParseTupleAndKeywords (format
+ * string scanning, keyword dict handling) and the METH_VARARGS tuple build
+ * than in their actual C bodies.  On Python 3 we accept the vectorcall
+ * calling convention and parse by hand; Python 2 keeps the original
+ * METH_VARARGS|METH_KEYWORDS implementations (see the per-file #ifdefs).
+ *
+ * 'names' lists all 'nmax' parameter names in positional order; the first
+ * 'nreq' are required.  On success out[0..nmax-1] hold borrowed references
+ * (NULL where an optional argument was not given).
+ */
+static inline int fil_fastcall_parse(PyObject *const *args, Py_ssize_t nargs,
+                                     PyObject *kwnames, const char *fname,
+                                     Py_ssize_t nreq, Py_ssize_t nmax,
+                                     const char * const *names,
+                                     PyObject **out)
+{
+    Py_ssize_t i;
+
+    if (nargs > nmax)
+    {
+        PyErr_Format(PyExc_TypeError,
+                     "%s() takes at most %zd arguments (%zd given)",
+                     fname, nmax, nargs);
+        return -1;
+    }
+    for (i = 0; i < nmax; i++)
+    {
+        out[i] = (i < nargs) ? args[i] : NULL;
+    }
+    if (kwnames != NULL)
+    {
+        Py_ssize_t nkw = PyTuple_GET_SIZE(kwnames);
+        Py_ssize_t k;
+
+        for (k = 0; k < nkw; k++)
+        {
+            PyObject *name = PyTuple_GET_ITEM(kwnames, k);
+            PyObject *value = args[nargs + k];
+
+            for (i = 0; i < nmax; i++)
+            {
+                if (PyUnicode_CompareWithASCIIString(name, names[i]) == 0)
+                {
+                    break;
+                }
+            }
+            if (i == nmax)
+            {
+                PyErr_Format(PyExc_TypeError,
+                             "%s() got an unexpected keyword argument '%U'",
+                             fname, name);
+                return -1;
+            }
+            if (out[i] != NULL)
+            {
+                PyErr_Format(PyExc_TypeError,
+                             "%s() got multiple values for argument '%s'",
+                             fname, names[i]);
+                return -1;
+            }
+            out[i] = value;
+        }
+    }
+    for (i = 0; i < nreq; i++)
+    {
+        if (out[i] == NULL)
+        {
+            PyErr_Format(PyExc_TypeError,
+                         "%s() missing required argument '%s'",
+                         fname, names[i]);
+            return -1;
+        }
+    }
+    return 0;
+}
+#endif /* _FIL_PYTHON3 */
+
 /*
  * block for a minimum amount of time and simulate an EINTR
  * if the real timeout has not been reached. This allows us to

@@ -129,23 +129,12 @@ static void __semaphore_release(PyFilSemaphore *sema)
 }
 
 PyDoc_STRVAR(_semaphore_acquire_doc, "Acquire the semaphore.");
-static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *args, PyObject *kwargs)
+static PyObject *_semaphore_acquire_common(PyFilSemaphore *self, PyObject *blockingobj, PyObject *timeout)
 {
-    static char *keywords[] = {"blocking", "timeout", NULL};
-    PyObject *blockingobj = NULL;
-    PyObject *timeout = NULL;
     struct timespec tsbuf;
     struct timespec *ts;
     int blocking;
     int err;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O",
-                                     keywords,
-                                     &PyBool_Type,
-                                     &blockingobj, &timeout))
-    {
-        return NULL;
-    }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
@@ -162,6 +151,46 @@ static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *args, PyObje
     Py_RETURN_NONE;
 }
 
+#ifdef _FIL_PYTHON3
+static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    static const char * const keywords[] = {"blocking", "timeout"};
+    PyObject *argv[2];
+
+    if (fil_fastcall_parse(args, nargs, kwnames, "acquire",
+                           0, 2, keywords, argv) < 0)
+    {
+        return NULL;
+    }
+
+    if (argv[0] != NULL && !PyBool_Check(argv[0]))
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "acquire() argument 'blocking' must be bool");
+        return NULL;
+    }
+
+    return _semaphore_acquire_common(self, argv[0], argv[1]);
+}
+#else
+static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"blocking", "timeout", NULL};
+    PyObject *blockingobj = NULL;
+    PyObject *timeout = NULL;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O!O",
+                                     keywords,
+                                     &PyBool_Type,
+                                     &blockingobj, &timeout))
+    {
+        return NULL;
+    }
+
+    return _semaphore_acquire_common(self, blockingobj, timeout);
+}
+#endif
+
 PyDoc_STRVAR(_semaphore_release_doc, "Release the semaphore.");
 static PyObject *_semaphore_release(PyFilSemaphore *self, PyObject *args)
 {
@@ -170,7 +199,11 @@ static PyObject *_semaphore_release(PyFilSemaphore *self, PyObject *args)
 }
 
 static PyMethodDef _semaphore_methods[] = {
+#ifdef _FIL_PYTHON3
+    {"acquire", (PyCFunction)(void (*)(void))_semaphore_acquire, METH_FASTCALL|METH_KEYWORDS, _semaphore_acquire_doc},
+#else
     {"acquire", (PyCFunction)_semaphore_acquire, METH_VARARGS|METH_KEYWORDS, _semaphore_acquire_doc},
+#endif
     {"release", (PyCFunction)_semaphore_release, METH_NOARGS, _semaphore_release_doc},
     { NULL, NULL }
 };

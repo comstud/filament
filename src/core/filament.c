@@ -268,18 +268,53 @@ static PyTypeObject _fil_filament_type = {
     0,                                          /* tp_version_tag */
 };
 
+/* Cached int(0) singleton for the sleep(0) fast path.  Set once at module
+ * init and never released.  CPython (2 and 3) interns small ints, so the
+ * common literal sleep(0) call hits a single pointer compare. */
+static PyObject *_fil_int_zero;
+
 PyDoc_STRVAR(_fil_sleep_doc, "Sleep!");
-static PyObject *_fil_sleep(PyObject *_self, PyObject *args)
+static PyObject *_fil_sleep(PyObject *_self, PyObject *timeout)
 {
     PyGreenlet *current_gl;
     PyFilScheduler *fil_scheduler;
     struct timespec tsbuf;
     struct timespec *ts;
-    PyObject *timeout;
 
-    if (!PyArg_ParseTuple(args, "O", &timeout))
+    /* Fast path for the extremely common cooperative-yield idiom sleep(0):
+     * skip the number->double->timespec conversion AND the clock_gettime.
+     * An immediate (ts == NULL) event is FIFO with other immediate wakeups
+     * and runs before any event carrying a real timestamp, which preserves
+     * "run me on the next scheduler pass" semantics. */
+    if (timeout == _fil_int_zero)
     {
-        return NULL;
+        fil_scheduler = fil_scheduler_get(0);
+        if (fil_scheduler != NULL)
+        {
+            current_gl = PyGreenlet_GetCurrent();
+            if (current_gl == NULL)
+            {
+                Py_DECREF(fil_scheduler);
+                return NULL;
+            }
+            if (fil_scheduler_gl_switch(fil_scheduler, NULL, current_gl) < 0)
+            {
+                Py_DECREF(current_gl);
+                Py_DECREF(fil_scheduler);
+                return NULL;
+            }
+            Py_DECREF(current_gl);
+            fil_scheduler_switch(fil_scheduler);
+            if (PyErr_Occurred())
+            {
+                Py_DECREF(fil_scheduler);
+                return NULL;
+            }
+            Py_DECREF(fil_scheduler);
+            Py_RETURN_NONE;
+        }
+        /* No scheduler on this thread: fall through to the generic path,
+         * which handles OS-thread sleeps. */
     }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
@@ -442,7 +477,7 @@ static PyFilament *_fil_spawn(PyObject *_self, PyObject *args, PyObject *kwargs)
 
 PyDoc_STRVAR(cext_doc, "Filament _filament module.");
 static PyMethodDef cext_methods[] = {
-    {"sleep", (PyCFunction)_fil_sleep, METH_VARARGS, _fil_sleep_doc },
+    {"sleep", (PyCFunction)_fil_sleep, METH_O, _fil_sleep_doc },
     {"spawn", (PyCFunction)_fil_spawn, METH_VARARGS|METH_KEYWORDS, _fil_spawn_doc },
     {"yield_thread", (PyCFunction)_fil_yield, METH_NOARGS, _fil_yield_doc },
     { NULL, NULL }
@@ -469,6 +504,13 @@ _FIL_MODULE_INIT_FN_NAME(core)
     PyObject *capsule;
 
     PyGreenlet_Import();
+
+    _fil_int_zero = PyInt_FromLong(0);
+    if (_fil_int_zero == NULL)
+    {
+        return _FIL_MODULE_INIT_ERROR;
+    }
+
     _FIL_MODULE_SET(m, FILAMENT_CORE_MODULE_NAME, cext_methods, cext_doc);
     if (m == NULL)
     {

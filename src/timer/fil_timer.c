@@ -87,9 +87,28 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
 
     timeout = PyTuple_GET_ITEM(args, 0);
 
-    if ((err = fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts)) < 0)
+    /* A zero delay (or None) means "fire on the next scheduler pass".  Use
+     * an immediate (ts == NULL) event rather than a now-stamped one:
+     * immediate events are FIFO with other immediate wakeups (sleep(0) &
+     * friends), so 'schedule the callback, then yield' idioms keep their
+     * relative order, and the scheduler skips the timestamp bookkeeping
+     * entirely.  fil_double_from_timeout_obj() maps None to -1.0 and raises
+     * on any other negative value, so <= 0.0 here is exactly {None, 0}. */
     {
-        return -1;
+        double timeout_dbl;
+
+        if ((err = fil_double_from_timeout_obj(timeout, &timeout_dbl)) < 0)
+        {
+            return -1;
+        }
+        if (timeout_dbl <= 0.0)
+        {
+            ts = NULL;
+        }
+        else if ((err = _fil_ts_from_double(timeout_dbl, &tsbuf, &ts)) < 0)
+        {
+            return -1;
+        }
     }
 
     /*
