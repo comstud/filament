@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Build manylinux wheels for cp38-cp314 on amd64 and native arm64 runners.
+  # 3.15 is intentionally excluded from published wheels while it is a beta; the
+  # CI workflow still tests it. To add it once it ships, set
+  # CIBW_ENABLE=cpython-prerelease and extend CIBW_BUILD.
+  wheels:
+    name: wheels (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21
+        env:
+          CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+          CIBW_SKIP: "*-musllinux_*"
+          # manylinux_2_28 = AlmaLinux 8 (dnf). libevent is bundled into each
+          # wheel by auditwheel; bluez-libs-devel provides AF_BLUETOOTH headers.
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_28"
+          CIBW_BEFORE_ALL_LINUX: "dnf install -y libevent-devel bluez-libs-devel"
+          # Exercise the built wheel (first real run of the x86_64 fiber-core
+          # asm). If the fiber path fails on x86_64, pin FIL_FIBER_CORE=0 via
+          # CIBW_ENVIRONMENT for that leg until the asm is validated.
+          CIBW_TEST_REQUIRES: "pytest testtools greenlet"
+          CIBW_TEST_COMMAND: "pytest {project}/tests -q --ignore={project}/tests/test_wsgi.py"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.arch }}
+          path: ./wheelhouse/*.whl
+
+  # Source distribution. Validated by installing it in a clean environment,
+  # which is what catches a missing C source in MANIFEST.in.
+  sdist:
+    name: sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libevent-dev libbluetooth-dev build-essential
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build sdist
+        run: uvx --from build pyproject-build --sdist
+
+      - name: Verify sdist installs from a clean tree
+        run: |
+          uv venv --python 3.13 .verify
+          uv pip install --python .verify greenlet pytest
+          uv pip install --python .verify dist/*.tar.gz
+          uv run --python .verify python -c "import filament, _filament.core, _fil_greenlet"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: ./dist/*.tar.gz
+
+  # Publish to PyPI (trusted publishing, OIDC -- no stored token) and attach the
+  # same artifacts to the GitHub Release. Tags only.
+  publish:
+    name: publish
+    needs: [wheels, sdist]
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+    permissions:
+      id-token: write   # OIDC for PyPI trusted publishing
+      contents: write   # attach files to the GitHub Release
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+      - name: Attach artifacts to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

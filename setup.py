@@ -1,10 +1,29 @@
 #!/usr/bin/env python
 
+# Build script for filament's C/C++ extensions.
+#
+# Package metadata lives in pyproject.toml (PEP 621). This file exists for the
+# things declarative metadata cannot express: the C/C++ extension modules and
+# three pieces of custom build-time logic --
+#
+#   1. locating the correct greenlet.h (vendored on Py3, system on Py2),
+#   2. materializing the fiber-core config header from FIL_FIBER_CORE, and
+#   3. tuning the OPT / debug compiler flags.
+#
+# On Python 3.8+ setuptools reads ext_modules from here as part of a PEP 517
+# build. On Python 2.7 (test-only; no wheels published) pyproject.toml is
+# ignored and this file is driven directly with
+# `python setup.py build_ext --inplace`, which only needs ext_modules.
+
 import os
 import sys
 
-from distutils import sysconfig
 import setuptools
+from setuptools import Extension
+
+# Import distutils' sysconfig *after* setuptools so its distutils shim is in
+# place on Python 3.12+ (where the stdlib distutils has been removed).
+from distutils import sysconfig
 
 
 def _greenlet_header_exists(hdr_dir):
@@ -142,7 +161,90 @@ else:
             opt = '-O2 -DNDEBUG'
         os.environ['OPT'] = opt
 
-setuptools.setup(
-    setup_requires=['pbr'],
-    pbr=True,
-)
+
+# C/C++ extension modules. Translated 1:1 from the pbr-era setup.cfg
+# [extension=*] blocks. The greenlet include dir (vendored on Py3) is injected
+# globally via CFLAGS above; each extension adds its own local include roots.
+def _ext(name, sources, include_dirs=None, libraries=None, language='c'):
+    return Extension(
+        name,
+        sources=sources,
+        include_dirs=include_dirs or [],
+        libraries=libraries or [],
+        language=language,
+    )
+
+
+ext_modules = [
+    # Vendored greenlet 3.5.4 (Python 3 only): private switching core with the
+    # filament fast-switch entry.  Python 2 builds keep using the installed
+    # greenlet; this extension simply fails cleanly there (prototype note).
+    _ext(
+        '_fil_greenlet',
+        sources=['vendor/greenlet/greenlet.cpp'],
+        include_dirs=['./vendor/greenlet'],
+        language='c++',
+    ),
+    _ext(
+        '_filament.core',
+        sources=[
+            'src/core/filament.c',
+            'src/core/fil_scheduler.c',
+            'src/core/fil_exceptions.c',
+            'src/core/fil_message.c',
+        ],
+        include_dirs=['./include'],
+        libraries=['pthread'],
+    ),
+    _ext(
+        '_filament.queue',
+        sources=[
+            'src/queue/fil_queue_mod.c',
+            'src/queue/fil_queue.c',
+            'src/queue/fil_simple_queue.c',
+        ],
+        include_dirs=['./include'],
+        libraries=['pthread'],
+    ),
+    _ext(
+        '_filament.locking',
+        sources=[
+            'src/locking/fil_cond.c',
+            'src/locking/fil_lock.c',
+            'src/locking/fil_locking.c',
+            'src/locking/fil_semaphore.c',
+        ],
+        include_dirs=['./include'],
+        libraries=['pthread'],
+    ),
+    _ext(
+        '_filament.timer',
+        sources=['src/timer/fil_timer.c'],
+        include_dirs=['./include'],
+        libraries=['pthread'],
+    ),
+    _ext(
+        '_filament.io',
+        sources=[
+            'src/io/fil_io.c',
+            'src/io/fil_iothread.c',
+        ],
+        include_dirs=['./include'],
+        libraries=['pthread', 'event_pthreads', 'event_core'],
+    ),
+    _ext(
+        '_filament.socket',
+        sources=['src/socket/fil_socket.c'],
+        include_dirs=['./include'],
+        libraries=['pthread'],
+    ),
+    _ext(
+        '_filament.thrpool',
+        sources=['src/thrpool/fil_thrpool.c'],
+        include_dirs=['./include'],
+        libraries=['pthread'],
+    ),
+]
+
+
+setuptools.setup(ext_modules=ext_modules)

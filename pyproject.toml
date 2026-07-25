@@ -1,0 +1,69 @@
+# Filament build configuration.
+#
+# Modern PEP 517/518/621 build. The C extensions and the custom build-time
+# logic (greenlet-header discovery, fiber-core config generation, OPT/debug
+# flag tuning) live in setup.py -- setuptools reads ext_modules from there
+# while all *metadata* is declared here.
+#
+# Python 3.8+ builds through this file (pip / build / cibuildwheel). Python 2.7
+# is test-only: it never reads pyproject.toml and is built with the legacy
+# `python setup.py build_ext --inplace` path, which only needs ext_modules.
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "filament"
+version = "0.1.0"
+description = "Filament: Microthreads for Python"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE", "LICENSE.PSF"]
+authors = [{ name = "Chris Behrens", email = "cbehrens@codestud.com" }]
+keywords = ["greenlet", "coroutine", "microthread", "concurrency", "gevent", "eventlet"]
+dependencies = ["greenlet>=0.4.0"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Programming Language :: C",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 2",
+    "Programming Language :: Python :: 2.7",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: POSIX",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/comstud/filament"
+Source = "https://github.com/comstud/filament"
+
+[project.optional-dependencies]
+# Runs the full core + drop-in-shim suite. The gevent/eventlet compat tests
+# exercise filament's own shims (via gc.install()), so they need only filament
+# itself -- not the real libraries.
+test = ["pytest", "testtools"]
+# Adds the one comparison test (tests/test_wsgi.py) that imports the real
+# gevent for an apples-to-apples WSGI check.
+compat-test = ["gevent"]
+
+# NOTE ON VERSIONING: pbr previously derived the version from git tags. There
+# are no tags yet, so a static version is used here. Once a tag scheme exists,
+# setuptools-scm is the drop-in modern replacement -- deliberately not adopted
+# now to avoid a build-time import that would break the legacy py2.7 path.
+
+[tool.setuptools]
+# Extensions and custom build logic are defined in setup.py.
+packages = ["filament", "filament.gevent_compat", "filament.eventlet_compat", "_filament"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

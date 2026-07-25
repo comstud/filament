@@ -3,6 +3,9 @@
 *.so
 *.pyc
 build
+# PEP 517 build outputs
+dist/
+wheelhouse/
 .venvs/
 *.egg-info/
 .pytest_cache/

@@ -1,0 +1,16 @@
+# Files the sdist must carry so it can compile from source. The C/C++ sources,
+# headers, and the vendored greenlet are NOT inside a Python package, so
+# setuptools will not include them automatically.
+graft src
+graft include
+graft vendor/greenlet
+recursive-include tests *.py
+
+include README.md HISTORY.md
+include LICENSE LICENSE.PSF THIRD_PARTY_NOTICES.md AUTHORS
+include requirements.txt test-requirements.txt
+
+# Never ship build artifacts or the generated fiber-core header.
+global-exclude *.so *.o *.pyc *.pyo
+global-exclude __pycache__
+exclude vendor/greenlet/fil_fiber_config.h

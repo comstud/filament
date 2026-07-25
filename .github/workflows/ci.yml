@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Modern interpreters (3.8-3.15) on both amd64 and native arm64 runners.
+  # Python is provisioned with uv, which is the only reliable source of the
+  # 3.14/3.15 pre-releases and matches the project's local dev setup.
+  test:
+    name: py${{ matrix.python }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Full cartesian product: 8 Pythons x 2 arches = 16 jobs. The `include`
+        # rows only attach the human-readable `arch` label to each `os` (they
+        # match existing combinations rather than adding new ones).
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        os: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          # libevent: linked by the io extension. libbluetooth: AF_BLUETOOTH
+          # headers pulled in by include/socket/fil_socket.h (headers only,
+          # not linked).
+          sudo apt-get install -y --no-install-recommends \
+            libevent-dev libbluetooth-dev build-essential
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Provision Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Create venv and install deps
+        run: |
+          uv venv --python ${{ matrix.python }} .venv
+          # testtools is a hard test dependency; the gevent/eventlet compat
+          # tests use filament's own shims, so real gevent/eventlet are NOT
+          # needed here (only for the optional wsgi comparison below).
+          uv pip install --python .venv greenlet pytest testtools
+
+      - name: Build extensions in place
+        run: |
+          uv run --python .venv python setup.py build_ext --inplace
+
+      - name: Run test suite
+        run: |
+          uv run --python .venv pytest tests -q --ignore=tests/test_wsgi.py
+
+      # tests/test_wsgi.py compares against the real gevent's pywsgi. Kept
+      # separate and non-blocking so a missing gevent wheel on a pre-release
+      # interpreter never fails the matrix.
+      - name: WSGI comparison test (needs real gevent, best-effort)
+        continue-on-error: true
+        run: |
+          uv pip install --python .venv gevent
+          uv run --python .venv pytest tests/test_wsgi.py -q
+
+  # Python 2.7 is test-only (no wheels are published for it). It runs in the
+  # official 2.7 container. Best-effort: the image is EOL (Debian buster, whose
+  # apt repos have moved to archive.debian.org) and 2.7 has a known
+  # close-while-blocked hang plus OpenSSL-1.1-only _ssl, so SSL-dependent tests
+  # may need skips. Kept non-blocking via continue-on-error.
+  test-py27:
+    name: py2.7 (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    container:
+      image: python:2.7-buster
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point apt at the Debian archive (buster is EOL)
+        run: |
+          set -eux
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian buster main' \
+            'deb http://archive.debian.org/debian-security buster/updates main' \
+            > /etc/apt/sources.list
+          echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+          apt-get update
+          apt-get install -y --no-install-recommends libevent-dev libbluetooth-dev
+
+      - name: Install Python deps
+        run: pip install "greenlet<2" pytest testtools
+
+      - name: Build extensions in place
+        run: python setup.py build_ext --inplace
+
+      - name: Run test suite (best-effort)
+        run: pytest tests -q --ignore=tests/test_wsgi.py
