@@ -262,6 +262,17 @@ def build_report():
                  "futex/condvar (no fd) — measurably cheaper than gevent's "
                  "eventfd+epoll async watcher path per wakeup.")
     lines.append("")
+    lines.append("> **Optimization round 3 (2026-07-25).** Runtime-selectable "
+                 "debug mode: switches skip eager frame exposure by default "
+                 "(3.12/3.13), with lazy `gr_frame` materialization on access, "
+                 "`filament.set_debug(True)` / `FILAMENT_DEBUG=1` for full "
+                 "eager introspection, and auto-arming when a trace/profile "
+                 "hook is installed. Plus three upstream-bound greenlet perf "
+                 "patches ported onto the vendored copy (GC-toggle skip in "
+                 "may_switch_away, stack-copy buffer retained at high-water "
+                 "capacity, GreenletChecker exact-type fast path; see "
+                 "/workspace/upstream for the upstream PR series).")
+    lines.append("")
     # environment table
     lines.append("## Environments")
     lines.append("")
