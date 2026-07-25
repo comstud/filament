@@ -38,13 +38,13 @@ RESULTS_DIR = os.path.join(HERE, "results")
 REPORT = os.path.join(HERE, "RESULTS.md")
 
 FRAMEWORKS = ["filament", "gevent", "eventlet"]
-ALL_BENCHMARKS = ["spawn", "ctxswitch", "semaphore", "queue", "tpool",
-                  "echo", "logging137"]
+ALL_BENCHMARKS = ["spawn", "ctxswitch", "semaphore", "queue", "queue_mixed",
+                  "tpool", "echo", "logging137"]
 
 # per-benchmark subprocess timeout (seconds)
 TIMEOUTS = {
     "spawn": 240, "ctxswitch": 180, "semaphore": 120, "queue": 120,
-    "tpool": 120, "echo": 240, "logging137": 30,
+    "queue_mixed": 60, "tpool": 120, "echo": 240, "logging137": 30,
 }
 
 SMALL_PARAMS = {
@@ -52,6 +52,7 @@ SMALL_PARAMS = {
     "ctx_greenthreads": 20, "ctx_iters": 2000, "ctx_reps": 3,
     "sem_uncontended": 100000, "sem_contended_gt": 20, "sem_contended_ops": 1000,
     "sem_reps": 3, "queue_items": 20000, "queue_reps": 3,
+    "qmix_items": 5000, "qmix_reps": 2,
     "tpool_calls": 500, "tpool_reps": 3,
     "echo_reps": 2, "echo_specs": [[100, 30], [500, 10]],
     "log_workers": 4, "log_msgs": 3000, "log_hub_greenthreads": 8,
@@ -222,6 +223,13 @@ def build_report():
                  "producer/consumer items. tpool = 3000 sequential real-thread "
                  "round-trips. Echo = concurrency 100 (x100 round-trips) and 1000 "
                  "(x20), 64-byte payload.")
+    lines.append("- Queue mixed = ONE bounded queue (maxsize 100) shared "
+                 "simultaneously by a greenthread producer + consumer AND a "
+                 "native `threading.Thread` producer + consumer (50k items per "
+                 "producer), so native threads block in `q.get()`/`q.put()` "
+                 "while greenthreads work the same queue. gevent/eventlet "
+                 "queues are hub-bound; foreign-OS-thread use is undefined for "
+                 "them and runs under the deadlock watchdog.")
     lines.append("- **#137**: monkey-patch everything, then log heavily from "
                  "real OS-thread pool workers while greenthreads spin in the hub. "
                  "Each attempt runs under a hard 30 s subprocess watchdog; a hang "
@@ -345,6 +353,8 @@ def _report_for_version(d):
         lambda r: _fmt_num(r["contended_ops_per_sec"]["per_sec_median"]))
     row("queue", "queue put/get", "items/s",
         lambda r: _fmt_num(r["items_per_sec"]["per_sec_median"]))
+    row("queue_mixed", "queue shared green+native threads", "items/s",
+        lambda r: _fmt_num(r["items_per_sec"]["per_sec_median"]))
     row("tpool", "tpool round-trip", "calls/s",
         lambda r: _fmt_num(r["calls_per_sec"]["per_sec_median"]))
     row("tpool", "tpool round-trip", "mean latency",
@@ -442,6 +452,18 @@ def _headline_section(data):
     L.append("- **Semaphore / Queue — filament wins:** its C-level `Semaphore` "
              "does ~%s uncontended ops/s vs gevent %s / eventlet %s (3-8x), and it "
              "leads on queue put/get too." % (_fmt_num(fu), _fmt_num(gu), _fmt_num(eu)))
+    fm = med("queue_mixed", "filament",
+             lambda r: r["items_per_sec"]["per_sec_median"])
+    if fm:
+        L.append("- **Mixed green+native queue — filament only:** a single "
+                 "bounded `Queue` worked simultaneously by greenthreads AND "
+                 "native `threading.Thread` producers/consumers runs at ~%s "
+                 "items/s in filament. The same workload on gevent/eventlet "
+                 "deadlocks or errors — their queues are hub-bound and cannot "
+                 "be used from a foreign OS thread. filament's per-thread "
+                 "scheduler + deferred cross-thread wakeup makes this a "
+                 "first-class pattern (same mechanism as the #137 win)."
+                 % _fmt_num(fm))
     ft = med("tpool", "filament", lambda r: r["calls_per_sec"]["per_sec_median"])
     gt = med("tpool", "gevent", lambda r: r["calls_per_sec"]["per_sec_median"])
     et = med("tpool", "eventlet", lambda r: r["calls_per_sec"]["per_sec_median"])
@@ -508,6 +530,13 @@ def main():
 
     results = run_matrix(args.python, benchmarks, params, pyver)
     outfile = os.path.join(RESULTS_DIR, "%s.json" % pyver)
+    if set(benchmarks) != set(ALL_BENCHMARKS) and os.path.exists(outfile):
+        # Partial run: merge into the existing full matrix instead of
+        # clobbering the other benchmarks' recorded results.
+        with open(outfile) as fh:
+            merged = json.load(fh)
+        merged.setdefault("runs", {}).update(results["runs"])
+        results = merged
     with open(outfile, "w") as fh:
         json.dump(results, fh, indent=2)
     print("\nwrote", outfile)

@@ -635,6 +635,53 @@
         "error": "timeout after 30s",
         "result": null
       }
+    },
+    "queue_mixed": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "queue_mixed",
+        "python": "3.8.20",
+        "greenlet": "3.1.1",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.1.1)",
+        "result": {
+          "items": 100000,
+          "maxsize": 100,
+          "items_per_sec": {
+            "per_sec_median": 1405637.6076620447,
+            "per_sec_min": 1294358.6078372223,
+            "per_sec_max": 2383576.243245791,
+            "reps": 5,
+            "samples": [
+              1294358.6,
+              1341901.3,
+              2383576.2,
+              1405637.6,
+              2239406.9
+            ]
+          }
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "queue_mixed",
+        "python": "3.8.20",
+        "greenlet": "3.1.1",
+        "status": "error",
+        "error": "RuntimeError: consumed 50100 != expected 100000",
+        "lib_version": "22.10.2",
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "queue_mixed",
+        "status": "deadlock",
+        "error": "timeout after 60s",
+        "result": null
+      }
     }
   }
 }

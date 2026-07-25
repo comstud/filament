@@ -6,7 +6,7 @@ never cross-contaminates.  Usage:
     python worker.py <framework> <benchmark> [--params '<json>']
 
 <framework>  one of: filament | gevent | eventlet
-<benchmark>  one of: spawn ctxswitch semaphore queue tpool echo logging137
+<benchmark>  one of: spawn ctxswitch semaphore queue queue_mixed tpool echo logging137
 
 The result JSON is written to stdout on the last line, prefixed with
 "RESULT_JSON:".  All diagnostics go to stderr.  Any failure is reported as
@@ -18,6 +18,7 @@ import json
 import os
 import socket as _stdsocket
 import sys
+import threading
 import time
 import traceback
 
@@ -54,6 +55,9 @@ DEFAULTS = {
     "sem_reps": 5,
     "queue_items": 200000,      # producer/consumer items
     "queue_reps": 5,
+    "qmix_items": 50000,        # items per producer in the mixed bench (x2)
+    "qmix_maxsize": 100,        # bounded queue so producers block on full
+    "qmix_reps": 5,
     "tpool_calls": 3000,        # sequential thread round-trips
     "tpool_reps": 5,
     "echo_msg": 64,             # payload bytes
@@ -90,7 +94,7 @@ class Env(object):
     def Semaphore(self, n):
         raise NotImplementedError
 
-    def Queue(self):
+    def Queue(self, maxsize=None):
         raise NotImplementedError
 
     def tpool_execute(self, fn, *a):
@@ -138,8 +142,10 @@ class FilamentEnv(Env):
     def Semaphore(self, n):
         return self._f.Semaphore(n)
 
-    def Queue(self):
-        return self._f.Queue()
+    def Queue(self, maxsize=None):
+        if maxsize is None:
+            return self._f.Queue()
+        return self._f.Queue(maxsize=maxsize)
 
     def tpool_execute(self, fn, *a):
         return self._tpool.execute(fn, *a)
@@ -192,8 +198,10 @@ class GeventEnv(Env):
     def Semaphore(self, n):
         return self._lock.Semaphore(n)
 
-    def Queue(self):
-        return self._queue.Queue()
+    def Queue(self, maxsize=None):
+        if maxsize is None:
+            return self._queue.Queue()
+        return self._queue.Queue(maxsize)
 
     def tpool_execute(self, fn, *a):
         return self._tp.apply(fn, a)
@@ -240,8 +248,10 @@ class EventletEnv(Env):
     def Semaphore(self, n):
         return self._sem.Semaphore(n)
 
-    def Queue(self):
-        return self._queue.Queue()
+    def Queue(self, maxsize=None):
+        if maxsize is None:
+            return self._queue.Queue()
+        return self._queue.Queue(maxsize)
 
     def tpool_execute(self, fn, *a):
         return self._tpool.execute(fn, *a)
@@ -433,6 +443,56 @@ def bench_queue(env, p):
 
     stats = measure(work, reps)
     return {"items": items, "items_per_sec": stats}
+
+
+def bench_queue_mixed(env, p):
+    """One bounded queue shared by greenthread AND native-thread producers
+    and consumers simultaneously.  This is the cross-domain hand-off case:
+    a native thread blocking in q.get()/q.put() while greenthreads do the
+    same on the other end.  filament's deferred cross-thread wakeup makes
+    this a supported pattern; gevent/eventlet queues are hub-bound and
+    using them from a foreign OS thread is undefined (expect deadlock or
+    a cross-thread switch error)."""
+    items = p["qmix_items"]
+    maxsize = p["qmix_maxsize"]
+    reps = p["qmix_reps"]
+
+    def work():
+        def body():
+            q = env.Queue(maxsize)
+            counts = {"n": 0}
+            counts_lock = threading.Lock()
+
+            def producer(base):
+                for i in range(items):
+                    q.put(base + i)
+
+            def consumer():
+                for _ in range(items):
+                    q.get()
+                    with counts_lock:
+                        counts["n"] += 1
+
+            native = [threading.Thread(target=producer, args=(1000000,)),
+                      threading.Thread(target=consumer)]
+            for t in native:
+                t.daemon = True
+                t.start()
+            hp = env.spawn(producer, 0)
+            hc = env.spawn(consumer)
+            env.joinall([hp, hc])
+            for t in native:
+                t.join(30)
+                if t.is_alive():
+                    raise RuntimeError("native thread hung in mixed queue bench")
+            if counts["n"] != 2 * items:
+                raise RuntimeError("consumed %d != expected %d"
+                                   % (counts["n"], 2 * items))
+            return counts["n"]
+        return env.run(body)
+
+    stats = measure(work, reps)
+    return {"items": 2 * items, "maxsize": maxsize, "items_per_sec": stats}
 
 
 def bench_tpool(env, p):
@@ -761,6 +821,7 @@ def main():
                 "ctxswitch": bench_ctxswitch,
                 "semaphore": bench_semaphore,
                 "queue": bench_queue,
+                "queue_mixed": bench_queue_mixed,
                 "tpool": bench_tpool,
                 "echo": bench_echo,
             }[benchmark]
