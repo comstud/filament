@@ -38,6 +38,11 @@ typedef struct
     FilSchedEvent *tail;
 } FilSchedEventList;
 
+/* Cap on the per-scheduler freelist of FilSchedEvent structs (see
+ * _scheduler_add_event / _sched_main). 256 * ~64B is negligible memory and
+ * covers any realistic ready-batch size. */
+#define FIL_SCHED_EVENT_FREELIST_MAX 256
+
 typedef struct _pyfil_scheduler
 {
     PyObject_HEAD

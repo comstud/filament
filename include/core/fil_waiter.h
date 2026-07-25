@@ -164,6 +164,8 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
 
         for(;;)
         {
+            int signaled;
+
             thr_state = PyEval_SaveThread();
             pthread_mutex_lock(&(waiter->waiter_lock));
 
@@ -184,7 +186,27 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
             pthread_mutex_unlock(&(waiter->waiter_lock));
             PyEval_RestoreThread(thr_state);
 
-            if (fil_waiter_signaled(waiter))
+            /* Barrier + claim. Re-read SIGNALED under waiter_lock (the old
+             * unlocked read here raced a signaler that was still inside its
+             * waiter_lock critical section, allowing our caller to free the
+             * waiter under it). A signaler holds waiter_lock from setting
+             * SIGNALED through its last touch of the waiter, so acquiring
+             * the lock orders it strictly before any free/recycle by our
+             * caller. If we are about to leave WITHOUT having been signaled
+             * (timeout), claim the waiter by setting SIGNALED ourselves so
+             * any later signaler returns immediately instead of touching a
+             * waiter that is being torn down; our caller's list-removal +
+             * decref run in the same GIL window, and GIL-holding signalers
+             * cannot start a new critical section before that. */
+            pthread_mutex_lock(&(waiter->waiter_lock));
+            signaled = fil_waiter_signaled(waiter);
+            if (!signaled && err == ETIMEDOUT)
+            {
+                fil_waiter_set_signaled(waiter);
+            }
+            pthread_mutex_unlock(&(waiter->waiter_lock));
+
+            if (signaled)
             {
                 break;
             }
@@ -198,6 +220,13 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
             /* check signals here so we don't lock up forever */
             if (PyErr_CheckSignals())
             {
+                /* Exception exit: claim as above (CheckSignals may have run
+                 * Python code that released the GIL, so re-check under the
+                 * lock; a concurrent signal just means the claim is a
+                 * no-op and list removal by the caller is idempotent). */
+                pthread_mutex_lock(&(waiter->waiter_lock));
+                fil_waiter_set_signaled(waiter);
+                pthread_mutex_unlock(&(waiter->waiter_lock));
                 return -1;
             }
         }
@@ -452,6 +481,12 @@ static inline void __fil_waiterlist_signal_first(FilWaiterList *waiter_list)
 {
     FilWaiterList *wl = waiter_list->next;
     _fil_waiterlist_del(wl);
+    /* Self-point the detached entry so a second _fil_waiterlist_del (the
+     * waiting side's error path, racing this signal) degenerates into
+     * harmless self-assignment instead of corrupting the list through the
+     * entry's stale neighbor pointers. */
+    wl->next = wl;
+    wl->prev = wl;
     fil_waiter_signal(fil_waiterlist_entry(wl));
 }
 

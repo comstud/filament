@@ -160,8 +160,14 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
             event->next->prev = event;
         elist->head = event;
 
-        pthread_cond_signal(&(sched->sched_cond));
+        /* Signal AFTER dropping sched_lock: waking the scheduler while we
+         * still hold the mutex just makes it collide with the held lock and
+         * costs an extra futex round trip. The predicate (a ready head
+         * event) was published under the lock, so this is safe; 'sched'
+         * remains valid for the duration of the call by the caller's
+         * contract (it holds a reference directly or transitively). */
         pthread_mutex_unlock(&(sched->sched_lock));
+        pthread_cond_signal(&(sched->sched_cond));
         return 0;
     }
 
