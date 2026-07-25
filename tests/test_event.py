@@ -130,8 +130,8 @@ def test_asyncresult_exception_preserves_traceback():
 
 def test_asyncresult_get_nowait_not_ready():
     ar = filament.AsyncResult()
-    # get()/get_nowait() raise the base exc.Timeout (not the Timeout subclass).
-    with pytest.raises(exc.Timeout):
+    # get()/get_nowait() raise the gevent-catchable filament.Timeout subclass.
+    with pytest.raises(filament.Timeout):
         ar.get_nowait()
 
 
@@ -154,11 +154,29 @@ def test_asyncresult_wait_returns_value_never_raises():
     assert filament.spawn(lambda: ar.wait()).wait() is None
 
 
-def test_asyncresult_set_twice_raises():
+def test_asyncresult_set_twice_overwrites():
+    # gevent semantics: set() on an already-set result silently overwrites.
     ar = filament.AsyncResult()
     ar.set(1)
-    with pytest.raises(RuntimeError):
-        ar.set(2)
+    ar.set(2)
+    assert ar.get() == 2
+    ar.set_exception(ValueError("boom"))
+    with pytest.raises(ValueError):
+        ar.get()
+    ar.set(3)
+    assert ar.get() == 3
+    assert ar.successful()
+
+
+def test_asyncresult_eventlet_send_twice_asserts():
+    # eventlet semantics: send() (the eventlet alias) forbids re-sending.
+    ar = filament.AsyncResult()
+    ar.send(1)
+    with pytest.raises(AssertionError):
+        ar.send(2)
+    ar.reset()
+    ar.send(2)
+    assert ar.wait() == 2
 
 
 def test_asyncresult_link_fires():
@@ -206,3 +224,21 @@ def test_asyncresult_reset_allows_reuse():
     assert ar.ready() is False
     ar.set(2)
     assert ar.get_nowait() == 2
+
+
+def test_event_set_then_clear_during_wait_returns_true():
+    # gevent 1.1 semantics: a waiter parked in wait() sees True if the flag
+    # was set at any point during the wait, even if cleared again before the
+    # waiter resumed.
+    ev = filament.Event()
+    got = []
+
+    def waiter():
+        got.append(ev.wait(1.0))
+
+    g = filament.spawn(waiter)
+    filament.sleep(0)          # park the waiter
+    ev.set()
+    ev.clear()                 # clear before the waiter gets to run
+    g.wait()
+    assert got == [True]

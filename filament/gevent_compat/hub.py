@@ -59,11 +59,32 @@ class Waiter(object):
         self._result.set(args)
 
     def throw(self, *args):
-        """Wake the waiter by raising an exception in ``get()``."""
-        exc = args[0] if args else Exception
-        if isinstance(exc, type):
-            exc = exc(*args[1:])
-        self._result.set_exception(exc)
+        """
+        Wake the waiter by raising an exception in ``get()``.
+
+        Follows ``greenlet.throw`` semantics like gevent's Waiter:
+        ``throw()`` raises GreenletExit; ``throw(instance)`` raises it as-is;
+        ``throw(type[, value[, tb]])`` raises ``value`` (normalized).
+        """
+        if not args:
+            exc_type, exc_value, exc_tb = GreenletExit, GreenletExit(), None
+        elif isinstance(args[0], type):
+            exc_type = args[0]
+            value = args[1] if len(args) > 1 else None
+            if isinstance(value, BaseException):
+                exc_value = value
+            elif value is None:
+                exc_value = exc_type()
+            elif isinstance(value, tuple):
+                exc_value = exc_type(*value)
+            else:
+                exc_value = exc_type(value)
+            exc_tb = args[2] if len(args) > 2 else None
+        else:
+            exc_value = args[0]
+            exc_type = type(exc_value)
+            exc_tb = args[1] if len(args) > 1 else None
+        self._result.set_exception(exc_value, (exc_type, exc_value, exc_tb))
 
     def get(self):
         """Block until switched; return the value or re-raise the exception."""

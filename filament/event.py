@@ -41,6 +41,12 @@ from _filament.locking import Condition
 
 from filament import exc
 from filament import greenthread
+from filament import timeout as _timeout
+
+# The C primitives raise the *base* ``exc.Timeout`` on a wait timeout; the
+# context-manager ``filament.timeout.Timeout`` (== gevent.Timeout in the shim)
+# is a subclass.  ``type(e) is exc.Timeout`` therefore identifies "our own wait
+# timed out" vs "an outer ``with Timeout(...):`` fired", which must propagate.
 
 
 # -- small py2/py3 re-raise helper ------------------------------------------
@@ -73,6 +79,10 @@ class Event(object):
     def __init__(self):
         self._cond = Condition()
         self._flag = False
+        # Monotonic count of set() calls, so waiters can tell "the flag was
+        # set (and possibly cleared again) while I was parked" -- gevent 1.1
+        # semantics: such a waiter still sees True.
+        self._set_count = 0
 
     def is_set(self):
         """Return True if the event is set."""
@@ -88,6 +98,7 @@ class Event(object):
         """Set the flag and wake every waiter."""
         with self._cond:
             self._flag = True
+            self._set_count += 1
             self._cond.notify_all()
 
     def clear(self):
@@ -105,12 +116,18 @@ class Event(object):
         with self._cond:
             if self._flag:
                 return True
+            start_count = self._set_count
             try:
                 # Condition.wait releases the lock, parks, reacquires on wake.
                 self._cond.wait(timeout)
-            except exc.Timeout:
-                return False
-            return self._flag
+            except exc.Timeout as e:
+                if type(e) is not exc.Timeout:
+                    raise          # an outer with-Timeout fired; propagate
+                return self._set_count != start_count
+            # True if currently set, OR if it was set at any point while we
+            # were parked (even if cleared again before we resumed) -- gevent
+            # 1.1 semantics.
+            return self._flag or self._set_count != start_count
 
 
 # Sentinel distinguishing "no value yet" from a legitimately stored None.
@@ -159,31 +176,46 @@ class AsyncResult(object):
         """The stored exception instance, or None."""
         return self._exc_info[1] if self._exc_info else None
 
+    @property
+    def exc_info(self):
+        """The stored ``(type, value, tb)`` tuple if failed (gevent parity)."""
+        if self._exc_info:
+            return self._exc_info
+
     # -- setting the result --------------------------------------------------
 
     def set(self, value=None):
-        """Store ``value`` and wake all waiters.  May only be called once."""
-        if self._ready:
-            raise RuntimeError("AsyncResult already set")
+        """
+        Store ``value`` and wake all waiters.
+
+        Like gevent, calling this on an already-set result silently overwrites
+        the previous value (or previously stored exception).  Waiters that were
+        already released keep the value they saw; there can be no parked
+        waiters once the result is ready.
+        """
+        was_ready = self._ready
         self._value = value
+        self._exc_info = None
         self._ready = True
-        self._msg.send(value)          # wakes/re-arms all Message waiters
+        if not was_ready:
+            self._msg.send(value)      # wakes/re-arms all Message waiters
         self._fire_links()
 
     def set_exception(self, exception, exc_info=None):
         """
-        Store an exception (so waiters re-raise it).  May only be called once.
+        Store an exception (so waiters re-raise it).  Overwrites like ``set``.
 
         ``exc_info`` may be an explicit ``(type, value, tb)`` tuple to preserve
         a traceback; otherwise we synthesize one from ``exception``.
         """
-        if self._ready:
-            raise RuntimeError("AsyncResult already set")
         if exc_info is None:
             exc_info = (type(exception), exception, None)
+        was_ready = self._ready
         self._exc_info = exc_info
+        self._value = None
         self._ready = True
-        self._msg.send_exception(exc_info[0], exc_info[1], exc_info[2])
+        if not was_ready:
+            self._msg.send_exception(exc_info[0], exc_info[1], exc_info[2])
         self._fire_links()
 
     # -- getting the result --------------------------------------------------
@@ -201,10 +233,18 @@ class AsyncResult(object):
                 _reraise(*self._exc_info)
             return self._value
         if not block:
-            raise exc.Timeout("AsyncResult is not ready")
+            # gevent raises its Timeout class here; ours is _timeout.Timeout.
+            raise _timeout.Timeout(exception=None)
         # Message.wait returns the value or re-raises the stored exception (with
         # its original traceback), and raises exc.Timeout on wait timeout.
-        return self._msg.wait(timeout)
+        try:
+            return self._msg.wait(timeout)
+        except exc.Timeout as e:
+            if type(e) is exc.Timeout:
+                # Our own wait timed out: surface it as the gevent-catchable
+                # subclass (``except gevent.Timeout:`` must catch this).
+                raise _timeout.Timeout(timeout)
+            raise                      # an outer with-Timeout fired; propagate
 
     def get_nowait(self):
         """Non-blocking :meth:`get`; raises Timeout if not ready."""
@@ -220,8 +260,10 @@ class AsyncResult(object):
         if not self._ready:
             try:
                 self._msg.wait(timeout)
-            except exc.Timeout:
-                return None
+            except exc.Timeout as e:
+                if type(e) is exc.Timeout:
+                    return None        # our own wait timed out
+                raise                  # an outer with-Timeout fired; propagate
             except Exception:
                 # An exception result: wait() reports the value (None) rather
                 # than raising.  Callers wanting the exception use get().
@@ -229,6 +271,19 @@ class AsyncResult(object):
         return self._value
 
     # -- callbacks -----------------------------------------------------------
+
+    def __call__(self, source):
+        """
+        gevent link-target protocol: adopt ``source``'s outcome as our own.
+
+        Lets an AsyncResult be passed straight to ``greenlet.link(result)``.
+        """
+        if source.successful():
+            self.set(source.value)
+        else:
+            exc_info = getattr(source, "exc_info", None)
+            self.set_exception(source.exception, exc_info or None)
+        return self
 
     def link(self, callback):
         """
@@ -260,7 +315,11 @@ class AsyncResult(object):
     def send(self, result=None, exc_obj=None):
         """
         eventlet alias: deliver ``result`` (or an exception via ``exc_obj``).
+
+        Unlike gevent's ``set`` (which overwrites), eventlet forbids re-sending
+        an un-reset Event -- keep that contract here.
         """
+        assert not self._ready, "Trying to re-send() an already-sent event."
         if exc_obj is not None:
             return self.set_exception(exc_obj)
         return self.set(result)
