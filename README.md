@@ -276,3 +276,6 @@ filament-specific modifications; it remains under greenlet's own licenses
 (MIT-style, plus the PSF license for its Stackless-derived platform files) —
 see `vendor/greenlet/LICENSE`, `vendor/greenlet/LICENSE.PSF`, and
 `vendor/greenlet/VENDORED.md` for provenance and the list of local changes.
+A few small portions of filament itself are derived from CPython's standard
+library under the PSF License (`LICENSE.PSF`); see `THIRD_PARTY_NOTICES.md`
+for the complete list.

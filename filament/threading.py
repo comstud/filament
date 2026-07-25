@@ -272,6 +272,9 @@ class Timer(Thread):
 
     Mirrors ``threading.Timer``: create with (interval, function, args, kwargs),
     then ``start()``; ``cancel()`` prevents the call if it hasn't fired yet.
+
+    Derived from CPython's ``threading.Timer`` (Python Software Foundation
+    License Version 2; see ``LICENSE.PSF``).
     """
 
     __doc__ = getattr(_orig_threading.Timer, '__doc__', __doc__)

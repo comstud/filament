@@ -7,6 +7,10 @@ module is preferred in production (see ``filament/queue.py``); this module is
 the readable, dependency-light fallback and is handy for platforms where the C
 queue is unavailable.
 
+The overridable-hook structure (``_init``/``_put``/``_get``) and the
+``task_done``/``join`` logic are derived from CPython's ``Lib/queue.py``
+(Python Software Foundation License Version 2; see ``LICENSE.PSF``).
+
 All of the historic bugs are fixed here:
 
 * ``LiteQueue.get`` now re-checks emptiness in a loop after waking (spurious

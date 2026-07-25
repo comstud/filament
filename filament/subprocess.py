@@ -1,5 +1,9 @@
 """Cooperative-ish replacement for the ``subprocess`` module.
 
+The ``call``/``check_call``/``check_output`` wrappers follow the canonical
+CPython ``subprocess`` idiom (Python Software Foundation License Version 2;
+see ``LICENSE.PSF``).
+
 Greening ``subprocess`` in full is a large undertaking; this module implements
 the parts that otherwise block the whole process:
 

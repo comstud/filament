@@ -7,6 +7,10 @@ greenthreads share one OS thread -- so genuine parity requires per-greenthread
 storage instead.  This module provides exactly that: a ``local`` whose
 attributes are private to the currently-running filament.
 
+The attribute-swapping design follows CPython's ``Lib/_threading_local.py``
+(Python Software Foundation License Version 2; see ``LICENSE.PSF``), adapted
+to key storage by greenthread rather than OS thread.
+
 Implementation notes
 --------------------
 * We key each instance's per-greenthread dict on the current greenlet object,

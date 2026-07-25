@@ -31,6 +31,9 @@
 #define FIL_SOCKET_MODULE_NAME "_filament.socket"
 #define FIL_DEFAULT_RESOLVER_CLASS "filament.thrpool_resolver"
 
+/* The SOCKET_T/INVALID_SOCKET/PyLong_{From,As}Socket_t portability block
+ * below is taken from CPython's Modules/socketmodule.h (Python Software
+ * Foundation License Version 2; see LICENSE.PSF in the project root). */
 #ifndef INVALID_SOCKET
 #define INVALID_SOCKET (-1)
 #endif
