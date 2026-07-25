@@ -66,6 +66,29 @@ def detect_pyver(python):
     return out.decode().strip()
 
 
+def _norm_arch(machine):
+    m = (machine or "").lower()
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    return m or "unknown"
+
+
+def detect_arch(python):
+    """Architecture of the *target* interpreter, normalized to amd64/arm64.
+
+    Results are partitioned by arch (results/<arch>/<pyver>.json) so an amd64
+    run never clobbers the aarch64 numbers (and vice versa)."""
+    try:
+        out = subprocess.check_output(
+            [python, "-c", "import platform;print(platform.machine())"])
+        return _norm_arch(out.decode().strip())
+    except Exception:
+        import platform
+        return _norm_arch(platform.machine())
+
+
 def run_worker(python, framework, benchmark, params, timeout, extra=None):
     cmd = [python, WORKER, framework, benchmark, "--params", json.dumps(params)]
     if extra:
@@ -181,25 +204,32 @@ def _cell(env, extract):
 
 
 def build_report():
-    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*.json")))
+    # Results are partitioned by arch: results/<arch>/<pyver>.json. Fall back to
+    # any legacy flat files (tagged "unknown") so old layouts still render.
+    files = sorted(glob.glob(os.path.join(RESULTS_DIR, "*", "*.json")))
+    files += sorted(glob.glob(os.path.join(RESULTS_DIR, "*.json")))
     data = []
     for f in files:
         try:
             with open(f) as fh:
-                data.append(json.load(fh))
+                d = json.load(fh)
         except Exception:
-            pass
-    # sort by python version descending
+            continue
+        parent = os.path.basename(os.path.dirname(f))
+        d["_arch"] = parent if parent != os.path.basename(RESULTS_DIR) else "unknown"
+        data.append(d)
+    # sort arch-major, then python version descending within each arch
     def vk(d):
-        return tuple(int(x) for x in d["python"].split("."))
-    data.sort(key=vk, reverse=True)
+        return (d["_arch"], tuple(-int(x) for x in d["python"].split(".")))
+    data.sort(key=vk)
 
     lines = []
     lines.append("# filament vs gevent vs eventlet — benchmark results")
     lines.append("")
     lines.append("Greenlet-based cooperative concurrency shootout: **filament** "
                  "(this repo) against modern **gevent** and **eventlet**, across "
-                 "CPython versions on aarch64 Linux.")
+                 "CPython versions on aarch64 and x86_64 Linux (results are "
+                 "grouped by architecture below).")
     lines.append("")
     lines.append("Each (framework, benchmark) ran in its own fresh subprocess. "
                  "Micro-benchmarks report the **median** of several timed reps "
@@ -276,13 +306,14 @@ def build_report():
     # environment table
     lines.append("## Environments")
     lines.append("")
-    lines.append("| Python | greenlet | gevent | eventlet |")
-    lines.append("|---|---|---|---|")
+    lines.append("| Arch | Python | greenlet | gevent | eventlet |")
+    lines.append("|---|---|---|---|---|")
     for d in data:
         gv = _lib_ver(d, "gevent")
         ev = _lib_ver(d, "eventlet")
         gl = _greenlet_ver(d)
-        lines.append("| %s | %s | %s | %s |" % (d["python"], gl, gv, ev))
+        lines.append("| %s | %s | %s | %s | %s |" %
+                     (d["_arch"], d["python"], gl, gv, ev))
     lines.append("")
     lines.append("Availability notes:")
     lines.append("")
@@ -315,7 +346,13 @@ def build_report():
     for d in data:
         lines += _report_for_version(d)
 
-    lines += _headline_section(data)
+    # one headline block per architecture (ratios are the portable signal)
+    seen_arch = []
+    for d in data:
+        if d["_arch"] not in seen_arch:
+            seen_arch.append(d["_arch"])
+    for arch in seen_arch:
+        lines += _headline_section([d for d in data if d["_arch"] == arch], arch)
 
     with open(REPORT, "w") as fh:
         fh.write("\n".join(lines) + "\n")
@@ -349,7 +386,7 @@ def _get(d, bench, fw):
 
 def _report_for_version(d):
     L = []
-    L.append("## Python %s" % d["python"])
+    L.append("## %s · Python %s" % (d.get("_arch", "?"), d["python"]))
     L.append("")
     L.append("Higher is better except latency rows (lower is better). "
              "**bold** = that framework errored / was unavailable / deadlocked "
@@ -437,8 +474,8 @@ def _logging_detail(d):
     return L
 
 
-def _headline_section(data):
-    L = ["## Headline findings", ""]
+def _headline_section(data, arch=None):
+    L = ["## Headline findings%s" % (" — %s" % arch if arch else ""), ""]
     if not data:
         return L
     # Use the newest version with all three frameworks working for the prose.
@@ -531,6 +568,9 @@ def main():
     ap.add_argument("--benchmarks", default="")
     ap.add_argument("--scale", default="full", choices=["full", "small"])
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--arch", default="",
+                    help="override the results arch subdir (default: auto-detect "
+                         "the target interpreter's machine, e.g. amd64/arm64)")
     args = ap.parse_args()
 
     if not os.path.isdir(RESULTS_DIR):
@@ -551,8 +591,12 @@ def main():
     print("benchmarks:", ", ".join(benchmarks))
     print()
 
+    arch = args.arch or detect_arch(args.python)
     results = run_matrix(args.python, benchmarks, params, pyver)
-    outfile = os.path.join(RESULTS_DIR, "%s.json" % pyver)
+    archdir = os.path.join(RESULTS_DIR, arch)
+    if not os.path.isdir(archdir):
+        os.makedirs(archdir)
+    outfile = os.path.join(archdir, "%s.json" % pyver)
     if set(benchmarks) != set(ALL_BENCHMARKS) and os.path.exists(outfile):
         # Partial run: merge into the existing full matrix instead of
         # clobbering the other benchmarks' recorded results.

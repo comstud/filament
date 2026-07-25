@@ -594,9 +594,21 @@ def _echo_once(env, msg, mlen, conc, rounds):
             # Accept exactly `conc` connections then exit, so no greenthread is
             # ever left blocked in accept() on a fd we are about to close+reuse
             # across reps (that collision deadlocks filament's poller).
-            for _ in range(conc):
-                conn, _ = srv.accept()
-                handlers.append(env.spawn(handle, conn))
+            try:
+                for _ in range(conc):
+                    conn, _ = srv.accept()
+                    handlers.append(env.spawn(handle, conn))
+            except Exception as e:
+                # If accept() fails (e.g. EMFILE at high concurrency under a low
+                # RLIMIT_NOFILE), record it and tear down the listener. Closing
+                # the listen socket RSTs any backlog connections, so clients
+                # blocked in recv() wake with an error instead of the whole run
+                # deadlocking in joinall(clients) below.
+                state.setdefault("accept_error", "%s: %s" % (type(e).__name__, e))
+                try:
+                    srv.close()
+                except Exception:
+                    pass
 
         acc = env.spawn(acceptor)
         env.sleep(0)  # let acceptor reach accept()
@@ -604,19 +616,25 @@ def _echo_once(env, msg, mlen, conc, rounds):
         latencies = []
 
         def client():
-            s = env.green_socket()
-            s.connect(addr)
-            for _ in range(rounds):
-                t0 = perf()
-                s.sendall(msg)
-                need = mlen
-                while need > 0:
-                    chunk = s.recv(need)
-                    if not chunk:
-                        break
-                    need -= len(chunk)
-                latencies.append(perf() - t0)
-            s.close()
+            try:
+                s = env.green_socket()
+                s.connect(addr)
+                for _ in range(rounds):
+                    t0 = perf()
+                    s.sendall(msg)
+                    need = mlen
+                    while need > 0:
+                        chunk = s.recv(need)
+                        if not chunk:
+                            break
+                        need -= len(chunk)
+                    latencies.append(perf() - t0)
+                s.close()
+            except Exception as e:
+                # A reset (from the acceptor tearing down on fd exhaustion) or a
+                # socket() EMFILE surfaces here; record it so joinall() can
+                # complete and _echo_once reports a real error, not a hang.
+                state.setdefault("client_error", "%s: %s" % (type(e).__name__, e))
 
         t0 = perf()
         clients = [env.spawn(client) for _ in range(conc)]
@@ -631,6 +649,15 @@ def _echo_once(env, msg, mlen, conc, rounds):
             srv.close()
         except Exception:
             pass
+
+        # A failed acceptor means the run is structurally invalid (not a real
+        # throughput measurement). Surface it as an error rather than reporting
+        # a bogus partial number -- the driver then records "error", not the
+        # 240s "deadlock" this used to produce under fd exhaustion.
+        if state.get("accept_error"):
+            raise RuntimeError(
+                "echo acceptor failed (fd exhaustion at conc=%d?): %s"
+                % (conc, state["accept_error"]))
 
         latencies.sort()
         state["rps"] = (conc * rounds) / wall if wall > 0 else 0.0
