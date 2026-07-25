@@ -16,6 +16,11 @@ PythonState::PythonState()
     ,py_recursion_depth(0)
     ,current_executor(nullptr)
     ,stackpointer(nullptr)
+    #if VGL_FIBER
+    ,fil_c_stack_top(0)
+    ,fil_c_stack_soft_limit(0)
+    ,fil_c_stack_hard_limit(0)
+    #endif
     #ifdef Py_GIL_DISABLED
     ,c_stack_refs(nullptr)
     #endif
@@ -91,6 +96,20 @@ PythonState::PythonState()
     this->cframe = &PyThreadState_GET()->root_cframe;
 #endif
 }
+
+#if GREENLET_PY314 && VGL_FIBER
+void PythonState::fil_set_stack_limits(const char* lo, const char* top) noexcept
+{
+    // Mirrors _Py_InitializeRecursionLimits()'s layout on the fiber's
+    // private stack: the guard page sits immediately below ``lo``, the
+    // hard limit one margin above it, the soft limit one margin above
+    // that.  _Py_STACK_GROWS_DOWN holds on both supported
+    // architectures (aarch64, x86_64).
+    this->fil_c_stack_top = (uintptr_t)top;
+    this->fil_c_stack_hard_limit = (uintptr_t)lo + _PyOS_STACK_MARGIN_BYTES;
+    this->fil_c_stack_soft_limit = (uintptr_t)lo + 2 * _PyOS_STACK_MARGIN_BYTES;
+}
+#endif
 
 #if GREENLET_PY314 && defined(Py_GIL_DISABLED)
 void PythonState::capture_c_stack_refs(const PyThreadState* tstate) noexcept
@@ -193,6 +212,19 @@ void PythonState::operator<<(const PyThreadState *const tstate) noexcept
   #if GREENLET_PY314
     this->py_recursion_depth = tstate->py_recursion_limit - tstate->py_recursion_remaining;
     this->current_executor = tstate->current_executor;
+    #if VGL_FIBER
+    {
+        /* Reload our C-stack bounds (see the member comment).  For a
+         * running context these cannot have changed since operator>>
+         * installed them, so this is a straight copy that keeps the
+         * capture/restore pair symmetric for main greenlets (whose
+         * first capture is what memorizes the thread's real bounds). */
+        const _PyThreadStateImpl* fil_ts = (const _PyThreadStateImpl*)tstate;
+        this->fil_c_stack_top = fil_ts->c_stack_top;
+        this->fil_c_stack_soft_limit = fil_ts->c_stack_soft_limit;
+        this->fil_c_stack_hard_limit = fil_ts->c_stack_hard_limit;
+    }
+    #endif
     #ifdef Py_GIL_DISABLED
     this->c_stack_refs = ((_PyThreadStateImpl*)tstate)->c_stack_refs;
     // Capture the deferred references now, while our C stack is still live, so
@@ -337,6 +369,21 @@ void PythonState::operator>>(PyThreadState *const tstate) noexcept
   #if GREENLET_PY314
     tstate->py_recursion_remaining = tstate->py_recursion_limit - this->py_recursion_depth;
     tstate->current_executor = this->current_executor;
+    #if VGL_FIBER
+    if (this->fil_c_stack_top) {
+        /* Install the bounds of the stack this greenlet actually runs
+         * on: its private stack for fibers (seeded by
+         * fil_set_stack_limits), the thread's real stack for main
+         * greenlets (captured at their last switch-out).  Zero means
+         * "never seeded or captured", which cannot happen on a switch-in
+         * path, but leaving the thread's values alone is the safe
+         * degradation. */
+        _PyThreadStateImpl* fil_ts = (_PyThreadStateImpl*)tstate;
+        fil_ts->c_stack_top = this->fil_c_stack_top;
+        fil_ts->c_stack_soft_limit = this->fil_c_stack_soft_limit;
+        fil_ts->c_stack_hard_limit = this->fil_c_stack_hard_limit;
+    }
+    #endif
     #ifdef Py_GIL_DISABLED
     ((_PyThreadStateImpl*)tstate)->c_stack_refs = this->c_stack_refs;
     // We're the running greenlet again: our C-stack refs live in the thread

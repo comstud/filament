@@ -24,6 +24,7 @@ Each (framework, benchmark) ran in its own fresh subprocess. Micro-benchmarks re
 
 | Python | greenlet | gevent | eventlet |
 |---|---|---|---|
+| 3.14.6 | 3.3.2 | 26.7.0 | 0.41.1 |
 | 3.13.5 | 3.5.4 | 26.7.0 | 0.41.1 |
 | 3.12.13 | 3.5.4 | 26.7.0 | 0.41.1 |
 | 3.10.20 | 3.5.4 | 26.7.0 | 0.41.1 |
@@ -37,6 +38,35 @@ Availability notes:
 - **gevent/eventlet on Python 3.8**: latest releases have no 3.8/aarch64 wheels, so pip resolved to gevent **22.10.2** and eventlet **0.39.1** (still current enough for a fair comparison).
 - **filament** built on every interpreter (version-tagged `.so`), once `PBR_VERSION` was set and, for 2.7, a `#include <pythread.h>` was added so modern GCC sees `PyThread_get_thread_ident`.
 - **filament `#137` on Python 2.7**: originally `filament.patcher.patch_all()` raised `TypeError: __weakref__ slot disallowed` on 2.7 (an illegal ``__weakref__`` in ``filament/ssl.py``'s ``__slots__``); that was fixed, and the 2.7 table now includes the logging benchmark wherever it has been re-run since.
+
+## Python 3.14.6
+
+Higher is better except latency rows (lower is better). **bold** = that framework errored / was unavailable / deadlocked for this benchmark.
+
+| Benchmark | Metric | filament | gevent | eventlet |
+|---|---|---|---|---|
+| spawn (tracked, spawn+join) | greenthreads/s | 401.6k | 156.6k | 176.1k |
+| spawn (fire & forget) | spawn_n/s | 387.3k | 307.0k | 256.9k |
+| context switch | switches/s | 3.62M | 1.52M | 923.0k |
+| semaphore uncontended | ops/s | 41.53M | 10.48M | 13.08M |
+| semaphore contended | ops/s | 42.59M | 10.48M | 11.68M |
+| queue put/get | items/s | 14.07M | 11.72M | 5.69M |
+| queue shared green+native threads | items/s | 2.86M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 25.7k | 23.9k | 11.4k |
+| tpool round-trip | mean latency | 38.9 us | 41.86 us | 87.46 us |
+| echo @ conc 100 | req/s | 136.0k | 123.1k | 96.3k |
+| echo @ conc 100 | p50/p99 ms | 0.689 / 1.169 | 0.786 / 0.969 | 1.017 / 1.582 |
+| echo @ conc 1000 | req/s | 101.3k | 91.3k | 65.9k |
+| echo @ conc 1000 | p50/p99 ms | 8.054 / 14.87 | 9.293 / 23.156 | 13.521 / 23.105 |
+
+### #137 logging-from-threadpool (monkey-patched)
+
+| Framework | Path | Result | throughput |
+|---|---|---|---|
+| filament | filament.tpool | OK — completed | 17.7k msg/s |
+| gevent | naive | **DEADLOCK** | - |
+| gevent | workaround | **DEADLOCK** | - |
+| eventlet | naive | **DEADLOCK** | - |
 
 ## Python 3.13.5
 
@@ -185,13 +215,13 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 ## Headline findings
 
-Numbers below are from **Python 3.13.5**; the framework *ratios* hold across every version in the matrix (see per-version tables).
+Numbers below are from **Python 3.14.6**; the framework *ratios* hold across every version in the matrix (see per-version tables).
 
-- **Spawn throughput (tracked spawn+join) — filament wins big:** filament 374.7k gt/s vs gevent 154.3k vs eventlet 185.5k — filament 2.4x gevent, 2.0x eventlet. filament's lead is widest on the older interpreters (up to ~4.7x gevent on 3.10/3.8).
-- **Context-switch rate — filament wins:** filament 4.35M sw/s vs gevent 1.47M vs eventlet 941.5k — filament 3.0x gevent, 4.6x eventlet. Consistent across all versions.
-- **Semaphore / Queue — filament wins:** its C-level `Semaphore` does ~46.93M uncontended ops/s vs gevent 10.44M / eventlet 12.40M (3-8x), and it leads on queue put/get too.
-- **Mixed green+native queue — filament only:** a single bounded `Queue` worked simultaneously by greenthreads AND native `threading.Thread` producers/consumers runs at ~2.87M items/s in filament. The same workload on gevent/eventlet deadlocks or errors — their queues are hub-bound and cannot be used from a foreign OS thread. filament's per-thread scheduler + deferred cross-thread wakeup makes this a first-class pattern (same mechanism as the #137 win).
-- **Threadpool round-trip — filament wins (post-optimization):** filament 27.0k calls/s vs gevent 25.0k vs eventlet 12.6k — filament 1.1x gevent, 2.1x eventlet. This benchmark used to be filament's one loss; MRU (most-recently-idle) worker wakeup closed it -- a single shared condvar was waking the COLDEST idle worker for every job.
+- **Spawn throughput (tracked spawn+join) — filament wins big:** filament 401.6k gt/s vs gevent 156.6k vs eventlet 176.1k — filament 2.6x gevent, 2.3x eventlet. filament's lead is widest on the older interpreters (up to ~4.7x gevent on 3.10/3.8).
+- **Context-switch rate — filament wins:** filament 3.62M sw/s vs gevent 1.52M vs eventlet 923.0k — filament 2.4x gevent, 3.9x eventlet. Consistent across all versions.
+- **Semaphore / Queue — filament wins:** its C-level `Semaphore` does ~41.53M uncontended ops/s vs gevent 10.48M / eventlet 13.08M (3-8x), and it leads on queue put/get too.
+- **Mixed green+native queue — filament only:** a single bounded `Queue` worked simultaneously by greenthreads AND native `threading.Thread` producers/consumers runs at ~2.86M items/s in filament. The same workload on gevent/eventlet deadlocks or errors — their queues are hub-bound and cannot be used from a foreign OS thread. filament's per-thread scheduler + deferred cross-thread wakeup makes this a first-class pattern (same mechanism as the #137 win).
+- **Threadpool round-trip — filament wins (post-optimization):** filament 25.7k calls/s vs gevent 23.9k vs eventlet 11.4k — filament 1.1x gevent, 2.2x eventlet. This benchmark used to be filament's one loss; MRU (most-recently-idle) worker wakeup closed it -- a single shared condvar was waking the COLDEST idle worker for every job.
 - **Echo server — filament wins (post-optimization):** filament matches or beats gevent's requests/s at both concurrencies, with better p50/p99 latency (see the 3.13 table); eventlet trails both. Persistent edge-triggered readiness events (no per-block epoll_ctl) plus a GIL-free io-thread completion path closed what used to be a ~1.4-1.6x gap.
 - **#137 logging-in-threadpool — filament's headline win:** filament logs from its real-thread pool while the hub runs greenthreads and **just works, no workaround, ~15-16k msgs/s** (Python 3.8-3.13). gevent and eventlet both **deadlock** under a monkey-patched hub, and gevent's documented mitigations (hub threadpool + native logging locks + `logThreads=False`) **do not** save it — it still deadlocks. This is filament's whole reason for existing, and it holds up.
 

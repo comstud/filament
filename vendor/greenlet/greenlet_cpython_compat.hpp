@@ -156,7 +156,7 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
  * low-level switch differ.
  *
  * Version/platform gating:
- *  - 3.10b1 .. 3.13: every version whose PyThreadState save/restore is
+ *  - 3.10b1 .. 3.15: every version whose PyThreadState save/restore is
  *    already covered by TPythonState.cpp.  On the tstate->cframe era
  *    (3.10..3.12, GREENLET_USE_CFRAME) the classic core parks the
  *    child's initial _PyCFrame in g_initialstub's stack frame -- correct
@@ -164,8 +164,24 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
  *    sliced stack.  The fiber core instead reserves the _PyCFrame slot
  *    at the top of the child's OWN private stack (StackState::
  *    fil_init_fiber), which persists for the fiber's whole lifetime, so
- *    the relocation is what makes <=3.12 eligible.  3.14+ has not been
- *    validated (stackpointer/current_executor interplay).
+ *    the relocation is what makes <=3.12 eligible.
+ *  - On 3.14 the two version-specific pieces are core-independent and
+ *    run identically under the fiber core:
+ *      - tstate->current_executor (JIT) is saved/restored by
+ *        PythonState::operator<< / operator>> exactly as in the classic
+ *        core (g_switchstack performs both around the asm switch);
+ *      - the stackpointer capture through the materialized top frame at
+ *        switch-out only reads _top_frame->f_frame, which lives in the
+ *        heap datastack chunks -- and with private stacks nothing is
+ *        sliced anyway (_stack_saved stays 0, copy_from_stack is plain
+ *        memcpy), so the frame addresses operator<< sees are the true
+ *        ones.  3.14's machine-SP recursion/trashcan bounds are remapped
+ *        onto the private stack (fil_set_stack_limits).
+ *  - 3.15: same layout as 3.14 for everything the fiber core touches
+ *    (c_stack_{top,soft_limit,hard_limit} bounds swap included); the
+ *    3.15-only changes (stackref-walking tp_traverse/tp_clear,
+ *    FRAME_OWNED_BY_CSTACK removal, tp_is_gc removal) are
+ *    core-independent.  Validated against 3.15.0b4.
  *  - GIL builds only: the free-threaded C-stack-ref machinery snapshots
  *    assume the classic core.
  *  - aarch64 + x86_64 System V only (the two asm switch flavors below).
@@ -177,7 +193,7 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
 #    include "fil_fiber_config.h"
 #  endif
 #endif
-#if defined(FIL_FIBER_CORE) && PY_VERSION_HEX >= 0x30A00B1 && !GREENLET_PY314 \
+#if defined(FIL_FIBER_CORE) && PY_VERSION_HEX >= 0x30A00B1 \
     && !defined(Py_GIL_DISABLED) \
     && (defined(__aarch64__) || (defined(__x86_64__) && !defined(_WIN64)))
 #  define VGL_FIBER 1
