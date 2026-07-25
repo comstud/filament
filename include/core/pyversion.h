@@ -172,4 +172,45 @@ static inline PyGreenlet *_fil_greenlet_get_parent(PyGreenlet *g)
 #define PyGreenlet_GetParent(g)      _fil_greenlet_get_parent((PyGreenlet *)(g))
 #endif
 
+/*
+ * ------------------------------------------------------------------
+ * Fast greenlet switch.
+ *
+ * When filament is built with its vendored greenlet (Python 3), the
+ * vendored module exports a capsule "_fil_greenlet._C_FAST_API" holding
+ * a PyObject *(*)(PyObject *) that performs a switch with no
+ * args/kwargs marshalling (the scheduler<->greenthread hot path never
+ * passes switch values).  fil_greenlet_switch_noargs() resolves it
+ * lazily per translation unit and falls back to PyGreenlet_Switch() so
+ * builds against a stock greenlet (and all Python 2 builds) keep
+ * working unchanged.
+ * ------------------------------------------------------------------
+ */
+#if _FIL_PYTHON3
+__attribute__((unused)) static PyObject *(*_fil_fast_switch_fp)(PyObject *) = NULL;
+__attribute__((unused)) static int _fil_fast_switch_tried = 0;
+#endif
+
+static inline PyObject *fil_greenlet_switch_noargs(PyGreenlet *g)
+{
+#if _FIL_PYTHON3
+    if (!_fil_fast_switch_tried)
+    {
+        _fil_fast_switch_tried = 1;
+        _fil_fast_switch_fp = (PyObject *(*)(PyObject *))PyCapsule_Import(
+            "_fil_greenlet._C_FAST_API", 0);
+        if (_fil_fast_switch_fp == NULL)
+        {
+            /* Stock-greenlet build: no fast entry.  Not an error. */
+            PyErr_Clear();
+        }
+    }
+    if (_fil_fast_switch_fp != NULL)
+    {
+        return _fil_fast_switch_fp((PyObject *)g);
+    }
+#endif
+    return PyGreenlet_Switch(g, NULL, NULL);
+}
+
 #endif /* __FIL_CORE_PYVERSION_H__ */

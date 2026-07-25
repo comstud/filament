@@ -236,7 +236,9 @@ static void _handle_greenlet_done(PyGreenlet **greenlet)
 
 static int _greenlet_switch(PyGreenlet *greenlet)
 {
-    PyObject *result = PyGreenlet_Switch(greenlet, NULL, NULL);
+    /* Uses the vendored greenlet's no-args fast entry when available
+     * (see fil_greenlet_switch_noargs in core/pyversion.h). */
+    PyObject *result = fil_greenlet_switch_noargs(greenlet);
     Py_XDECREF(result);
     return (result == NULL) ? -1 : 0;
 }

@@ -144,7 +144,7 @@ static inline void _fil_waiter_handle_timeout(PyFilScheduler *sched, FilWaiter *
  */
 static inline void _fil_waiter_switch_event_cb(PyFilScheduler *sched, void *cb_arg)
 {
-    PyObject *result = PyGreenlet_Switch((PyGreenlet *)cb_arg, NULL, NULL);
+    PyObject *result = fil_greenlet_switch_noargs((PyGreenlet *)cb_arg);
     Py_XDECREF(result);
 }
 

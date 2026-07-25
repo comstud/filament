@@ -16,7 +16,19 @@ def _greenlet_include_dir():
     the python include directory that the extension builder adds
     automatically.  If it is the same, return None.  Otherwise, return
     the path or raise.
+
+    On Python 3 we use the vendored greenlet (built privately as the
+    ``_fil_greenlet`` extension) so filament controls the switch fast
+    path; the vendored header must win the include search.  Python 2
+    keeps building against the system/venv greenlet -- do not remove
+    that path.
     """
+    if sys.version_info[0] >= 3:
+        vendored = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'vendor', 'greenlet')
+        if _greenlet_header_exists(vendored):
+            return vendored
+
     py_inc = sysconfig.get_python_inc()
 
     def _get_python_part():

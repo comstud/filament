@@ -41,7 +41,13 @@ exactly the pattern gevent uses with its hub.
 
 from __future__ import absolute_import
 
-import greenlet
+try:
+    # Python 3: filament's private vendored greenlet runtime.  All of
+    # filament's switching happens on this runtime, so getcurrent() /
+    # GreenletExit must come from it, not from an installed greenlet.
+    import _fil_greenlet as greenlet
+except ImportError:  # Python 2 / stock-greenlet build
+    import greenlet
 
 from _filament.timer import Timer
 from filament import exc
