@@ -261,7 +261,7 @@ if _PY3:
                 do_handshake_on_connect=do_handshake_on_connect,
                 suppress_ragged_eofs=suppress_ragged_eofs)
 
-else:
+else:  # pragma: no cover -- py2-only branch, unmeasurable on py3
     # ------------------------------------------------------------------ Py2 --
     # Python 2.7's ssl module predates SSLContext.wrap_socket() and builds
     # SSLSocket directly from a socket via SSLSocket(sock, keyfile, certfile)

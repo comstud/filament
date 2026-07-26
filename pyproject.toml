@@ -72,3 +72,18 @@ packages = ["filament", "filament.gevent_compat", "filament.eventlet_compat", "_
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Coverage notes (py3 only; run with COVERAGE_CORE=sysmon on 3.12+):
+#  * Much of the suite runs scenarios in fresh subprocesses (tests/_helpers.py
+#    run_py) that end with os._exit -- "patch" below makes coverage follow the
+#    children and save data even through os._exit.
+#  * The default C tracer does not follow filament context switches, so code
+#    executed inside spawned filaments is invisible to it. The sys.monitoring
+#    core (COVERAGE_CORE=sysmon) is process-global and sees all of it.
+[tool.coverage.run]
+source = ["filament"]
+parallel = true
+patch = ["subprocess", "_exit"]
+
+[tool.coverage.report]
+precision = 1

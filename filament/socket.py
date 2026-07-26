@@ -62,7 +62,7 @@ _realsocket = _fil__socket.socket
 # independent socket).  filament's cooperative low-level socket implements a
 # real dup() (a genuine fd duplication), so route the high-level dup() through
 # it on Py2 to match Py3 semantics: an independent socket with a distinct fd.
-if _sys.version_info < (3, 0):
+if _sys.version_info < (3, 0):  # pragma: no cover -- py2-only
     def _fil_socket_dup(self):
         """dup() -> socket object
 

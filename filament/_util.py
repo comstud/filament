@@ -26,7 +26,7 @@ _held_refs = {}
 def _is_str(x):
     if sys.version_info >= (3, 0):
         return isinstance(x, str)
-    return isinstance(x, basestring)
+    return isinstance(x, basestring)  # pragma: no cover -- py2-only
 
 
 def _hold_refs(modules):

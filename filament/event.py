@@ -57,7 +57,7 @@ if sys.version_info[0] >= 3:
         if exc_tb is not None and exc_value.__traceback__ is not exc_tb:
             raise exc_value.with_traceback(exc_tb)
         raise exc_value
-else:
+else:  # pragma: no cover -- py2-only
     # exec keeps the py2-only 3-arg raise syntax out of the py3 parser.
     exec("def _reraise(exc_type, exc_value, exc_tb):\n"
          "    raise exc_type, exc_value, exc_tb\n")
