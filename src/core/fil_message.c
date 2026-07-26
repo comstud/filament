@@ -62,7 +62,9 @@ static void _message_dealloc(PyFilMessage *self)
     Py_CLEAR(self->exc_tb);
     assert(fil_waiterlist_empty(self->waiters));
 
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *_message_result(PyFilMessage *self)

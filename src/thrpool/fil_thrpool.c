@@ -161,7 +161,7 @@ static void _thrpool_shutdown_finish(PyFilThrState *thr_state, PyFilThrPoolShutd
     info->self->tpool = NULL;
     if (info->do_free)
     {
-        PyObject_Del(info->self);
+        Py_TYPE(info->self)->tp_free((PyObject *)info->self);
     }
     else
     {
@@ -264,7 +264,9 @@ static void _thrpool_dealloc(PyFilThrPool *self)
         return;
     }
 
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 typedef struct _pyfil_thrpool_run_info

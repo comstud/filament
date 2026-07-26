@@ -61,7 +61,9 @@ static void _lock_dealloc(PyFilLock *self)
 {
     assert(fil_waiterlist_empty(self->waiters));
 
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)

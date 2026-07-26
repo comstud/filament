@@ -89,7 +89,9 @@ static void _cond_dealloc(PyFilCond *self)
     Py_CLEAR(self->lock);
     Py_CLEAR(self->verbose);
 
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static int __cond_wait(PyFilCond *cond, struct timespec *ts)

@@ -358,7 +358,9 @@ static void _sched_dealloc(PyFilScheduler *self)
      * already
      */
     assert(_scheduler_get() == NULL);
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 PyDoc_STRVAR(sched_fil_switch_doc, "Schedule a filament to run.");

@@ -174,7 +174,9 @@ static void _timer_dealloc(PyFilTimer *self)
     Py_CLEAR(self->args);
     Py_CLEAR(self->kwargs);
 
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 PyDoc_STRVAR(_timer_cancel_doc, "Cancel the timer.");

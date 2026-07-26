@@ -693,7 +693,9 @@ static void _iothread_dealloc(PyFilIOThread *self)
         event_base_free(self->event_base);
     }
 
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyMethodDef _iothread_methods[] = {

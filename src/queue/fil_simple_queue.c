@@ -59,7 +59,9 @@ static int _queue_init(PyFilSimpleQueue *self, PyObject *args, PyObject *kwargs)
 static void _queue_dealloc(PyFilSimpleQueue *self)
 {
     fil_wfifoq_deinit(&(self->queue));
-    PyObject_Del(self);
+    /* Respect tp_free: Python subclass instances are GC-allocated, and
+     * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 PyDoc_STRVAR(_queue_qsize_doc, "Length of queue.");
