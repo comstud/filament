@@ -1,8 +1,8 @@
 # Filament
 
 [![CI](https://github.com/comstud/filament/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/comstud/filament/actions/workflows/ci.yml)
-[![Python coverage](https://codecov.io/gh/comstud/filament/branch/master/graph/badge.svg?flag=python)](https://app.codecov.io/gh/comstud/filament)
-[![C coverage](https://codecov.io/gh/comstud/filament/branch/master/graph/badge.svg?flag=c)](https://app.codecov.io/gh/comstud/filament)
+[![Python coverage](https://img.shields.io/codecov/c/github/comstud/filament/master?flag=python&label=python%20coverage)](https://app.codecov.io/gh/comstud/filament)
+[![C coverage](https://img.shields.io/codecov/c/github/comstud/filament/master?flag=c&label=C%20coverage)](https://app.codecov.io/gh/comstud/filament)
 ![Python](https://img.shields.io/badge/python-2.7%20%7C%203.8--3.15-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
