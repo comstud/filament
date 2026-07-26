@@ -1,5 +1,48 @@
 # Release history
 
+## Unreleased
+
+**Bug fixes**
+
+- Fixed the greenthread leak that made every compat shim grow without bound:
+  `Filament` and `Message` inherited a `tp_traverse` that did not visit the
+  fields they add, so the wrapper/filament cycle every shim creates was
+  invisible to the collector rather than merely uncollected. Both now have
+  real `tp_traverse`/`tp_clear`, and a filament drops its callable as soon as
+  the body returns so the cycle is broken by refcount. A `gevent_compat` WSGI
+  server went from 1618 bytes of RSS growth per connection to ~0.
+- Fixed a leak of greenlet's internal C++ object, ~224 bytes per greenthread
+  created with no Python object to account for it: `_fil_filament_dealloc`
+  called `tp_free` directly instead of chaining to greenlet's `tp_dealloc`.
+- Fixed an unconditional hang at interpreter exit for any program that used a
+  thread pool without shutting it down explicitly (including
+  `filament.tpool.execute()`), reproducible whenever stdout was a pipe. The
+  implicit shutdown in `tp_dealloc` cannot complete once finalization has
+  begun; live pools are now shut down from `atexit` instead.
+- `Group` and `Pool` no longer retain every greenthread they have ever
+  spawned, which made `StreamServer(spawn=<int>)` accumulate every connection
+  it had ever served. They untrack each one as it finishes, matching gevent.
+- `gevent.joinall()` / `wait()` / `iwait()` no longer park a watcher
+  greenthread on every object just to observe that it finished, which doubled
+  the greenthread count of every scatter-gather. A 20-way fan-out over HTTP
+  went from 2386 to 5392 rps (real gevent: 4136).
+- Fixed `os.read()` / `os.write()` on regular files raising
+  `RuntimeError: Couldn't add event` under monkey-patching. The predicate
+  deciding whether an fd needs the io thread was a stub that always said yes,
+  so file descriptors were handed to epoll, which refuses regular files. Any
+  write to a file broke, `tempfile` included -- so a WSGI app whose framework
+  spilled a large request body to disk returned a 500. Regular files and
+  directories now take a direct syscall; sockets, pipes, fifos and ttys still
+  go through the io thread.
+- Python 2.7: importing any `_filament` submodule before the `filament`
+  package raised `AttributeError: 'module' object has no attribute 'core'`,
+  because `_filament.core`'s init re-enters itself through `filament.exc`.
+
+**Testing**
+
+- New `tests/test_leaks.py` covering the leaks and the interpreter-exit hangs,
+  plus `iwait` coverage in `tests/test_gevent_compat_more.py`.
+
 ## 0.9.1 (2026-07-26)
 
 **Bug fixes**

@@ -65,11 +65,43 @@ class Group(object):
 
     # -- spawning ------------------------------------------------------------
 
+    def _spawn_tracked(self, fn, args, kwargs):
+        """
+        Spawn ``fn`` and track it *only until it finishes*.
+
+        Tracking has to be self-cancelling.  A group whose members are only
+        dropped by :meth:`join` / :meth:`kill` grows without bound in exactly
+        the shape that matters most -- a server that spawns one greenthread per
+        connection into a long-lived Pool and never joins it (see
+        ``StreamServer(spawn=<int>)``) accumulates every connection it has ever
+        served.  gevent's Group has the same self-untracking behaviour, so this
+        is parity as well as a leak fix.
+
+        The greenthread cannot untrack itself until ``spawn`` has handed us the
+        object to untrack, hence the little bit of state-passing here; the
+        ``finished`` flag covers a body that somehow completes first, so we
+        never add a corpse to the set.
+        """
+        state = {}
+
+        def _tracked(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            finally:
+                state["finished"] = True
+                gt = state.get("gt")
+                if gt is not None:
+                    self.greenlets.discard(gt)
+
+        gt = greenthread.spawn(_tracked, *args, **kwargs)
+        state["gt"] = gt
+        if not state.get("finished"):
+            self.add(gt)
+        return gt
+
     def spawn(self, fn, *args, **kwargs):
         """Spawn ``fn`` as a tracked greenthread and return it."""
-        gt = greenthread.spawn(fn, *args, **kwargs)
-        self.add(gt)
-        return gt
+        return self._spawn_tracked(fn, args, kwargs)
 
     def spawn_n(self, fn, *args, **kwargs):
         """Fire-and-forget spawn (untracked, no result).  Returns None."""
@@ -189,9 +221,10 @@ class Pool(Group):
         Returns the greenthread.
         """
         self._acquire_slot()
-        gt = greenthread.spawn(self._run_and_release, fn, args, kwargs)
-        self.add(gt)
-        return gt
+        # _spawn_tracked untracks the greenthread once it finishes, so a
+        # long-lived Pool does not accumulate every task it has ever run.
+        return self._spawn_tracked(self._run_and_release, (fn, args, kwargs),
+                                   {})
 
     def spawn_n(self, fn, *args, **kwargs):
         """Fire-and-forget pool spawn (still gated).  Returns None."""

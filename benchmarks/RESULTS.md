@@ -14,8 +14,6 @@ Each (framework, benchmark) ran in its own fresh subprocess. Micro-benchmarks re
 
 > **Cross-version caveat.** Each Python version's table was recorded in its own sequential run on the same box. Interpreter speed differs across versions, so absolute numbers are **not** comparable across Python versions. The reliable signal is the **ratio between frameworks within one version**: all three frameworks in a table ran back-to-back under identical conditions.
 
-> **What these numbers measure (recorded 2026-07-25).** The matrix reflects filament as it is today: a vendored greenlet on py3 (`_fil_greenlet`, private capsule — no conflict with an installed greenlet — with a C fast-switch entry and lazy `gr_frame` materialization; py2.7 transparently uses classic greenlet), MRU thread-pool worker wakeup, GIL-free io-thread completion signaling, persistent edge-triggered socket readiness events, METH_FASTCALL hot entry points (semaphore/lock/queue/message/sleep), scheduler switch-event + waiter freelists, a `sleep(0)` fast path, and cond-signal-after-unlock. Cross-thread wakeup is pure futex/condvar (no fd) — measurably cheaper per wakeup than gevent's eventfd+epoll async watcher path. Debug introspection is runtime-selectable (`filament.set_debug(True)` / `FILAMENT_DEBUG=1`, auto-armed when a trace/profile hook is installed) and off the hot path by default. Comparisons use the latest installable greenlet per interpreter (2.0.2 on 2.7, 3.1.1 on 3.8, 3.5.4 on 3.10+), plus gevent 22.10.2 on 2.7.
-
 ## Environments
 
 | Arch | Python | greenlet | gevent | eventlet |
@@ -41,7 +39,7 @@ Availability notes:
 - **gevent on Python 2.7**: no cp27/aarch64 wheel exists and stock source builds fail under a modern GCC (Cython-generated C errors); where the 2.7 column shows gevent numbers they come from a locally-built older gevent (see the environments table). eventlet 0.33.3 (pure-Python) and filament both build/run on 2.7.
 - **gevent tpool on Python 2.7**: gevent **22.10.2** (the last py2.7 release) deadlocks in the threadpool round-trip benchmark on 2.7 — reproducible even at small scale. Its predecessor 21.12.0 completed the same benchmark (~23.6k calls/s), so this is a gevent regression in its final py2.7 release, not a harness artifact.
 - **gevent/eventlet on Python 3.8**: latest releases have no 3.8/aarch64 wheels, so pip resolved to gevent **22.10.2** and eventlet **0.39.1** (still current enough for a fair comparison).
-- **filament** builds and runs every benchmark (including `#137`) on every interpreter in the matrix, 2.7 through 3.15 (version-tagged `.so` per interpreter).
+- **filament** builds and runs every benchmark (including `#137`) on every interpreter in the matrix, 2.7 through 3.15, with a version-tagged `.so` per interpreter.
 
 ## amd64 · Python 3.15.0
 
@@ -49,25 +47,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 111.6k | 56.4k | 61.9k |
-| spawn (fire & forget) | spawn_n/s | 106.5k | 84.6k | 82.0k |
-| context switch | switches/s | 2.17M | 786.2k | 486.4k |
-| semaphore uncontended | ops/s | 21.81M | 6.91M | 6.67M |
-| semaphore contended | ops/s | 17.92M | 7.09M | 6.47M |
-| queue put/get | items/s | 7.67M | 5.56M | 3.35M |
-| queue shared green+native threads | items/s | 2.76M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 75.0k | 49.4k | 11.3k |
-| tpool round-trip | mean latency | 13.33 us | 20.26 us | 88.51 us |
-| echo @ conc 100 | req/s | 41.4k | 35.9k | 29.3k |
-| echo @ conc 100 | p50/p99 ms | 2.287 / 3.595 | 2.595 / 4.173 | 3.309 / 5.048 |
-| echo @ conc 1000 | req/s | 33.7k | 27.9k | 22.5k |
-| echo @ conc 1000 | p50/p99 ms | 23.475 / 50.262 | 26.8 / 116.608 | 38.457 / 66.121 |
+| spawn (tracked, spawn+join) | greenthreads/s | 108.6k | 57.9k | 62.3k |
+| spawn (fire & forget) | spawn_n/s | 105.5k | 88.3k | 83.0k |
+| context switch | switches/s | 2.05M | 812.0k | 494.5k |
+| semaphore uncontended | ops/s | 21.67M | 6.93M | 6.71M |
+| semaphore contended | ops/s | 17.60M | 7.13M | 6.59M |
+| queue put/get | items/s | 7.72M | 6.12M | 3.34M |
+| queue shared green+native threads | items/s | 2.80M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 47.7k | 46.5k | 11.2k |
+| tpool round-trip | mean latency | 20.98 us | 21.52 us | 88.93 us |
+| echo @ conc 100 | req/s | 41.2k | 36.9k | 30.3k |
+| echo @ conc 100 | p50/p99 ms | 2.279 / 3.65 | 2.564 / 4.139 | 3.19 / 4.631 |
+| echo @ conc 1000 | req/s | 34.7k | 29.8k | 22.9k |
+| echo @ conc 1000 | p50/p99 ms | 22.405 / 49.01 | 26.048 / 114.283 | 38.58 / 74.878 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 29.4k msg/s |
+| filament | filament.tpool | OK — completed | 23.1k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -78,25 +76,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 121.5k | 69.9k | 81.5k |
-| spawn (fire & forget) | spawn_n/s | 115.2k | 106.8k | 100.5k |
-| context switch | switches/s | 2.09M | 769.3k | 454.5k |
-| semaphore uncontended | ops/s | 21.81M | 7.28M | 6.88M |
-| semaphore contended | ops/s | 21.95M | 7.31M | 6.47M |
-| queue put/get | items/s | 7.84M | 6.02M | 3.35M |
-| queue shared green+native threads | items/s | 2.51M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 45.3k | 28.0k | 11.1k |
-| tpool round-trip | mean latency | 22.06 us | 35.68 us | 90.02 us |
-| echo @ conc 100 | req/s | 42.1k | 33.6k | 26.7k |
-| echo @ conc 100 | p50/p99 ms | 2.276 / 3.474 | 2.843 / 4.319 | 3.784 / 5.658 |
-| echo @ conc 1000 | req/s | 34.0k | 27.7k | 20.9k |
-| echo @ conc 1000 | p50/p99 ms | 23.046 / 50.349 | 28.6 / 121.032 | 42.625 / 77.404 |
+| spawn (tracked, spawn+join) | greenthreads/s | 119.9k | 70.0k | 81.6k |
+| spawn (fire & forget) | spawn_n/s | 112.4k | 105.3k | 101.8k |
+| context switch | switches/s | 2.21M | 782.1k | 445.5k |
+| semaphore uncontended | ops/s | 20.73M | 7.22M | 6.85M |
+| semaphore contended | ops/s | 21.67M | 7.44M | 6.29M |
+| queue put/get | items/s | 8.04M | 6.09M | 3.39M |
+| queue shared green+native threads | items/s | 2.52M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 58.8k | 46.9k | 11.4k |
+| tpool round-trip | mean latency | 17.0 us | 21.34 us | 87.97 us |
+| echo @ conc 100 | req/s | 43.9k | 33.6k | 27.9k |
+| echo @ conc 100 | p50/p99 ms | 2.289 / 3.459 | 2.744 / 4.314 | 3.498 / 5.114 |
+| echo @ conc 1000 | req/s | 34.1k | 27.7k | 21.1k |
+| echo @ conc 1000 | p50/p99 ms | 23.535 / 48.8 | 28.399 / 124.938 | 42.105 / 73.004 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 35.8k msg/s |
+| filament | filament.tpool | OK — completed | 25.3k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -107,25 +105,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 122.1k | 64.8k | 69.4k |
-| spawn (fire & forget) | spawn_n/s | 118.0k | 103.9k | 95.6k |
-| context switch | switches/s | 2.42M | 827.8k | 492.0k |
-| semaphore uncontended | ops/s | 22.51M | 7.25M | 6.42M |
-| semaphore contended | ops/s | 21.76M | 7.32M | 6.36M |
-| queue put/get | items/s | 8.13M | 6.73M | 3.23M |
-| queue shared green+native threads | items/s | 2.60M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 47.1k | 48.5k | 11.5k |
-| tpool round-trip | mean latency | 21.23 us | 20.61 us | 87.02 us |
-| echo @ conc 100 | req/s | 40.9k | 36.3k | 29.8k |
-| echo @ conc 100 | p50/p99 ms | 2.304 / 3.637 | 2.631 / 4.006 | 3.267 / 4.786 |
-| echo @ conc 1000 | req/s | 34.4k | 28.7k | 22.6k |
-| echo @ conc 1000 | p50/p99 ms | 23.176 / 48.185 | 26.846 / 112.584 | 40.8 / 67.913 |
+| spawn (tracked, spawn+join) | greenthreads/s | 113.6k | 63.8k | 69.2k |
+| spawn (fire & forget) | spawn_n/s | 110.5k | 103.4k | 96.1k |
+| context switch | switches/s | 2.37M | 820.8k | 495.5k |
+| semaphore uncontended | ops/s | 21.39M | 7.42M | 6.30M |
+| semaphore contended | ops/s | 20.34M | 7.47M | 6.31M |
+| queue put/get | items/s | 8.28M | 6.56M | 3.29M |
+| queue shared green+native threads | items/s | 2.87M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 45.8k | 30.0k | 12.0k |
+| tpool round-trip | mean latency | 21.83 us | 33.28 us | 83.12 us |
+| echo @ conc 100 | req/s | 41.2k | 36.4k | 29.1k |
+| echo @ conc 100 | p50/p99 ms | 2.286 / 3.833 | 2.582 / 4.015 | 3.306 / 4.911 |
+| echo @ conc 1000 | req/s | 34.8k | 29.1k | 22.1k |
+| echo @ conc 1000 | p50/p99 ms | 22.26 / 47.366 | 27.084 / 113.31 | 40.079 / 68.105 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 24.9k msg/s |
+| filament | filament.tpool | OK — completed | 28.9k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -136,25 +134,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 112.8k | 61.7k | 63.7k |
-| spawn (fire & forget) | spawn_n/s | 102.3k | 97.5k | 86.5k |
-| context switch | switches/s | 2.51M | 821.7k | 476.2k |
-| semaphore uncontended | ops/s | 20.71M | 7.11M | 6.77M |
-| semaphore contended | ops/s | 21.29M | 6.85M | 6.66M |
-| queue put/get | items/s | 8.15M | 6.49M | 2.90M |
-| queue shared green+native threads | items/s | 2.43M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 70.9k | 46.3k | 10.7k |
-| tpool round-trip | mean latency | 14.1 us | 21.6 us | 93.29 us |
-| echo @ conc 100 | req/s | 41.7k | 36.5k | 28.9k |
-| echo @ conc 100 | p50/p99 ms | 2.273 / 3.526 | 2.576 / 4.453 | 3.361 / 4.871 |
-| echo @ conc 1000 | req/s | 34.3k | 29.6k | 21.3k |
-| echo @ conc 1000 | p50/p99 ms | 23.325 / 49.057 | 26.263 / 111.748 | 41.298 / 84.465 |
+| spawn (tracked, spawn+join) | greenthreads/s | 107.3k | 61.2k | 63.5k |
+| spawn (fire & forget) | spawn_n/s | 103.1k | 94.8k | 86.5k |
+| context switch | switches/s | 2.48M | 835.1k | 479.1k |
+| semaphore uncontended | ops/s | 20.64M | 7.27M | 6.79M |
+| semaphore contended | ops/s | 19.64M | 7.07M | 6.52M |
+| queue put/get | items/s | 8.45M | 6.51M | 2.98M |
+| queue shared green+native threads | items/s | 2.34M | **error** | **error** |
+| tpool round-trip | calls/s | 45.6k | 29.2k | 11.5k |
+| tpool round-trip | mean latency | 21.94 us | 34.3 us | 87.21 us |
+| echo @ conc 100 | req/s | 42.8k | 36.4k | 28.7k |
+| echo @ conc 100 | p50/p99 ms | 2.216 / 3.564 | 2.588 / 4.343 | 3.39 / 4.931 |
+| echo @ conc 1000 | req/s | 35.7k | 28.9k | 21.4k |
+| echo @ conc 1000 | p50/p99 ms | 22.409 / 46.826 | 26.591 / 116.369 | 41.784 / 79.02 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 33.0k msg/s |
+| filament | filament.tpool | OK — completed | 41.8k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -165,25 +163,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 105.2k | 59.5k | 60.9k |
-| spawn (fire & forget) | spawn_n/s | 98.0k | 95.9k | 86.7k |
-| context switch | switches/s | 2.31M | 925.0k | 481.8k |
-| semaphore uncontended | ops/s | 18.18M | 7.88M | 5.61M |
-| semaphore contended | ops/s | 18.18M | 7.50M | 5.64M |
-| queue put/get | items/s | 7.65M | 5.96M | 2.70M |
-| queue shared green+native threads | items/s | 2.27M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 47.2k | 47.7k | 11.2k |
-| tpool round-trip | mean latency | 21.18 us | 20.98 us | 89.46 us |
-| echo @ conc 100 | req/s | 46.9k | 35.0k | 28.3k |
-| echo @ conc 100 | p50/p99 ms | 1.965 / 3.495 | 2.881 / 4.175 | 3.443 / 5.023 |
-| echo @ conc 1000 | req/s | 34.9k | 27.9k | 21.4k |
-| echo @ conc 1000 | p50/p99 ms | 22.259 / 43.264 | 28.3 / 116.012 | 41.68 / 74.37 |
+| spawn (tracked, spawn+join) | greenthreads/s | 107.7k | 58.7k | 62.4k |
+| spawn (fire & forget) | spawn_n/s | 104.0k | 95.1k | 89.2k |
+| context switch | switches/s | 2.23M | 953.3k | 489.4k |
+| semaphore uncontended | ops/s | 19.87M | 7.96M | 5.67M |
+| semaphore contended | ops/s | 18.45M | 7.02M | 5.71M |
+| queue put/get | items/s | 7.93M | 5.99M | 2.67M |
+| queue shared green+native threads | items/s | 2.48M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 44.9k | 29.1k | 11.0k |
+| tpool round-trip | mean latency | 22.26 us | 34.32 us | 90.52 us |
+| echo @ conc 100 | req/s | 42.9k | 35.3k | 28.1k |
+| echo @ conc 100 | p50/p99 ms | 2.288 / 3.648 | 2.684 / 4.231 | 3.453 / 4.991 |
+| echo @ conc 1000 | req/s | 34.5k | 28.3k | 20.8k |
+| echo @ conc 1000 | p50/p99 ms | 23.158 / 48.876 | 27.61 / 128.356 | 42.784 / 77.676 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 24.7k msg/s |
+| filament | filament.tpool | OK — completed | 48.3k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -194,25 +192,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 532.1k | 113.7k | 91.9k |
-| spawn (fire & forget) | spawn_n/s | 429.0k | 293.2k | 194.0k |
-| context switch | switches/s | 2.12M | 837.1k | 361.6k |
-| semaphore uncontended | ops/s | 16.42M | 7.78M | 3.47M |
-| semaphore contended | ops/s | 14.13M | 6.78M | 3.33M |
-| queue put/get | items/s | 6.69M | 6.19M | 1.53M |
-| queue shared green+native threads | items/s | 2.61M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 44.7k | 26.0k | 9.3k |
-| tpool round-trip | mean latency | 22.4 us | 38.44 us | 108.06 us |
-| echo @ conc 100 | req/s | 48.0k | 34.5k | 21.8k |
-| echo @ conc 100 | p50/p99 ms | 1.963 / 2.624 | 2.803 / 4.166 | 4.482 / 6.661 |
-| echo @ conc 1000 | req/s | 36.0k | 28.4k | 16.2k |
-| echo @ conc 1000 | p50/p99 ms | 23.293 / 38.046 | 28.96 / 116.087 | 56.216 / 101.493 |
+| spawn (tracked, spawn+join) | greenthreads/s | 426.6k | 114.8k | 93.1k |
+| spawn (fire & forget) | spawn_n/s | 395.9k | 302.4k | 192.9k |
+| context switch | switches/s | 2.13M | 867.3k | 369.5k |
+| semaphore uncontended | ops/s | 16.28M | 7.78M | 3.45M |
+| semaphore contended | ops/s | 14.69M | 7.17M | 3.23M |
+| queue put/get | items/s | 6.75M | 6.06M | 1.61M |
+| queue shared green+native threads | items/s | 2.57M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 44.4k | 39.5k | 9.6k |
+| tpool round-trip | mean latency | 22.5 us | 25.33 us | 103.81 us |
+| echo @ conc 100 | req/s | 41.2k | 34.6k | 22.5k |
+| echo @ conc 100 | p50/p99 ms | 2.33 / 3.239 | 2.768 / 4.22 | 4.329 / 6.268 |
+| echo @ conc 1000 | req/s | 35.7k | 28.7k | 15.3k |
+| echo @ conc 1000 | p50/p99 ms | 23.574 / 37.319 | 28.531 / 128.076 | 59.06 / 109.417 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 58.0k msg/s |
+| filament | filament.tpool | OK — completed | 30.2k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -223,25 +221,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 619.3k | 101.5k | 89.5k |
-| spawn (fire & forget) | spawn_n/s | 460.4k | 269.3k | 169.3k |
-| context switch | switches/s | 1.95M | 826.6k | 368.8k |
-| semaphore uncontended | ops/s | 28.75M | 8.70M | 3.33M |
-| semaphore contended | ops/s | 22.58M | 7.97M | 2.98M |
-| queue put/get | items/s | 8.64M | 6.21M | 1.46M |
-| queue shared green+native threads | items/s | 2.78M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 73.5k | 24.6k | 9.1k |
-| tpool round-trip | mean latency | 13.61 us | 40.58 us | 109.36 us |
-| echo @ conc 100 | req/s | 41.6k | 33.9k | 21.3k |
-| echo @ conc 100 | p50/p99 ms | 2.276 / 3.128 | 2.801 / 4.226 | 4.604 / 6.869 |
-| echo @ conc 1000 | req/s | 36.1k | 28.1k | 16.6k |
-| echo @ conc 1000 | p50/p99 ms | 23.103 / 42.398 | 28.868 / 130.145 | 55.132 / 89.485 |
+| spawn (tracked, spawn+join) | greenthreads/s | 470.9k | 103.8k | 92.7k |
+| spawn (fire & forget) | spawn_n/s | 423.4k | 274.4k | 177.9k |
+| context switch | switches/s | 1.93M | 813.0k | 356.6k |
+| semaphore uncontended | ops/s | 29.08M | 8.50M | 3.33M |
+| semaphore contended | ops/s | 22.65M | 7.76M | 3.06M |
+| queue put/get | items/s | 8.74M | 6.42M | 1.45M |
+| queue shared green+native threads | items/s | 2.79M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 47.3k | 38.7k | 8.9k |
+| tpool round-trip | mean latency | 21.16 us | 25.84 us | 112.76 us |
+| echo @ conc 100 | req/s | 40.7k | 33.6k | 22.9k |
+| echo @ conc 100 | p50/p99 ms | 2.345 / 3.042 | 2.878 / 4.192 | 4.205 / 6.079 |
+| echo @ conc 1000 | req/s | 35.8k | 28.1k | 16.0k |
+| echo @ conc 1000 | p50/p99 ms | 23.391 / 39.147 | 28.919 / 128.147 | 56.274 / 96.65 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 64.3k msg/s |
+| filament | filament.tpool | OK — completed | 75.5k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -252,25 +250,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 372.7k | 142.0k | 168.0k |
-| spawn (fire & forget) | spawn_n/s | 353.7k | 260.0k | 234.7k |
-| context switch | switches/s | 3.45M | 1.46M | 910.9k |
-| semaphore uncontended | ops/s | 41.99M | 10.10M | 12.76M |
-| semaphore contended | ops/s | 41.03M | 8.82M | 12.44M |
-| queue put/get | items/s | 15.49M | 12.03M | 5.75M |
-| queue shared green+native threads | items/s | 3.12M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 27.9k | 25.3k | 11.9k |
-| tpool round-trip | mean latency | 35.88 us | 39.51 us | 84.23 us |
-| echo @ conc 100 | req/s | 138.8k | 128.3k | 98.0k |
-| echo @ conc 100 | p50/p99 ms | 0.687 / 1.135 | 0.732 / 1.009 | 0.989 / 1.501 |
-| echo @ conc 1000 | req/s | 108.8k | 99.1k | 65.3k |
-| echo @ conc 1000 | p50/p99 ms | 7.417 / 14.575 | 8.122 / 22.9 | 13.346 / 23.641 |
+| spawn (tracked, spawn+join) | greenthreads/s | 355.2k | 155.3k | 177.0k |
+| spawn (fire & forget) | spawn_n/s | 340.0k | 298.9k | 250.1k |
+| context switch | switches/s | 3.54M | 1.52M | 950.1k |
+| semaphore uncontended | ops/s | 45.26M | 10.79M | 13.03M |
+| semaphore contended | ops/s | 43.96M | 9.42M | 12.65M |
+| queue put/get | items/s | 15.66M | 12.11M | 5.88M |
+| queue shared green+native threads | items/s | 3.08M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 26.9k | 24.8k | 11.5k |
+| tpool round-trip | mean latency | 37.14 us | 40.32 us | 86.66 us |
+| echo @ conc 100 | req/s | 141.9k | 126.3k | 96.8k |
+| echo @ conc 100 | p50/p99 ms | 0.669 / 1.048 | 0.773 / 1.083 | 1.009 / 1.535 |
+| echo @ conc 1000 | req/s | 106.6k | 98.0k | 68.4k |
+| echo @ conc 1000 | p50/p99 ms | 7.409 / 14.286 | 8.424 / 26.342 | 13.361 / 19.766 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 16.1k msg/s |
+| filament | filament.tpool | OK — completed | 16.6k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -281,19 +279,19 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 370.0k | 152.8k | 188.2k |
-| spawn (fire & forget) | spawn_n/s | 368.0k | 306.1k | 276.4k |
-| context switch | switches/s | 3.55M | 1.50M | 951.1k |
-| semaphore uncontended | ops/s | 41.25M | 10.41M | 13.16M |
-| semaphore contended | ops/s | 45.64M | 10.28M | 12.88M |
-| queue put/get | items/s | 14.02M | 11.64M | 5.81M |
-| queue shared green+native threads | items/s | 2.83M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 27.6k | 25.6k | 11.9k |
-| tpool round-trip | mean latency | 36.27 us | 38.99 us | 83.76 us |
-| echo @ conc 100 | req/s | 138.6k | 126.0k | 99.4k |
-| echo @ conc 100 | p50/p99 ms | 0.687 / 1.082 | 0.767 / 0.927 | 0.97 / 1.437 |
-| echo @ conc 1000 | req/s | 108.2k | 100.3k | 68.8k |
-| echo @ conc 1000 | p50/p99 ms | 7.389 / 14.264 | 8.368 / 22.567 | 13.205 / 22.824 |
+| spawn (tracked, spawn+join) | greenthreads/s | 370.0k | 161.4k | 199.7k |
+| spawn (fire & forget) | spawn_n/s | 368.6k | 317.5k | 282.7k |
+| context switch | switches/s | 3.59M | 1.53M | 990.8k |
+| semaphore uncontended | ops/s | 48.04M | 10.73M | 13.28M |
+| semaphore contended | ops/s | 44.76M | 10.58M | 13.00M |
+| queue put/get | items/s | 13.90M | 11.82M | 5.92M |
+| queue shared green+native threads | items/s | 2.87M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 26.8k | 25.2k | 12.1k |
+| tpool round-trip | mean latency | 37.36 us | 39.7 us | 82.69 us |
+| echo @ conc 100 | req/s | 139.8k | 125.9k | 94.2k |
+| echo @ conc 100 | p50/p99 ms | 0.683 / 1.052 | 0.789 / 1.191 | 1.029 / 1.571 |
+| echo @ conc 1000 | req/s | 113.6k | 101.1k | 69.4k |
+| echo @ conc 1000 | p50/p99 ms | 7.134 / 13.38 | 8.381 / 18.389 | 13.022 / 21.227 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
@@ -310,25 +308,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 403.8k | 155.4k | 190.9k |
-| spawn (fire & forget) | spawn_n/s | 372.3k | 305.7k | 275.3k |
-| context switch | switches/s | 4.42M | 1.47M | 946.2k |
-| semaphore uncontended | ops/s | 47.88M | 10.55M | 12.30M |
-| semaphore contended | ops/s | 48.03M | 10.09M | 12.45M |
-| queue put/get | items/s | 16.30M | 12.52M | 6.08M |
-| queue shared green+native threads | items/s | 2.95M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 27.1k | 26.9k | 11.9k |
-| tpool round-trip | mean latency | 36.96 us | 37.21 us | 84.12 us |
-| echo @ conc 100 | req/s | 146.5k | 129.0k | 94.9k |
-| echo @ conc 100 | p50/p99 ms | 0.646 / 0.958 | 0.742 / 0.927 | 1.027 / 1.533 |
-| echo @ conc 1000 | req/s | 113.6k | 104.3k | 67.5k |
-| echo @ conc 1000 | p50/p99 ms | 7.063 / 13.813 | 7.913 / 17.947 | 13.181 / 21.275 |
+| spawn (tracked, spawn+join) | greenthreads/s | 421.2k | 160.3k | 196.2k |
+| spawn (fire & forget) | spawn_n/s | 413.9k | 319.8k | 286.1k |
+| context switch | switches/s | 4.37M | 1.42M | 922.6k |
+| semaphore uncontended | ops/s | 42.21M | 11.02M | 12.49M |
+| semaphore contended | ops/s | 48.65M | 10.48M | 12.58M |
+| queue put/get | items/s | 16.36M | 12.68M | 6.12M |
+| queue shared green+native threads | items/s | 2.99M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 27.7k | 26.0k | 12.1k |
+| tpool round-trip | mean latency | 36.15 us | 38.44 us | 82.93 us |
+| echo @ conc 100 | req/s | 147.2k | 129.4k | 98.5k |
+| echo @ conc 100 | p50/p99 ms | 0.645 / 0.98 | 0.748 / 1.009 | 0.981 / 1.471 |
+| echo @ conc 1000 | req/s | 112.9k | 105.7k | 69.6k |
+| echo @ conc 1000 | p50/p99 ms | 6.913 / 13.02 | 7.97 / 17.389 | 12.792 / 19.495 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 16.3k msg/s |
+| filament | filament.tpool | OK — completed | 16.5k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -339,19 +337,19 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 334.2k | 143.7k | 182.3k |
-| spawn (fire & forget) | spawn_n/s | 305.1k | 281.3k | 253.1k |
-| context switch | switches/s | 3.98M | 1.29M | 938.6k |
-| semaphore uncontended | ops/s | 49.61M | 10.46M | 13.02M |
-| semaphore contended | ops/s | 44.36M | 10.11M | 13.02M |
-| queue put/get | items/s | 14.93M | 12.52M | 5.31M |
-| queue shared green+native threads | items/s | 2.52M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 27.1k | 25.3k | 11.9k |
-| tpool round-trip | mean latency | 36.9 us | 39.46 us | 84.1 us |
-| echo @ conc 100 | req/s | 147.2k | 126.5k | 99.3k |
-| echo @ conc 100 | p50/p99 ms | 0.634 / 0.993 | 0.8 / 1.032 | 0.997 / 1.586 |
-| echo @ conc 1000 | req/s | 111.4k | 97.0k | 61.9k |
-| echo @ conc 1000 | p50/p99 ms | 7.23 / 14.111 | 8.679 / 21.78 | 13.803 / 27.344 |
+| spawn (tracked, spawn+join) | greenthreads/s | 335.2k | 146.9k | 184.3k |
+| spawn (fire & forget) | spawn_n/s | 329.7k | 275.5k | 253.2k |
+| context switch | switches/s | 3.98M | 1.41M | 986.5k |
+| semaphore uncontended | ops/s | 47.90M | 10.40M | 12.98M |
+| semaphore contended | ops/s | 43.36M | 10.29M | 12.74M |
+| queue put/get | items/s | 15.04M | 10.82M | 5.31M |
+| queue shared green+native threads | items/s | 2.58M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 27.2k | 25.9k | 11.7k |
+| tpool round-trip | mean latency | 36.74 us | 38.56 us | 85.16 us |
+| echo @ conc 100 | req/s | 146.1k | 118.6k | 95.2k |
+| echo @ conc 100 | p50/p99 ms | 0.646 / 1.06 | 0.797 / 1.017 | 1.026 / 1.561 |
+| echo @ conc 1000 | req/s | 115.3k | 97.7k | 63.8k |
+| echo @ conc 1000 | p50/p99 ms | 7.096 / 13.603 | 8.627 / 22.43 | 14.217 / 26.335 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
@@ -368,25 +366,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 339.7k | 143.1k | 182.0k |
-| spawn (fire & forget) | spawn_n/s | 319.4k | 289.3k | 261.1k |
-| context switch | switches/s | 3.79M | 1.68M | 1.06M |
-| semaphore uncontended | ops/s | 34.68M | 10.91M | 11.99M |
-| semaphore contended | ops/s | 39.33M | 10.65M | 11.82M |
-| queue put/get | items/s | 14.44M | 12.12M | 4.88M |
-| queue shared green+native threads | items/s | 2.54M | **error** | **error** |
-| tpool round-trip | calls/s | 27.2k | 25.7k | 11.5k |
-| tpool round-trip | mean latency | 36.8 us | 38.95 us | 86.7 us |
-| echo @ conc 100 | req/s | 143.6k | 120.6k | 99.3k |
-| echo @ conc 100 | p50/p99 ms | 0.671 / 1.026 | 0.787 / 0.957 | 0.983 / 1.459 |
-| echo @ conc 1000 | req/s | 108.8k | 98.4k | 65.2k |
-| echo @ conc 1000 | p50/p99 ms | 7.333 / 13.799 | 8.487 / 23.016 | 13.987 / 23.924 |
+| spawn (tracked, spawn+join) | greenthreads/s | 340.2k | 145.6k | 184.2k |
+| spawn (fire & forget) | spawn_n/s | 330.1k | 295.1k | 266.0k |
+| context switch | switches/s | 3.75M | 1.69M | 1.04M |
+| semaphore uncontended | ops/s | 36.39M | 11.15M | 12.11M |
+| semaphore contended | ops/s | 38.35M | 10.96M | 11.85M |
+| queue put/get | items/s | 14.25M | 12.50M | 4.86M |
+| queue shared green+native threads | items/s | 2.52M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 26.9k | 25.2k | 11.8k |
+| tpool round-trip | mean latency | 37.2 us | 39.74 us | 84.74 us |
+| echo @ conc 100 | req/s | 134.9k | 126.2k | 99.6k |
+| echo @ conc 100 | p50/p99 ms | 0.675 / 1.137 | 0.759 / 1.027 | 0.983 / 1.434 |
+| echo @ conc 1000 | req/s | 103.6k | 100.7k | 67.3k |
+| echo @ conc 1000 | p50/p99 ms | 7.138 / 14.472 | 8.251 / 17.591 | 13.757 / 23.873 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 18.7k msg/s |
+| filament | filament.tpool | OK — completed | 18.0k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -397,25 +395,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 1.06M | 213.7k | 201.2k |
-| spawn (fire & forget) | spawn_n/s | 914.3k | 542.8k | 404.8k |
-| context switch | switches/s | 3.51M | 1.44M | 733.5k |
-| semaphore uncontended | ops/s | 37.78M | 10.81M | 6.94M |
-| semaphore contended | ops/s | 36.21M | 10.29M | 6.69M |
-| queue put/get | items/s | 13.84M | 10.78M | 2.91M |
-| queue shared green+native threads | items/s | 2.73M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 27.8k | 25.9k | 10.9k |
-| tpool round-trip | mean latency | 35.99 us | 38.6 us | 91.63 us |
-| echo @ conc 100 | req/s | 142.1k | 115.7k | 76.4k |
-| echo @ conc 100 | p50/p99 ms | 0.662 / 0.885 | 0.837 / 0.971 | 1.283 / 1.907 |
-| echo @ conc 1000 | req/s | 113.5k | 93.7k | 49.7k |
-| echo @ conc 1000 | p50/p99 ms | 7.413 / 11.543 | 8.964 / 22.873 | 19.099 / 35.328 |
+| spawn (tracked, spawn+join) | greenthreads/s | 798.1k | 214.8k | 204.7k |
+| spawn (fire & forget) | spawn_n/s | 763.0k | 571.6k | 400.6k |
+| context switch | switches/s | 3.54M | 1.44M | 723.1k |
+| semaphore uncontended | ops/s | 40.83M | 10.25M | 7.08M |
+| semaphore contended | ops/s | 34.99M | 10.03M | 6.69M |
+| queue put/get | items/s | 13.79M | 10.68M | 2.95M |
+| queue shared green+native threads | items/s | 2.69M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 27.9k | 25.1k | 10.6k |
+| tpool round-trip | mean latency | 35.85 us | 39.87 us | 94.78 us |
+| echo @ conc 100 | req/s | 145.7k | 117.6k | 77.7k |
+| echo @ conc 100 | p50/p99 ms | 0.662 / 0.815 | 0.821 / 1.115 | 1.264 / 1.867 |
+| echo @ conc 1000 | req/s | 116.1k | 96.4k | 50.7k |
+| echo @ conc 1000 | p50/p99 ms | 7.213 / 11.063 | 8.911 / 16.81 | 18.006 / 31.321 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 17.6k msg/s |
+| filament | filament.tpool | OK — completed | 17.2k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -426,25 +424,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 982.6k | 244.7k | 193.6k |
-| spawn (fire & forget) | spawn_n/s | 873.8k | 477.8k | 321.4k |
-| context switch | switches/s | 2.99M | 1.45M | 602.4k |
-| semaphore uncontended | ops/s | 46.46M | 12.16M | 4.34M |
-| semaphore contended | ops/s | 26.91M | 11.45M | 4.10M |
-| queue put/get | items/s | 13.22M | 9.67M | 1.97M |
-| queue shared green+native threads | items/s | 2.33M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 28.0k | 25.4k | 10.7k |
-| tpool round-trip | mean latency | 35.66 us | 39.37 us | 93.67 us |
-| echo @ conc 100 | req/s | 139.2k | 104.9k | 65.8k |
-| echo @ conc 100 | p50/p99 ms | 0.691 / 0.857 | 0.915 / 1.066 | 1.496 / 2.164 |
-| echo @ conc 1000 | req/s | 117.3k | 86.8k | 45.0k |
-| echo @ conc 1000 | p50/p99 ms | 7.135 / 11.58 | 9.811 / 25.024 | 19.905 / 45.687 |
+| spawn (tracked, spawn+join) | greenthreads/s | 872.3k | 237.4k | 197.8k |
+| spawn (fire & forget) | spawn_n/s | 764.3k | 497.1k | 334.7k |
+| context switch | switches/s | 3.03M | 1.48M | 598.3k |
+| semaphore uncontended | ops/s | 45.48M | 10.24M | 4.52M |
+| semaphore contended | ops/s | 28.94M | 10.03M | 4.32M |
+| queue put/get | items/s | 13.10M | 9.66M | 2.02M |
+| queue shared green+native threads | items/s | 2.27M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 27.8k | 24.6k | 10.2k |
+| tpool round-trip | mean latency | 35.96 us | 40.61 us | 97.62 us |
+| echo @ conc 100 | req/s | 139.9k | 104.3k | 66.4k |
+| echo @ conc 100 | p50/p99 ms | 0.687 / 0.93 | 0.908 / 1.046 | 1.472 / 2.119 |
+| echo @ conc 1000 | req/s | 114.3k | 85.2k | 45.5k |
+| echo @ conc 1000 | p50/p99 ms | 7.39 / 11.441 | 9.946 / 23.801 | 20.15 / 33.474 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 17.6k msg/s |
+| filament | filament.tpool | OK — completed | 17.3k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -455,25 +453,25 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 | Benchmark | Metric | filament | gevent | eventlet |
 |---|---|---|---|---|
-| spawn (tracked, spawn+join) | greenthreads/s | 1.32M | 230.7k | 143.8k |
-| spawn (fire & forget) | spawn_n/s | 1.07M | 518.2k | 289.5k |
-| context switch | switches/s | 3.47M | 1.29M | 459.7k |
-| semaphore uncontended | ops/s | 40.66M | 13.87M | 4.97M |
-| semaphore contended | ops/s | 19.65M | 10.61M | 4.26M |
-| queue put/get | items/s | 10.47M | 7.90M | 1.86M |
-| queue shared green+native threads | items/s | 1.07M | **error** | **deadlock** |
-| tpool round-trip | calls/s | 27.9k | **deadlock** | 10.3k |
-| tpool round-trip | mean latency | 35.83 us | **deadlock** | 96.9 us |
-| echo @ conc 100 | req/s | 132.0k | 103.1k | 64.5k |
-| echo @ conc 100 | p50/p99 ms | 0.728 / 0.851 | 0.943 / 1.087 | 1.499 / 2.131 |
-| echo @ conc 1000 | req/s | 104.8k | 85.8k | 38.2k |
-| echo @ conc 1000 | p50/p99 ms | 7.868 / 12.17 | 10.043 / 23.744 | 23.852 / 41.086 |
+| spawn (tracked, spawn+join) | greenthreads/s | 966.2k | 239.9k | 141.8k |
+| spawn (fire & forget) | spawn_n/s | 881.9k | 536.9k | 285.0k |
+| context switch | switches/s | 3.37M | 1.29M | 448.9k |
+| semaphore uncontended | ops/s | 39.91M | 14.07M | 5.07M |
+| semaphore contended | ops/s | 19.59M | 10.85M | 4.45M |
+| queue put/get | items/s | 10.68M | 7.90M | 1.87M |
+| queue shared green+native threads | items/s | 1.04M | **error** | **deadlock** |
+| tpool round-trip | calls/s | 28.3k | 166.1 | 10.0k |
+| tpool round-trip | mean latency | 35.35 us | 6018.9 us | 99.7 us |
+| echo @ conc 100 | req/s | 128.9k | 102.8k | 62.4k |
+| echo @ conc 100 | p50/p99 ms | 0.735 / 1.131 | 0.933 / 1.431 | 1.586 / 2.396 |
+| echo @ conc 1000 | req/s | 108.7k | 83.3k | 38.0k |
+| echo @ conc 1000 | p50/p99 ms | 7.376 / 11.632 | 10.39 / 23.706 | 23.771 / 38.588 |
 
 ### #137 logging-from-threadpool (monkey-patched)
 
 | Framework | Path | Result | throughput |
 |---|---|---|---|
-| filament | filament.tpool | OK — completed | 16.1k msg/s |
+| filament | filament.tpool | OK — completed | 16.0k msg/s |
 | gevent | naive | **DEADLOCK** | - |
 | gevent | workaround | **DEADLOCK** | - |
 | eventlet | naive | **DEADLOCK** | - |
@@ -482,23 +480,23 @@ Higher is better except latency rows (lower is better). **bold** = that framewor
 
 Numbers below are from **Python 3.15.0**; the framework *ratios* hold across every version in the matrix (see per-version tables).
 
-- **Spawn throughput (tracked spawn+join) — filament wins big:** filament 111.6k gt/s vs gevent 56.4k vs eventlet 61.9k — filament 2.0x gevent, 1.8x eventlet. filament's lead is widest on the older interpreters (up to ~4.7x gevent on 3.10/3.8).
-- **Context-switch rate — filament wins:** filament 2.17M sw/s vs gevent 786.2k vs eventlet 486.4k — filament 2.8x gevent, 4.5x eventlet. Consistent across all versions.
-- **Semaphore / Queue — filament wins:** its C-level `Semaphore` does ~21.81M uncontended ops/s vs gevent 6.91M / eventlet 6.67M (3-8x), and it leads on queue put/get too.
-- **Mixed green+native queue — filament only:** a single bounded `Queue` worked simultaneously by greenthreads AND native `threading.Thread` producers/consumers runs at ~2.76M items/s in filament. The same workload on gevent/eventlet deadlocks or errors — their queues are hub-bound and cannot be used from a foreign OS thread. filament's per-thread scheduler + deferred cross-thread wakeup makes this a first-class pattern (same mechanism as the #137 win).
-- **Threadpool round-trip — filament wins:** filament 75.0k calls/s vs gevent 49.4k vs eventlet 11.3k — filament 1.5x gevent, 6.6x eventlet. filament's pool wakes the most-recently-idle (MRU) worker for each job, keeping the hot worker's stack and caches warm.
-- **Echo server — filament wins:** filament matches or beats gevent's requests/s at both concurrencies, with better p50/p99 latency (see the 3.13 table); eventlet trails both. Persistent edge-triggered readiness events (no per-block epoll_ctl) plus a GIL-free io-thread completion path carry the socket hot loop.
-- **#137 logging-in-threadpool — filament's headline win:** filament logs from its real-thread pool while the hub runs greenthreads and **just works, no workaround, ~15-16k msgs/s** (Python 3.8-3.13). gevent and eventlet both **deadlock** under a monkey-patched hub, and gevent's documented mitigations (hub threadpool + native logging locks + `logThreads=False`) **do not** save it — it still deadlocks. This is filament's whole reason for existing, and it holds up.
+- **Spawn throughput (tracked spawn+join) — filament wins big:** filament 108.6k gt/s vs gevent 57.9k vs eventlet 62.3k — filament 1.9x gevent, 1.7x eventlet. Across the matrix filament runs 1.71-4.54x the spawn rate of gevent, widest on Python 3.8.20.
+- **Context-switch rate — filament wins:** filament 2.05M sw/s vs gevent 812.0k vs eventlet 494.5k — filament 2.5x gevent, 4.1x eventlet. Consistent across all versions.
+- **Semaphore / Queue — filament wins:** its C-level `Semaphore` does ~21.67M uncontended ops/s vs gevent 6.93M / eventlet 6.71M (3-8x), and it leads on queue put/get too.
+- **Mixed green+native queue — filament only:** a single bounded `Queue` worked simultaneously by greenthreads AND native `threading.Thread` producers/consumers runs at ~2.80M items/s in filament. The same workload on gevent/eventlet deadlocks or errors — their queues are hub-bound and cannot be used from a foreign OS thread. filament's per-thread scheduler + deferred cross-thread wakeup makes this a first-class pattern (same mechanism as the #137 win).
+- **Threadpool round-trip:** filament 47.7k calls/s vs gevent 46.5k vs eventlet 11.2k — filament 1.0x gevent, 4.2x eventlet. Across Python 3 in this matrix that is 1.03-1.56x gevent's rate, best on Python 3.12.13; filament's pool wakes the most-recently-idle (MRU) worker for each job, keeping the hot worker's stack and caches warm.
+- **Echo server — filament wins:** filament matches or beats gevent's requests/s at both concurrencies, with better p50/p99 latency; eventlet trails both. Persistent edge-triggered readiness events (no per-block epoll_ctl) plus a GIL-free io-thread completion path carry the socket hot loop.
+- **#137 logging-in-threadpool — filament's headline win:** filament logs from its real-thread pool while the hub runs greenthreads and **just works, no workaround, 23.1k-75.5k msgs/s** across the matrix. gevent and eventlet both **deadlock** under a monkey-patched hub, and gevent's documented mitigations (hub threadpool + native logging locks + `logThreads=False`) **do not** save it — it still deadlocks. This is filament's whole reason for existing, and it holds up.
 
 ## Headline findings — arm64
 
 Numbers below are from **Python 3.15.0**; the framework *ratios* hold across every version in the matrix (see per-version tables).
 
-- **Spawn throughput (tracked spawn+join) — filament wins big:** filament 372.7k gt/s vs gevent 142.0k vs eventlet 168.0k — filament 2.6x gevent, 2.2x eventlet. filament's lead is widest on the older interpreters (up to ~4.7x gevent on 3.10/3.8).
-- **Context-switch rate — filament wins:** filament 3.45M sw/s vs gevent 1.46M vs eventlet 910.9k — filament 2.4x gevent, 3.8x eventlet. Consistent across all versions.
-- **Semaphore / Queue — filament wins:** its C-level `Semaphore` does ~41.99M uncontended ops/s vs gevent 10.10M / eventlet 12.76M (3-8x), and it leads on queue put/get too.
-- **Mixed green+native queue — filament only:** a single bounded `Queue` worked simultaneously by greenthreads AND native `threading.Thread` producers/consumers runs at ~3.12M items/s in filament. The same workload on gevent/eventlet deadlocks or errors — their queues are hub-bound and cannot be used from a foreign OS thread. filament's per-thread scheduler + deferred cross-thread wakeup makes this a first-class pattern (same mechanism as the #137 win).
-- **Threadpool round-trip — filament wins:** filament 27.9k calls/s vs gevent 25.3k vs eventlet 11.9k — filament 1.1x gevent, 2.3x eventlet. filament's pool wakes the most-recently-idle (MRU) worker for each job, keeping the hot worker's stack and caches warm.
-- **Echo server — filament wins:** filament matches or beats gevent's requests/s at both concurrencies, with better p50/p99 latency (see the 3.13 table); eventlet trails both. Persistent edge-triggered readiness events (no per-block epoll_ctl) plus a GIL-free io-thread completion path carry the socket hot loop.
-- **#137 logging-in-threadpool — filament's headline win:** filament logs from its real-thread pool while the hub runs greenthreads and **just works, no workaround, ~15-16k msgs/s** (Python 3.8-3.13). gevent and eventlet both **deadlock** under a monkey-patched hub, and gevent's documented mitigations (hub threadpool + native logging locks + `logThreads=False`) **do not** save it — it still deadlocks. This is filament's whole reason for existing, and it holds up.
+- **Spawn throughput (tracked spawn+join) — filament wins big:** filament 355.2k gt/s vs gevent 155.3k vs eventlet 177.0k — filament 2.3x gevent, 2.0x eventlet. Across the matrix filament runs 2.28-4.03x the spawn rate of gevent, widest on Python 2.7.18.
+- **Context-switch rate — filament wins:** filament 3.54M sw/s vs gevent 1.52M vs eventlet 950.1k — filament 2.3x gevent, 3.7x eventlet. Consistent across all versions.
+- **Semaphore / Queue — filament wins:** its C-level `Semaphore` does ~45.26M uncontended ops/s vs gevent 10.79M / eventlet 13.03M (3-8x), and it leads on queue put/get too.
+- **Mixed green+native queue — filament only:** a single bounded `Queue` worked simultaneously by greenthreads AND native `threading.Thread` producers/consumers runs at ~3.08M items/s in filament. The same workload on gevent/eventlet deadlocks or errors — their queues are hub-bound and cannot be used from a foreign OS thread. filament's per-thread scheduler + deferred cross-thread wakeup makes this a first-class pattern (same mechanism as the #137 win).
+- **Threadpool round-trip:** filament 26.9k calls/s vs gevent 24.8k vs eventlet 11.5k — filament 1.1x gevent, 2.3x eventlet. Across Python 3 in this matrix that is 1.05-1.13x gevent's rate, best on Python 3.8.20; filament's pool wakes the most-recently-idle (MRU) worker for each job, keeping the hot worker's stack and caches warm.
+- **Echo server — filament wins:** filament matches or beats gevent's requests/s at both concurrencies, with better p50/p99 latency; eventlet trails both. Persistent edge-triggered readiness events (no per-block epoll_ctl) plus a GIL-free io-thread completion path carry the socket hot loop.
+- **#137 logging-in-threadpool — filament's headline win:** filament logs from its real-thread pool while the hub runs greenthreads and **just works, no workaround, 16.0k-18.0k msgs/s** across the matrix. gevent and eventlet both **deadlock** under a monkey-patched hub, and gevent's documented mitigations (hub threadpool + native logging locks + `logThreads=False`) **do not** save it — it still deadlocks. This is filament's whole reason for existing, and it holds up.
 

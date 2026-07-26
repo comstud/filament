@@ -29,6 +29,8 @@ goes away.
 
 from __future__ import absolute_import
 
+import atexit
+
 from _filament.thrpool import ThreadPool
 
 
@@ -87,6 +89,23 @@ def shutdown():
         # workers still exiting can race interpreter teardown and abort.
         _default_pool.shutdown(wait=True)
         _default_pool = None
+
+
+def _shutdown_at_exit():
+    # Drop the default pool while the runtime is still fully alive.  The C
+    # module registers its own atexit sweep as a backstop (it catches pools
+    # nobody hands to us), but doing it here as well means the Python-visible
+    # global is cleared too, so nothing can hand out a half-dead pool during
+    # the rest of interpreter shutdown.  Registered at import time and after
+    # _filament.thrpool's own hook, so atexit's LIFO order runs this first.
+    try:
+        if _default_pool is not None and not _default_pool.is_shutdown:
+            shutdown()
+    except Exception:
+        pass
+
+
+atexit.register(_shutdown_at_exit)
 
 
 class Proxy(object):

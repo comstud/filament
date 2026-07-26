@@ -55,8 +55,44 @@ static int _message_init(PyFilMessage *self, PyObject *args, PyObject *kargs)
     return 0;
 }
 
+/*
+ * GC support.
+ *
+ * A Message holds whatever the greenthread produced -- its return value, or
+ * its exception plus traceback -- and every Filament owns one. Both payloads
+ * routinely close a cycle back to the Message's owner:
+ *
+ *   Filament -> message -> exc_tb -> frame -> the object whose bound method
+ *   was the greenthread body -> that object's back-reference to the Filament
+ *
+ * That is not exotic; it is what happens every time a greenthread running a
+ * bound method raises (including the GreenletExit thrown by kill()). Without
+ * a traverse the collector cannot see through the Message, so the whole
+ * cluster -- exception, traceback, frames and all the locals they pin --
+ * leaks. The waiter list needs no traversal: waiters are plain C structs that
+ * only exist while a greenthread is parked, and a parked greenthread is not
+ * collectable anyway.
+ */
+static int _message_traverse(PyFilMessage *self, visitproc visit, void *arg)
+{
+    Py_VISIT(self->result_or_exc_type);
+    Py_VISIT(self->exc_value);
+    Py_VISIT(self->exc_tb);
+    return 0;
+}
+
+static int _message_clear(PyFilMessage *self)
+{
+    Py_CLEAR(self->result_or_exc_type);
+    Py_CLEAR(self->exc_value);
+    Py_CLEAR(self->exc_tb);
+    return 0;
+}
+
 static void _message_dealloc(PyFilMessage *self)
 {
+    PyObject_GC_UnTrack(self);
+
     Py_CLEAR(self->result_or_exc_type);
     Py_CLEAR(self->exc_value);
     Py_CLEAR(self->exc_tb);
@@ -241,10 +277,10 @@ static PyTypeObject _message_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_HAVE_GC,     /* tp_flags */
     0,                                          /* tp_doc */
-    0,                                          /* tp_traverse */
-    0,                                          /* tp_clear */
+    (traverseproc)_message_traverse,            /* tp_traverse */
+    (inquiry)_message_clear,                    /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
@@ -260,7 +296,10 @@ static PyTypeObject _message_type = {
     (initproc)_message_init,                    /* tp_init */
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_message_new,                      /* tp_new */
-    PyObject_Del,                               /* tp_free */
+    /* Must match tp_alloc: PyType_GenericAlloc allocates (and tracks) a GC
+     * header for Py_TPFLAGS_HAVE_GC types, so freeing with PyObject_Del
+     * would hand the allocator the wrong pointer. */
+    PyObject_GC_Del,                            /* tp_free */
     0,                                          /* tp_is_gc */
     0,                                          /* tp_bases */
     0,                                          /* tp_mro */

@@ -151,6 +151,72 @@ static int _fil_filament_init(PyFilament *self, PyObject *args, PyObject *kwargs
     return result;
 }
 
+/*
+ * GC support.
+ *
+ * Filament inherits Py_TPFLAGS_HAVE_GC from greenlet, but greenlet's
+ * green_traverse() knows nothing about the PyFilament fields tacked on after
+ * the embedded PyGreenlet -- most importantly 'method'. That matters because
+ * the natural way to wrap a greenthread is to spawn a *bound method* of the
+ * wrapper and store the resulting Filament back on the wrapper:
+ *
+ *     g._filament = filament.spawn(g._target)
+ *
+ * which is exactly what gevent_compat.Greenlet, eventlet_compat.GreenThread
+ * and StreamServer's per-connection handler all do. That closes the cycle
+ *
+ *     Filament.method -> bound method -> wrapper -> wrapper._filament -> Filament
+ *
+ * Without a traverse that visits 'method', the collector cannot see the cycle
+ * at all, so it is not merely uncollected but invisible: the whole cluster
+ * (wrapper, its args, its Event, any socket it holds) leaks forever. Being
+ * GC-tracked with a tp_traverse that under-reports our references was also
+ * simply incorrect.
+ *
+ * _fil_filament_main() additionally drops these references the moment the body
+ * returns, which breaks the same cycle by plain refcounting and keeps steady
+ * state flat without waiting for a collection; traverse/clear are what cover
+ * the filaments that never run (spawned then killed) and any cycle we have not
+ * thought of.
+ */
+static int _fil_filament_traverse(PyFilament *self, visitproc visit, void *arg)
+{
+    Py_VISIT(self->method);
+    Py_VISIT(self->method_args);
+    Py_VISIT(self->method_kwargs);
+
+    /* Message is GC-tracked (it holds the body's return value, or its
+     * exception and traceback), so it must be visited or the collector could
+     * decide it is unreachable while we still own it. Deliberately NOT
+     * cleared in tp_clear: breaking the cycle is the Message's own tp_clear's
+     * job, and a live Filament still needs somewhere to deliver its result.
+     *
+     * 'sched' is not visited: PyFilScheduler is not GC-tracked and holds no
+     * reference that can lead back to user objects. */
+    Py_VISIT(self->message);
+
+    if (PyGreenlet_Type.tp_traverse != NULL)
+    {
+        return PyGreenlet_Type.tp_traverse((PyObject *)self, visit, arg);
+    }
+
+    return 0;
+}
+
+static int _fil_filament_clear(PyFilament *self)
+{
+    Py_CLEAR(self->method);
+    Py_CLEAR(self->method_args);
+    Py_CLEAR(self->method_kwargs);
+
+    if (PyGreenlet_Type.tp_clear != NULL)
+    {
+        return PyGreenlet_Type.tp_clear((PyObject *)self);
+    }
+
+    return 0;
+}
+
 static void _fil_filament_dealloc(PyFilament *self)
 {
     Py_CLEAR(self->message);
@@ -159,11 +225,25 @@ static void _fil_filament_dealloc(PyFilament *self)
     Py_CLEAR(self->method_args);
     Py_CLEAR(self->method_kwargs);
 
-    /* we inherit from greenlet which may or may not be
-     * compiled with USE_GC, so we free via tp_free rather
-     * than PyObject_(GC_)Del
+    /*
+     * Chain to greenlet's tp_dealloc rather than calling tp_free ourselves.
+     *
+     * greenlet owns per-greenlet state that only green_dealloc() releases: on
+     * greenlet 3.x the C++ 'pimpl' object (allocated with PyObject_Malloc, so
+     * one ~224-byte block leaked per Filament), plus the weakref list, the
+     * instance dict and the GC untrack. The historical comment here worried
+     * that greenlet might not be built with GC support and so used tp_free
+     * directly -- but green_dealloc ends in exactly that tp_free call itself,
+     * having done the rest of the cleanup first, so delegating is both safe
+     * and strictly more correct on every greenlet we support.
+     *
+     * Clearing our fields *first* is safe: green_dealloc can throw
+     * GreenletExit into a still-suspended greenlet to unwind it, and that
+     * unwinding runs the tail of _fil_filament_main() -- but that function
+     * holds its own references to method/args/kwargs for the duration of the
+     * call and NULL-checks 'message', precisely so this ordering is legal.
      */
-    Py_TYPE(self)->tp_free(self);
+    PyGreenlet_Type.tp_dealloc((PyObject *)self);
 }
 
 PyDoc_STRVAR(_fil_filament_wait_doc, "Wait!");
@@ -175,8 +255,47 @@ static PyObject *_fil_filament_wait(PyFilament *self, PyObject *args)
 PyDoc_STRVAR(_fil_filament_main_doc, "Main entrypoint for the Filament.");
 static PyObject *_fil_filament_main(PyFilament *self, PyObject *args)
 {
-    PyObject *result = PyObject_Call(self->method, self->method_args,
-                                     self->method_kwargs);
+    PyObject *result;
+    /*
+     * Take our own references for the duration of the call. PyObject_Call()
+     * only borrows its arguments, so without this the callee could drop the
+     * last reference to us -- clearing self->method out from under an
+     * in-flight call -- simply by discarding the wrapper object that owns the
+     * bound method we are running. It also makes it legal for tp_dealloc to
+     * clear these fields before unwinding a suspended greenlet.
+     */
+    PyObject *method = self->method;
+    PyObject *method_args = self->method_args;
+    PyObject *method_kwargs = self->method_kwargs;
+
+    Py_XINCREF(method);
+    Py_XINCREF(method_args);
+    Py_XINCREF(method_kwargs);
+
+    result = PyObject_Call(method, method_args, method_kwargs);
+
+    Py_XDECREF(method);
+    Py_XDECREF(method_args);
+    Py_XDECREF(method_kwargs);
+
+    /*
+     * The body has run and can never run again, so release the callable and
+     * its arguments now instead of waiting for dealloc. This is what breaks,
+     * by plain refcounting, the
+     *
+     *     Filament.method -> bound method -> wrapper -> wrapper._filament
+     *
+     * cycle that every compat shim creates (see the comment on
+     * _fil_filament_traverse). Doing it here rather than relying on the
+     * cyclic collector keeps memory flat under sustained load, where the
+     * allocation rate easily outruns collection.
+     *
+     * Note these are already NULL if tp_clear ran first; Py_CLEAR copes.
+     */
+    Py_CLEAR(self->method);
+    Py_CLEAR(self->method_args);
+    Py_CLEAR(self->method_kwargs);
+
     if (result == NULL)
     {
         PyObject *exc_type, *exc_value, *exc_tb;
@@ -194,7 +313,14 @@ static PyObject *_fil_filament_main(PyFilament *self, PyObject *args)
             return NULL;
         }
 
-        fil_message_send_exception(self->message, exc_type, exc_value, exc_tb);
+        /* 'message' is NULL only when tp_dealloc cleared it and then had
+         * greenlet unwind us with a GreenletExit; there is by definition
+         * nobody left to deliver the result to in that case. */
+        if (self->message != NULL)
+        {
+            fil_message_send_exception(self->message, exc_type, exc_value,
+                                       exc_tb);
+        }
         /* Restore this so the scheduler can catch and force the main
          * greenlet to raise if they are system exceptions.
          */
@@ -203,7 +329,10 @@ static PyObject *_fil_filament_main(PyFilament *self, PyObject *args)
     }
     else
     {
-        fil_message_send(self->message, result);
+        if (self->message != NULL)
+        {
+            fil_message_send(self->message, result);
+        }
         Py_DECREF(result);
     }
 
@@ -238,10 +367,13 @@ static PyTypeObject _fil_filament_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    /* Py_TPFLAGS_HAVE_GC must be spelled out here: PyType_Ready() only
+     * inherits it from the base when tp_traverse AND tp_clear are both NULL,
+     * which they no longer are. */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_HAVE_GC,     /* tp_flags */
     0,                                          /* tp_doc */
-    0,                                          /* tp_traverse */
-    0,                                          /* tp_clear */
+    (traverseproc)_fil_filament_traverse,       /* tp_traverse */
+    (inquiry)_fil_filament_clear,               /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
@@ -525,6 +657,23 @@ _FIL_MODULE_INIT_FN_NAME(core)
     }
 
     _fil_filament_type.tp_base = &PyGreenlet_Type;
+
+    /*
+     * We declare Py_TPFLAGS_HAVE_GC unconditionally in the type struct, but
+     * that is only correct if the greenlet we are subclassing was itself
+     * built with GC support: tp_alloc (inherited from greenlet) sizes the
+     * allocation from *our* flags, while tp_free (also inherited) frees
+     * according to greenlet's. Every greenlet we support does use GC, so this
+     * is belt and braces -- but a mismatch would corrupt the heap, so check
+     * rather than assume.
+     */
+    if (!(PyGreenlet_Type.tp_flags & Py_TPFLAGS_HAVE_GC))
+    {
+        _fil_filament_type.tp_flags &= ~Py_TPFLAGS_HAVE_GC;
+        _fil_filament_type.tp_traverse = NULL;
+        _fil_filament_type.tp_clear = NULL;
+    }
+
     if (PyType_Ready(&_fil_filament_type) < 0)
     {
         return _FIL_MODULE_INIT_ERROR;
@@ -543,14 +692,60 @@ _FIL_MODULE_INIT_FN_NAME(core)
     _PY_FIL_CORE_API->filament_alloc = filament_alloc;
 
     if (fil_message_init(m, _PY_FIL_CORE_API) < 0 ||
-        fil_scheduler_init(m, _PY_FIL_CORE_API) < 0 ||
-        fil_exceptions_init(m, _PY_FIL_CORE_API) < 0)
+        fil_scheduler_init(m, _PY_FIL_CORE_API) < 0)
     {
         return _FIL_MODULE_INIT_ERROR;
     }
 
+    /*
+     * Publish the C API capsule BEFORE fil_exceptions_init().
+     *
+     * fil_exceptions_init() imports 'filament.exc', which runs
+     * filament/__init__.py, which imports filament.greenthread, which imports
+     * _filament.timer, whose own init calls PyFilCore_Import() -- i.e. it
+     * re-enters us while we are still initialising. That sibling extension
+     * only stashes the capsule pointer at import time and dereferences it
+     * later, so handing it a capsule now is safe: the message and scheduler
+     * halves of the struct are already filled in above, and the exception
+     * half is filled in immediately below, long before any call can use it.
+     *
+     * Publishing late instead made 'import _filament.thrpool' (or any other
+     * _filament submodule) fail outright on Python 2 when it was the first
+     * filament import in the process: PyCapsule_Import() there resolves the
+     * dotted name by attribute lookup from the parent package, and neither
+     * the capsule nor the 'core' attribute existed yet.
+     */
     capsule = PyCapsule_New(_PY_FIL_CORE_API, FILAMENT_CORE_CAPSULE_NAME, NULL);
     if (PyModule_AddObject(m, FILAMENT_CORE_CAPI_NAME, capsule) != 0)
+    {
+        return _FIL_MODULE_INIT_ERROR;
+    }
+
+#if PY_MAJOR_VERSION < 3
+    /*
+     * Python 2 only: bind ourselves onto the parent package by hand. The
+     * import machinery does that after our init returns, which is too late
+     * for the re-entrant PyCapsule_Import() described above (it walks
+     * '_filament' -> 'core' -> '_C_API' with getattr). Python 3 resolves the
+     * module through sys.modules instead and needs no help.
+     */
+    {
+        PyObject *pkg = PyImport_ImportModule("_filament");
+
+        if (pkg == NULL)
+        {
+            return _FIL_MODULE_INIT_ERROR;
+        }
+        if (PyObject_SetAttrString(pkg, "core", m) < 0)
+        {
+            Py_DECREF(pkg);
+            return _FIL_MODULE_INIT_ERROR;
+        }
+        Py_DECREF(pkg);
+    }
+#endif
+
+    if (fil_exceptions_init(m, _PY_FIL_CORE_API) < 0)
     {
         return _FIL_MODULE_INIT_ERROR;
     }

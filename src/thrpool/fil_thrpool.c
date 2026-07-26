@@ -33,8 +33,81 @@ static PyObject *_EMPTY_TUPLE;
 typedef struct _pyfil_thr_pool {
     PyObject_HEAD
     char is_shutdown;
+    char in_registry;
     FilThrPool *tpool;
+    struct _pyfil_thr_pool *registry_prev;
+    struct _pyfil_thr_pool *registry_next;
 } PyFilThrPool;
+
+/*
+ * Registry of every live, not-yet-shut-down pool.
+ *
+ * Why it exists: a pool that is still alive when the interpreter starts
+ * finalizing can never be shut down, because shutting a pool down spawns a
+ * helper thread that immediately calls PyGILState_Ensure() -- and during
+ * finalization CPython does not hand the GIL back to a non-finalizing thread,
+ * it simply makes that thread exit.  The helper therefore dies before it can
+ * flag the pool as shutting down or signal the waiter, and whoever asked for
+ * the shutdown blocks forever.  So we shut the pools down *before*
+ * finalization begins, from an atexit callback, while the runtime is still
+ * fully alive and worker threads can still attach a thread state and be
+ * joined.  (Same reasoning as filament/thrpool_resolver.py's atexit hook,
+ * except this one also covers pools created directly from C/Python without
+ * going through any of the filament wrappers.)
+ *
+ * REFERENCE SEMANTICS: the registry holds BORROWED references.  Strong ones
+ * would make every pool immortal -- tp_dealloc would never run, so a pool that
+ * the program legitimately dropped would keep four idle OS threads alive for
+ * the life of the process, and _thrpool_dealloc's implicit shutdown would
+ * never happen.  Borrowing is safe because every mutation below happens with
+ * the GIL held (_thrpool_new / _thrpool_shutdown_async / _thrpool_dealloc) and
+ * because _thrpool_dealloc unlinks the pool as its very first act, so the
+ * registry can never contain a dead pointer.  The one place that has to be
+ * careful is the atexit sweep, which blocks (and therefore lets other
+ * greenthreads run and other pools die) while holding a pool pointer; it
+ * takes a real reference for the duration -- see _thrpool_atexit().
+ */
+static PyFilThrPool *_thrpool_registry;
+
+static void _thrpool_registry_add(PyFilThrPool *self)
+{
+    if (self->in_registry)
+    {
+        return;
+    }
+    self->registry_prev = NULL;
+    self->registry_next = _thrpool_registry;
+    if (_thrpool_registry != NULL)
+    {
+        _thrpool_registry->registry_prev = self;
+    }
+    _thrpool_registry = self;
+    self->in_registry = 1;
+}
+
+/* Idempotent: safe to call on a pool that was never added or already removed. */
+static void _thrpool_registry_remove(PyFilThrPool *self)
+{
+    if (!self->in_registry)
+    {
+        return;
+    }
+    if (self->registry_prev != NULL)
+    {
+        self->registry_prev->registry_next = self->registry_next;
+    }
+    else
+    {
+        _thrpool_registry = self->registry_next;
+    }
+    if (self->registry_next != NULL)
+    {
+        self->registry_next->registry_prev = self->registry_prev;
+    }
+    self->registry_prev = NULL;
+    self->registry_next = NULL;
+    self->in_registry = 0;
+}
 
 typedef struct _pyfil_thrinit_info
 {
@@ -141,6 +214,9 @@ static PyFilThrPool *_thrpool_new(PyTypeObject *type, PyObject *args, PyObject *
         }
 
         self->tpool = tpool;
+
+        /* GIL held: no extra locking needed. */
+        _thrpool_registry_add(self);
     }
     return self;
 }
@@ -233,6 +309,11 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
         return err;
     }
 
+    /* The pool is now on its way out, so it no longer needs the atexit sweep.
+     * Done only on the success path: the error path above put 'is_shutdown'
+     * back and the pool is still a live pool that must be swept at exit. */
+    _thrpool_registry_remove(self);
+
     if (waiter != NULL)
     {
         int err = fil_waiter_wait(waiter, NULL, NULL);
@@ -260,14 +341,50 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
  * can stall the interpreter at an unexpected time and, if any pending task
  * needs the GIL/this thread, deadlock. The correct usage is to call
  * shutdown() explicitly before dropping the last reference. We intentionally
- * do NOT change the blocking behaviour here (callers may rely on tasks
- * completing), but the hazard is documented so it is not mistaken for correct
- * lifecycle management.
+ * do NOT change the blocking behaviour here for a live interpreter (callers
+ * may rely on tasks completing), but the hazard is documented so it is not
+ * mistaken for correct lifecycle management.
+ *
+ * The one case where the blocking shutdown is not merely rude but *fatal* is
+ * interpreter finalization, so that case is special-cased below.  It should
+ * normally be unreachable now: the atexit sweep (_thrpool_atexit) shuts every
+ * live pool down before finalization starts.  It can still be reached if
+ * atexit registration failed, if the process is torn down via a path that
+ * skips atexit handlers, or if a pool is created after the handlers have run.
  */
 static void _thrpool_dealloc(PyFilThrPool *self)
 {
+    /* Unlink first, so the registry never holds a pointer to an object that
+     * is on its way out -- everything below can block and run other code. */
+    _thrpool_registry_remove(self);
+
     if (self->tpool != NULL && !self->is_shutdown)
     {
+        if (fil_py_is_finalizing())
+        {
+            /*
+             * DELIBERATE LEAK.  Shutting down spawns a helper thread whose
+             * first act is PyGILState_Ensure(); during finalization CPython
+             * never returns from that call on a non-finalizing thread -- it
+             * makes the thread exit instead.  The helper would therefore die
+             * before flagging the shutdown or signalling the waiter, and this
+             * thread would block in fil_waiter_wait() forever (that is the
+             * classic "hangs at exit, but only when stdout is a pipe" bug).
+             *
+             * So do nothing at all: no shutdown, and no tp_free either.  The
+             * FilThrPool and its worker threads stay allocated, and 'self'
+             * stays allocated too because the pool's thr_init_cb_arg points
+             * at it -- freeing it would leave that dangling.  The workers are
+             * parked in pthread_cond_wait() inside _fil_thr_pool_thread();
+             * nobody will ever signal them, so they never touch the dying
+             * interpreter.  The process is exiting and exit() does not wait
+             * on threads, so leaking a few pages and some idle threads for
+             * the last microseconds of the process is the correct trade
+             * against a guaranteed hang.
+             */
+            return;
+        }
+
         _thrpool_shutdown_async(self, 1, 1, 1);
         return;
     }
@@ -646,6 +763,90 @@ static PyTypeObject _thrpool_type = {
     0,                                          /* tp_version_tag */
 };
 
+/*
+ * Shut down every pool that is still live, while the interpreter is still
+ * fully alive.  Runs from Python's 'atexit', i.e. from Py_FinalizeEx() but
+ * *before* any teardown has happened: threads can still attach a thread
+ * state, the GIL is still handed around normally, and the filament scheduler
+ * still runs.  A blocking (now=1, wait=1) shutdown here is what keeps
+ * _thrpool_dealloc from ever having to attempt one during finalization, where
+ * it could not possibly complete.
+ *
+ * Note the reference dance: the registry only borrows (see above), and the
+ * shutdown below blocks -- it parks this greenthread on the scheduler, so
+ * other greenthreads run and other pools may be deallocated meanwhile.  We
+ * therefore unlink the pool and take a real reference *before* blocking, and
+ * we never hold a 'next' pointer across the blocking call: each iteration
+ * re-reads the head.  Unlinking first also guarantees termination if a
+ * shutdown fails, and makes the whole callback idempotent.
+ */
+static PyObject *_thrpool_atexit(PyObject *self, PyObject *ignored)
+{
+    (void)self;
+    (void)ignored;
+
+    while (_thrpool_registry != NULL)
+    {
+        PyFilThrPool *pool = _thrpool_registry;
+
+        Py_INCREF(pool);
+        _thrpool_registry_remove(pool);
+
+        if (pool->tpool != NULL && !pool->is_shutdown)
+        {
+            if (_thrpool_shutdown_async(pool, 1, 1, 0) != 0)
+            {
+                /* Out of memory, or an exception (a signal) interrupted the
+                 * wait.  Nothing useful to do at exit time: report nothing
+                 * and move on, rather than letting an exception escape an
+                 * atexit callback and print a traceback. */
+                PyErr_Clear();
+            }
+        }
+
+        Py_DECREF(pool);
+    }
+
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef _thrpool_atexit_def = {
+    "_fil_thrpool_shutdown_all", (PyCFunction)_thrpool_atexit,
+    METH_NOARGS, NULL
+};
+
+/* Register _thrpool_atexit() with the Python 'atexit' module.  Called once,
+ * from module init, with the GIL held. */
+static int _thrpool_register_atexit(void)
+{
+    PyObject *cb;
+    PyObject *atexit_mod;
+    PyObject *res;
+
+    cb = PyCFunction_NewEx(&_thrpool_atexit_def, NULL, NULL);
+    if (cb == NULL)
+    {
+        return -1;
+    }
+
+    atexit_mod = PyImport_ImportModule("atexit");
+    if (atexit_mod == NULL)
+    {
+        Py_DECREF(cb);
+        return -1;
+    }
+
+    res = PyObject_CallMethod(atexit_mod, "register", "O", cb);
+    Py_DECREF(atexit_mod);
+    Py_DECREF(cb);
+    if (res == NULL)
+    {
+        return -1;
+    }
+    Py_DECREF(res);
+    return 0;
+}
+
 PyDoc_STRVAR(_fil_thrpool_module_doc, "Filament _filament.thrpool module.");
 static PyMethodDef _fil_thrpool_module_methods[] = {
     { NULL, },
@@ -678,6 +879,11 @@ _FIL_MODULE_INIT_FN_NAME(thrpool)
     if (PyModule_AddObject(m, "ThreadPool", (PyObject *)&_thrpool_type) != 0)
     {
         Py_DECREF((PyObject *)&_thrpool_type);
+        return _FIL_MODULE_INIT_ERROR;
+    }
+
+    if (_thrpool_register_atexit() < 0)
+    {
         return _FIL_MODULE_INIT_ERROR;
     }
 
