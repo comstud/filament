@@ -82,14 +82,14 @@ jobs:
   # leaves gcov data for the C side. gcovr needs the negative-hits tolerance
   # because worker threads race the (non-atomic) profile counters.
   #
-  # master-only ON PURPOSE: the badges report master, and master only ever
-  # advances by fast-forward from dev. Codecov keys coverage by commit SHA and
-  # attributes each SHA to the branch that uploads it FIRST -- if dev uploaded
-  # too, every SHA would be claimed by dev before it reaches master and the
-  # master badges would read "unknown" forever.
+  # Runs on every push and PR so Codecov tracks dev and comments on PRs.
+  # IMPORTANT: merges into master must be MERGE COMMITS (--no-ff), never
+  # fast-forwards. Codecov attributes a SHA to whichever branch uploads it
+  # first and dedupes later same-SHA uploads -- a fast-forwarded master tip
+  # is a SHA dev already claimed, and the master badges would read "unknown".
+  # A merge commit is a master-unique SHA, so its upload lands on master.
   coverage:
     name: coverage (py3.13, amd64)
-    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
