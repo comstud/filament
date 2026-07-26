@@ -33,6 +33,10 @@ jobs:
         env:
           CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
+          # Native 64-bit only. Without this an x86_64 runner also builds
+          # i686, whose only image is manylinux2014 (CentOS 7) — no dnf, and
+          # nobody needs 32-bit wheels.
+          CIBW_ARCHS: "auto64"
           # manylinux_2_28 = AlmaLinux 8 (dnf). libevent is bundled into each
           # wheel by auditwheel; bluez-libs-devel provides AF_BLUETOOTH headers.
           CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
