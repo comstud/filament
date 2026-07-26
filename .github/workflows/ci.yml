@@ -75,6 +75,67 @@ jobs:
           uv pip install --python .venv gevent
           .venv/bin/python -m pytest tests/test_wsgi.py -q
 
+  # Combined Python + C coverage, uploaded to Codecov under separate flags.
+  # A single instrumented run produces both: pytest-cov measures the Python
+  # side (COVERAGE_CORE=sysmon -- the default C tracer can't see code running
+  # inside filaments and materializes lazy frames), while a --coverage C build
+  # leaves gcov data for the C side. gcovr needs the negative-hits tolerance
+  # because worker threads race the (non-atomic) profile counters.
+  coverage:
+    name: coverage (py3.13, amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libevent-dev libbluetooth-dev build-essential
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Provision Python 3.13
+        run: uv python install 3.13
+
+      - name: Create venv and install deps
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv setuptools wheel greenlet \
+            pytest testtools pytest-cov gcovr
+
+      - name: Build extensions with gcov instrumentation
+        run: |
+          CFLAGS="--coverage -O0 -g" CXXFLAGS="--coverage -O0 -g" \
+            LDFLAGS="--coverage" \
+            .venv/bin/python setup.py build_ext --inplace
+
+      - name: Run test suite under coverage
+        run: |
+          COVERAGE_CORE=sysmon .venv/bin/python -m pytest tests -q \
+            --ignore=tests/test_wsgi.py --cov --cov-report=xml
+
+      - name: Generate C coverage report
+        run: |
+          .venv/bin/gcovr -r . --filter 'src/' --filter 'include/' \
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+            --xml -o c-coverage.xml
+
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: python
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload C coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: c-coverage.xml
+          flags: c
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   # Python 2.7 is test-only (no wheels are published for it). It runs in the
   # official 2.7 container. Best-effort: the image is EOL (Debian buster, whose
   # apt repos have moved to archive.debian.org) and 2.7 has a known

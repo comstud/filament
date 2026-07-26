@@ -1,5 +1,11 @@
 # Filament
 
+[![CI](https://github.com/comstud/filament/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/comstud/filament/actions/workflows/ci.yml)
+[![Python coverage](https://codecov.io/gh/comstud/filament/branch/master/graph/badge.svg?flag=python)](https://app.codecov.io/gh/comstud/filament)
+[![C coverage](https://codecov.io/gh/comstud/filament/branch/master/graph/badge.svg?flag=c)](https://app.codecov.io/gh/comstud/filament)
+![Python](https://img.shields.io/badge/python-2.7%20%7C%203.8--3.15-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 Filament is a greenlet-based cooperative concurrency library for Python — an
 efficient alternative to [gevent](http://www.gevent.org/) and
 [eventlet](https://eventlet.readthedocs.io/) built around a small C core. It

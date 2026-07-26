@@ -1,0 +1,27 @@
+# Coverage is reported under two flags: `python` (filament/, measured with
+# coverage.py's sys.monitoring core) and `c` (src/ + include/, measured with
+# gcov). The C number is a floor -- subprocess scenarios that hard-exit via
+# os._exit never flush their gcov counters.
+#
+# Statuses are informational for now: report, don't block PRs.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+flag_management:
+  individual_flags:
+    - name: python
+      paths:
+        - filament/
+    - name: c
+      paths:
+        - src/
+        - include/
+
+comment:
+  layout: "condensed_header, flags, files"
