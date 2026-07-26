@@ -20,6 +20,10 @@ All of the historic bugs are fixed here:
 * The unreachable ``yield_thread()`` after ``return`` in ``put`` is gone.
 """
 
+# NB: required on py2 -- implicit relative imports would otherwise
+# resolve stdlib names (os/time) to filament's own sibling modules.
+from __future__ import absolute_import
+
 import collections
 import heapq
 import time as _time

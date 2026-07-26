@@ -21,6 +21,10 @@ greenthread and a half-initialised scheduler/IO thread), and a cooperative
 Importing this module does NOT patch anything; use ``patcher.patch_os()``.
 """
 
+# NB: required on py2 -- without it "import os" here resolves to THIS module
+# (implicit relative import), leaving _orig_os pointing at filament.os itself.
+from __future__ import absolute_import
+
 import errno
 import fcntl
 import os as _orig_os
