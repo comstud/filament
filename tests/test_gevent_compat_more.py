@@ -580,7 +580,10 @@ def fetch(req):
     resp = b""
     with gevent.Timeout(5):
         while True:
-            chunk = c.recv(4096)
+            try:
+                chunk = c.recv(4096)
+            except Exception:
+                break              # py2 may RST after the response is sent
             if not chunk:
                 break
             resp += chunk

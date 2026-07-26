@@ -111,8 +111,10 @@ def test_wait_is_cooperative():
 # Popen.communicate
 # --------------------------------------------------------------------------- #
 
-_UPPER_CHILD = ('import sys; data = sys.stdin.buffer.read(); '
-                'sys.stdout.buffer.write(data.upper())')
+_UPPER_CHILD = ('import sys; '
+                'i = getattr(sys.stdin, "buffer", sys.stdin); '
+                'o = getattr(sys.stdout, "buffer", sys.stdout); '
+                'o.write(i.read().upper())')
 
 
 def test_communicate_bytes_input():
@@ -143,7 +145,7 @@ def test_communicate_stdin_closed_when_no_input():
     # sees EOF instead of blocking on read().
     def body():
         code = ('import sys; '
-                'sys.stdout.write(str(len(sys.stdin.buffer.read())))')
+                'sys.stdout.write(str(len(getattr(sys.stdin, "buffer", sys.stdin).read())))')
         p = fsubprocess.Popen(_cmd(code),
                               stdin=fsubprocess.PIPE,
                               stdout=fsubprocess.PIPE)
@@ -165,7 +167,8 @@ def test_communicate_drains_stderr():
     assert run(body) == (b'out-data', b'err-data')
 
 
-@pytest.mark.parametrize('textkw', ['universal_newlines', 'text'])
+@pytest.mark.parametrize('textkw', ['universal_newlines'] +
+                         (['text'] if sys.version_info[0] >= 3 else []))
 def test_communicate_text_mode_decodes(textkw):
     def body():
         code = ('import sys; sys.stdout.write("stdout-text"); '

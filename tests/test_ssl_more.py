@@ -15,6 +15,16 @@ Skips gracefully if no certificate generator (openssl) is available.
 
 from __future__ import absolute_import
 
+import sys
+
+import pytest
+
+# This file targets the py3 branch of filament/ssl.py (the private-copy
+# SSLSocket with cooperative retry loops); py2 uses a different wrap
+# mechanism entirely.
+pytestmark = pytest.mark.skipif(sys.version_info[0] < 3,
+                                reason='tests the py3 ssl branch')
+
 import fcntl
 import os
 

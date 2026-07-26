@@ -17,6 +17,7 @@ from __future__ import absolute_import
 import errno
 import fcntl
 import os as _real_os
+import sys
 
 import pytest
 
@@ -260,7 +261,8 @@ def test_fdopen_regular_file_current_behavior(tmp_path):
     assert f._act_nonblocking is False
     flags = fcntl.fcntl(f._raw_fileno(), fcntl.F_GETFL)
     assert flags & _real_os.O_NONBLOCK
-    assert f.write("hello") == 5
+    # py2's file.write returns None; py3's returns the byte count.
+    assert f.write("hello") in (5, None)
     f.seek(0)                       # delegated via __getattr__
     assert f.read() == "hello"
     f.close()
@@ -295,8 +297,18 @@ def test_fdopen_inherits_mode_from_fdesc_fil_sock():
     # Passing the FDesc back into fdopen must inherit f1's mode.  The fd IS
     # O_NONBLOCK at this point, so if the inherit path were skipped the
     # O_NONBLOCK check would give True instead -- False proves inheritance.
-    f2 = fos.fdopen(fdesc, "rb", closefd=False)
+    # (py2's fdopen has no closefd; hand it a dup'd fd so the second file
+    # object owns its own descriptor on both versions.)
+    if sys.version_info[0] >= 3:
+        f2 = fos.fdopen(fdesc, "rb", closefd=False)
+    else:
+        dup_fd = _real_os.dup(int(fdesc))
+        dup_desc = fil_io.FDesc(dup_fd)
+        dup_desc._fil_sock = fdesc._fil_sock
+        f2 = fos.fdopen(dup_desc, "rb")
     assert f2._act_nonblocking is False
+    if sys.version_info[0] < 3:
+        f2.close()
     f1.close()
     _real_os.close(w)
 

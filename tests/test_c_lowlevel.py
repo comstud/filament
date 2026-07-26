@@ -20,6 +20,7 @@ C modules first can crash the interpreter).
 from __future__ import absolute_import
 
 import socket as std_socket
+import sys
 import threading as std_threading
 
 import pytest
@@ -169,7 +170,8 @@ def test_tcp_connect_ex_success_and_refused():
 def test_getpeername_unconnected_raises():
     s = _csocket.socket(std_socket.AF_INET, std_socket.SOCK_STREAM)
     try:
-        with pytest.raises(OSError):
+        # py2's socket.error is an IOError subclass, not OSError
+        with pytest.raises((OSError, IOError)):
             s.getpeername()
     finally:
         s.close()
@@ -203,7 +205,7 @@ def test_tcp_dup_and_shutdown():
 def test_shutdown_unconnected_raises():
     s = _csocket.socket(std_socket.AF_INET, std_socket.SOCK_STREAM)
     try:
-        with pytest.raises(OSError):
+        with pytest.raises((OSError, IOError)):
             s.shutdown(std_socket.SHUT_RDWR)
     finally:
         s.close()
@@ -220,6 +222,9 @@ def test_setblocking_toggles_timeout():
         s.close()
 
 
+@pytest.mark.skipif(sys.version_info[0] < 3,
+                    reason='fileno-construction and detach() are py3-only '
+                           'in the C socket')
 def test_socket_from_fileno():
     srv, addr = _tcp_listener()
     cli = _csocket.socket(std_socket.AF_INET, std_socket.SOCK_STREAM)
@@ -347,8 +352,11 @@ assert gl is not None
 # switch() enters the scheduler loop and only comes back when something in
 # the event queue switches back to us -- so enqueue exactly that first via
 # fil_switch (a manual cooperative yield, spelled out).
-import _fil_greenlet
-me = _fil_greenlet.getcurrent()
+try:
+    import _fil_greenlet as _gl      # vendored runtime (py3)
+except ImportError:
+    import greenlet as _gl           # classic-greenlet build (py2.7/py3.8)
+me = _gl.getcurrent()
 sched.fil_switch(me)
 sched.switch()
 print("OK")

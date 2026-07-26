@@ -350,10 +350,17 @@ def test_resolver_kwargs_passthrough():
     try:
         # Positional-only path (no kwargs forwarded).
         assert r.gethostbyname('localhost')
-        # Keyword arguments ride run()'s dedicated kwargs passthrough.
-        res = r.getaddrinfo('localhost', 80, type=std_socket.SOCK_STREAM)
-        assert res
-        for entry in res:
-            assert entry[1] == std_socket.SOCK_STREAM
+        # Keyword arguments are bound via functools.partial and forwarded.
+        # (py2's C getaddrinfo is positional-only, so the same call pins the
+        # TypeError surfacing through the pool instead.)
+        import sys
+        if sys.version_info[0] >= 3:
+            res = r.getaddrinfo('localhost', 80, type=std_socket.SOCK_STREAM)
+            assert res
+            for entry in res:
+                assert entry[1] == std_socket.SOCK_STREAM
+        else:
+            with pytest.raises(TypeError):
+                r.getaddrinfo('localhost', 80, type=std_socket.SOCK_STREAM)
     finally:
         r.shutdown()

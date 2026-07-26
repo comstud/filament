@@ -198,8 +198,10 @@ def test_select_outer_timeout_propagates():
 
 
 def test_select_error_export():
-    # Py3: select.error == OSError; we re-export whatever the stdlib has.
-    assert fil_select.error is OSError
+    # We re-export whatever the stdlib has (OSError on py3, its own class on
+    # py2).
+    import select as std_select
+    assert fil_select.error is getattr(std_select, 'error', OSError)
 
 
 def test_poll_raises_notimplemented():

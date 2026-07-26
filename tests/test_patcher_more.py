@@ -20,6 +20,13 @@ from filament import patcher as fil_patcher
 from tests._helpers import run_py
 
 
+class _NS(object):
+    """types.SimpleNamespace stand-in that also exists on py2."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
 # A unique throwaway module name so in-process item patching cannot collide
 # with anything real.
 _DUMMY = 'fil_test_patcher_dummy'
@@ -69,7 +76,7 @@ def test_iter_logging_handlers_dedup_and_fallbacks():
 
     # _handlerList holds weakrefs (Py3 style) or bare handlers (Py2 style);
     # _handlers may be a dict or, on odd versions, a plain sequence.
-    fake = types.SimpleNamespace(
+    fake = _NS(
         _handlerList=[weakref.ref(h1), h2],
         _handlers={'h2': h2, 'h3': h3},
     )
@@ -77,11 +84,11 @@ def test_iter_logging_handlers_dedup_and_fallbacks():
     assert sorted(id(h) for h in got) == sorted([id(h1), id(h2), id(h3)])
 
     # Sequence-shaped _handlers takes the AttributeError fallback.
-    fake2 = types.SimpleNamespace(_handlerList=[], _handlers=[h1])
+    fake2 = _NS(_handlerList=[], _handlers=[h1])
     assert list(fil_patcher._iter_logging_handlers(fake2)) == [h1]
 
     # A dead weakref and an empty _handlers yield nothing.
-    fake3 = types.SimpleNamespace(_handlerList=[weakref.ref(Handler())],
+    fake3 = _NS(_handlerList=[weakref.ref(Handler())],
                                   _handlers=None)
     assert list(fil_patcher._iter_logging_handlers(fake3)) == []
 
@@ -96,21 +103,21 @@ def test_sweep_existing_locks_early_returns(monkeypatch):
 
     # threading without _PyRLock.
     monkeypatch.setitem(sys.modules, 'threading',
-                        types.SimpleNamespace())
+                        _NS())
     assert sweep() is None
     monkeypatch.undo()
 
     # _PyRLock present but no RLock.
     monkeypatch.setitem(
         sys.modules, 'threading',
-        types.SimpleNamespace(_PyRLock=type('PyR', (), {}), RLock=None))
+        _NS(_PyRLock=type('PyR', (), {}), RLock=None))
     assert sweep() is None
     monkeypatch.undo()
 
     # RLock that is not a reassignable class.
     monkeypatch.setitem(
         sys.modules, 'threading',
-        types.SimpleNamespace(_PyRLock=type('PyR', (), {}),
+        _NS(_PyRLock=type('PyR', (), {}),
                               RLock=lambda: None))
     assert sweep() is None
 
@@ -128,7 +135,7 @@ def test_sweep_existing_locks_swaps_and_guards(monkeypatch):
     swappable = PyR()
     monkeypatch.setitem(
         sys.modules, 'threading',
-        types.SimpleNamespace(_PyRLock=PyR, RLock=GreenR))
+        _NS(_PyRLock=PyR, RLock=GreenR))
     fil_patcher._sweep_existing_python_locks()
     assert type(swappable) is GreenR
     monkeypatch.undo()
@@ -137,7 +144,7 @@ def test_sweep_existing_locks_swaps_and_guards(monkeypatch):
     stuck = PyR()
     monkeypatch.setitem(
         sys.modules, 'threading',
-        types.SimpleNamespace(_PyRLock=PyR, RLock=SlottedGreen))
+        _NS(_PyRLock=PyR, RLock=SlottedGreen))
     fil_patcher._sweep_existing_python_locks()
     assert type(stuck) is PyR
 

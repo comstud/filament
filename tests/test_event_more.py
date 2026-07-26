@@ -62,6 +62,8 @@ def test_get_reraise_with_none_value_instantiates_type():
         ar.get()
 
 
+@pytest.mark.skipif(sys.version_info[0] < 3,
+                    reason='__traceback__ surgery is py3-only')
 def test_get_reraise_attaches_foreign_traceback():
     # exc_value whose __traceback__ differs from the stored tb: _reraise must
     # re-attach the stored traceback via with_traceback().
