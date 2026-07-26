@@ -6,6 +6,7 @@ every greenthread, we run each lookup inside ``_filament.thrpool.ThreadPool``
 (real OS worker threads) and cooperatively wait for the result.
 """
 
+import atexit
 import functools
 
 import _socket
@@ -87,8 +88,29 @@ del _proxy_methods
 
 
 def get_resolver(*args, **kwargs):
-    """Create a Resolver backed by a pool with sensible default sizing."""
+    """Create a Resolver backed by a pool with sensible default sizing.
+
+    The resolver is shut down via ``atexit`` (while the runtime is still
+    fully alive): ``_filament.socket`` builds its default resolver through
+    here at import time and keeps it forever, and worker threads that
+    outlive the interpreter try to re-attach their thread state during
+    finalization -- a fatal error on 3.14+ (``gilstate_tss_set: failed to
+    set current tstate``, seen intermittently at process exit).
+    """
     kwargs.setdefault('min_threads', DEFAULT_MIN_THREADS)
     kwargs.setdefault('max_threads', DEFAULT_MAX_THREADS)
     kwargs.setdefault('stack_size', DEFAULT_STACK_SIZE)
-    return Resolver(*args, **kwargs)
+    resolver = Resolver(*args, **kwargs)
+
+    def _shutdown_at_exit():
+        try:
+            if not resolver.is_shutdown:
+                # wait=True: the default shutdown is asynchronous (it even
+                # spawns a coordinator thread); returning before the workers
+                # have joined would leave them racing interpreter teardown.
+                resolver.shutdown(wait=True)
+        except Exception:
+            pass
+
+    atexit.register(_shutdown_at_exit)
+    return resolver

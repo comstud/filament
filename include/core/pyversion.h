@@ -213,4 +213,23 @@ static inline PyObject *fil_greenlet_switch_noargs(PyGreenlet *g)
     return PyGreenlet_Switch(g, NULL, NULL);
 }
 
+/*
+ * Is the interpreter tearing down?  Threads that outlive the runtime (e.g.
+ * thread-pool workers) must not attach a thread state once finalization has
+ * begun -- on 3.14 doing so is a fatal error ("gilstate_tss_set: failed to
+ * set current tstate"), and on earlier versions it can hang or crash.
+ */
+static inline int fil_py_is_finalizing(void)
+{
+#if PY_VERSION_HEX >= 0x030D0000
+    return Py_IsFinalizing();
+#elif defined(_FIL_PYTHON3)
+    return _Py_IsFinalizing();
+#else
+    /* py2 declares no finalizing query; Py_Finalize clears the initialized
+     * flag before tearing anything down, so this is an equivalent signal. */
+    return !Py_IsInitialized();
+#endif
+}
+
 #endif /* __FIL_CORE_PYVERSION_H__ */

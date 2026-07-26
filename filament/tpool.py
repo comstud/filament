@@ -82,7 +82,10 @@ def shutdown():
     """Shut the default pool down (joining its worker threads)."""
     global _default_pool
     if _default_pool is not None:
-        _default_pool.shutdown()
+        # wait=True: the default shutdown is asynchronous; callers (conftest,
+        # atexit users) expect the workers to actually be gone on return --
+        # workers still exiting can race interpreter teardown and abort.
+        _default_pool.shutdown(wait=True)
         _default_pool = None
 
 
