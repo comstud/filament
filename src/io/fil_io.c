@@ -122,6 +122,14 @@ static PyObject *_os_read(PyObject *self, PyObject *args)
         errno = EINVAL;
         return PyErr_SetFromErrno(PyExc_OSError);
     }
+    if (fd < 0)
+    {
+        /* libevent treats a negative fd as a no-fd (timer) event, so a wait
+         * on one would park forever instead of failing; match os.read()'s
+         * EBADF contract. */
+        errno = EBADF;
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
 
     buffer = PyString_FromStringAndSize((char *)NULL, size);
     if (buffer == NULL)
@@ -168,6 +176,14 @@ static PyObject *_os_write(PyObject *self, PyObject *args)
 
     if (!PyArg_ParseTuple(args, "is*:write", &fd, &pbuf))
         return NULL;
+
+    if (fd < 0)
+    {
+        /* See _os_read: a negative fd would park forever in the io thread. */
+        errno = EBADF;
+        PyBuffer_Release(&pbuf);
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
 
     len = pbuf.len;
 
@@ -300,6 +316,15 @@ static PyObject *_fd_wait_read_ready(PyObject *self, PyObject *args, PyObject *k
         return NULL;
     }
 
+    if (fd < 0)
+    {
+        /* libevent treats a negative fd as a no-fd (timer) event, so a wait
+         * on one would park forever instead of failing; match os.read()'s
+         * EBADF contract. */
+        errno = EBADF;
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
+
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
     {
         return NULL;
@@ -345,6 +370,15 @@ static PyObject *_fd_wait_write_ready(PyObject *self, PyObject *args, PyObject *
                                      &timeout_exc))
     {
         return NULL;
+    }
+
+    if (fd < 0)
+    {
+        /* libevent treats a negative fd as a no-fd (timer) event, so a wait
+         * on one would park forever instead of failing; match os.read()'s
+         * EBADF contract. */
+        errno = EBADF;
+        return PyErr_SetFromErrno(PyExc_OSError);
     }
 
     if (fil_timespec_from_pyobj_interval(timeout, &tsbuf, &ts) < 0)
