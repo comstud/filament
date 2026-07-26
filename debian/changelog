@@ -1,3 +1,9 @@
+filament (0.9.1) unstable; urgency=medium
+
+  * Bump to 0.9.1.
+
+ -- Chris Behrens <cbehrens@codestud.com>  Sun, 26 Jul 2026 06:46:09 +0000
+
 filament (0.9.0) unstable; urgency=medium
 
   * Bump to 0.9.0.

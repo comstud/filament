@@ -22,7 +22,7 @@
 %global srcname filament
 
 Name:           python-%{srcname}
-Version:        0.9.0
+Version:        0.9.1
 Release:        1%{?dist}
 Summary:        Microthreads for Python
 
@@ -80,6 +80,9 @@ Summary:        %{summary}
 %doc README.md HISTORY.md THIRD_PARTY_NOTICES.md AUTHORS
 
 %changelog
+* Sun Jul 26 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.1-1
+- Bump to 0.9.1.
+
 * Sat Jul 25 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.0-1
 - Bump to 0.9.0.
 

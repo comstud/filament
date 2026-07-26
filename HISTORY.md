@@ -1,5 +1,46 @@
 # Release history
 
+## 0.9.1 (2026-07-26)
+
+**Bug fixes**
+
+- Fixed heap corruption when deallocating instances of Python subclasses of
+  the C types (e.g. `thread.LockType`, `threading.BoundedSemaphore`, the DNS
+  `Resolver`): every C dealloc freed with a bare `PyObject_Del` instead of
+  `tp_free`, corrupting the allocator and causing nondeterministic segfaults
+  later.
+- Fixed an intermittent abort at interpreter exit on Python 3.14
+  (`gilstate_tss_set: failed to set current tstate`): the default DNS
+  resolver's worker threads were never shut down and raced interpreter
+  finalization. The resolver now joins its workers via `atexit`,
+  `tpool.shutdown()` actually waits for its workers, and pool worker
+  teardown skips thread-state re-attachment once finalization has begun.
+- `threading.Timer` now fires; `Event.wait(timeout)` returns `False` and
+  `Thread.join(timeout)` returns quietly on expiry (stdlib contracts),
+  instead of leaking the internal timeout exception.
+- Resolver lookups with keyword arguments (e.g.
+  `getaddrinfo(host, port, type=...)`) no longer raise `TypeError`.
+- `os_read`/`os_write`/`fd_wait_*_ready` on a negative fd raise
+  `OSError(EBADF)` instead of parking forever.
+- Python 2.7 repairs: missing `absolute_import` broke `filament.os.fdopen`
+  entirely (and silently mis-bound modules in `pyqueue`/`subprocess`), and
+  the cooperative `call`/`check_call`/`check_output`/`run` wrappers now work
+  on 2.7 (context-manager `Popen`, `.args`, `TimeoutExpired`/
+  `CompletedProcess` stand-ins).
+
+**Internals**
+
+- Removed ~450 lines of dead C: the unreachable processor-based socket-op
+  API in the io thread and unused lock C-API wrappers.
+
+**Testing & CI**
+
+- Test suite grew from 233 to 442 tests (green on 2.7 and 3.8–3.15), with
+  coverage measured properly for both halves: ~97% line coverage for the
+  Python package, 74% lines / 98% functions for the C extensions.
+- CI uploads Python and C coverage to Codecov under separate flags; README
+  carries CI and per-language coverage badges.
+
 ## 0.9.0 (2026-07-26)
 
 First release. Thirteen years after the proof of concept, filament is a
