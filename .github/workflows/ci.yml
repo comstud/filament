@@ -81,8 +81,15 @@ jobs:
   # inside filaments and materializes lazy frames), while a --coverage C build
   # leaves gcov data for the C side. gcovr needs the negative-hits tolerance
   # because worker threads race the (non-atomic) profile counters.
+  #
+  # master-only ON PURPOSE: the badges report master, and master only ever
+  # advances by fast-forward from dev. Codecov keys coverage by commit SHA and
+  # attributes each SHA to the branch that uploads it FIRST -- if dev uploaded
+  # too, every SHA would be claimed by dev before it reaches master and the
+  # master badges would read "unknown" forever.
   coverage:
     name: coverage (py3.13, amd64)
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
