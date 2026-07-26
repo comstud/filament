@@ -17,6 +17,7 @@ import sys
 
 import filament as _fil
 from filament import _util as _fil_util
+from filament import exc as _fil_exc
 from filament import patcher as _fil_patcher
 from filament import _threading_local as _fil_local
 
@@ -107,7 +108,13 @@ class _CondEvent(object):
     def wait(self, timeout=None):
         with self._cond:
             if not self._flag:
-                self._cond.wait(timeout=timeout)
+                try:
+                    self._cond.wait(timeout=timeout)
+                except _fil_exc.Timeout as e:
+                    if type(e) is not _fil_exc.Timeout:
+                        raise      # an outer with-Timeout fired; propagate
+                    # stdlib Event.wait contract: expiry returns the flag
+                    # state (False), it does not raise.
             return self._flag
 
 
