@@ -4,6 +4,16 @@
 # os._exit never flush their gcov counters.
 #
 # Statuses are informational for now: report, don't block PRs.
+#
+# partials_as_hits: the gcovr XML carries per-line branch data, and by default
+# Codecov counts a branch-partial line (executed, but not every branch taken)
+# as UNcovered -- turning the C flag into branch coverage (~55%) while the
+# Python flag stays line coverage. Count partials as hits so both flags report
+# conventional line coverage, matching gcovr's own "lines" number (~74% for C).
+parsers:
+  cobertura:
+    partials_as_hits: true
+
 coverage:
   status:
     project:
