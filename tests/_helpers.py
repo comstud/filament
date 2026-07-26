@@ -123,6 +123,10 @@ def make_self_signed_cert():
 
 # Body preamble that a subprocess script can prepend: forces line-buffered
 # stdout and makes a clean, hang-proof exit at the end via os._exit.
+# NB for C-coverage runs: os._exit skips the gcov atexit flush, so scenarios
+# that end here (and test_cross_thread_137's hard exits) undercount C lines a
+# little; __gcov_dump is not dlsym-reachable (libgcov links static/hidden), so
+# there is no clean in-child flush -- treat gcov totals as a floor.
 PREAMBLE = (
     "import sys, os\n"
     "def _done(msg='OK'):\n"
