@@ -32,15 +32,10 @@ ssize_t fil_iothread_read(PyFilIOThread *iothr, int fd, void *buffer, size_t buf
 ssize_t fil_iothread_write(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, struct timespec *timeout, PyObject *timeout_exc);
 
 /* Socket calls */
-int fil_iothread_connect(PyFilIOThread *iothr, int fd, struct sockaddr *address, socklen_t address_len, struct timespec *timeout, PyObject *timeout_exc);
 
 ssize_t fil_iothread_recv(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct timespec *timeout, PyObject *timeout_exc);
-ssize_t fil_iothread_recvfrom(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t *address_len, struct timespec *timeout, PyObject *timeout_exc);
-ssize_t fil_iothread_recvmsg(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout, PyObject *timeout_exc);
 ssize_t fil_iothread_send(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct timespec *timeout, PyObject *timeout_exc);
 
-ssize_t fil_iothread_sendto(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t address_len, struct timespec *timeout, PyObject *timeout_exc);
-ssize_t fil_iothread_sendmsg(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout, PyObject *timeout_exc);
 
 #else
 
@@ -59,15 +54,10 @@ static ssize_t (*fil_iothread_read)(PyFilIOThread *iothr, int fd, void *buffer, 
 static ssize_t (*fil_iothread_write)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, struct timespec *timeout, PyObject *timeout_exc);
 
 /* Socket calls */
-static int (*fil_iothread_connect)(PyFilIOThread *iothr, int fd, struct sockaddr *address, socklen_t address_len, struct timespec *timeout, PyObject *timeout_exc);
 
 static ssize_t (*fil_iothread_recv)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct timespec *timeout, PyObject *timeout_exc);
-static ssize_t (*fil_iothread_recvfrom)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t *address_len, struct timespec *timeout, PyObject *timeout_exc);
-static ssize_t (*fil_iothread_recvmsg)(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout, PyObject *timeout_exc);
 static ssize_t (*fil_iothread_send)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct timespec *timeout, PyObject *timeout_exc);
 
-static ssize_t (*fil_iothread_sendto)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t address_len, struct timespec *timeout, PyObject *timeout_exc);
-static ssize_t (*fil_iothread_sendmsg)(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout, PyObject *timeout_exc);
 
 #endif
 

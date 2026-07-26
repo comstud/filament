@@ -549,34 +549,9 @@ static PyTypeObject _rlock_type = {
 
 /****************/
 
-PyFilLock *fil_lock_alloc(void)
-{
-    return _lock_new(&_lock_type, NULL, NULL);
-}
-
 PyFilRLock *fil_rlock_alloc(void)
 {
     return (PyFilRLock *)_lock_new(&_rlock_type, NULL, NULL);
-}
-
-int fil_lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
-{
-    return __lock_acquire(lock, blocking, ts);
-}
-
-int fil_rlock_acquire(PyFilRLock *rlock, int blocking, struct timespec *ts)
-{
-    return __rlock_acquire(rlock, blocking, ts);
-}
-
-int fil_lock_release(PyFilLock *lock)
-{
-    return __lock_release(lock);
-}
-
-int fil_rlock_release(PyFilRLock *rlock)
-{
-    return __rlock_release(rlock);
 }
 
 int fil_lock_type_init(PyObject *module)

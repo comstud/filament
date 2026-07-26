@@ -25,15 +25,10 @@ typedef struct _pyfilio_capi
     ssize_t (*fil_iothread_write)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, struct timespec *timeout, PyObject *timeout_exc);
 
 /* Socket calls */
-    int (*fil_iothread_connect)(PyFilIOThread *iothr, int fd, struct sockaddr *address, socklen_t address_len, struct timespec *timeout, PyObject *timeout_exc);
 
     ssize_t (*fil_iothread_recv)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct timespec *timeout, PyObject *timeout_exc);
-    ssize_t (*fil_iothread_recvfrom)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t *address_len, struct timespec *timeout, PyObject *timeout_exc);
-    ssize_t (*fil_iothread_recvmsg)(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout, PyObject *timeout_exc);
     ssize_t (*fil_iothread_send)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct timespec *timeout, PyObject *timeout_exc);
 
-    ssize_t (*fil_iothread_sendto)(PyFilIOThread *iothr, int fd, void *buffer, size_t buf_sz, int flags, struct sockaddr *address, socklen_t address_len, struct timespec *timeout, PyObject *timeout_exc);
-    ssize_t (*fil_iothread_sendmsg)(PyFilIOThread *iothr, int fd, struct msghdr *message, int flags, struct timespec *timeout, PyObject *timeout_exc);
 
 } PyFilIO_CAPIObject;
 
@@ -62,13 +57,8 @@ static PyFilIO_CAPIObject *_PY_FIL_IO_API;
     _FIL_COPY_IO_API(fil_iothread_fdwait_destroy); \
     _FIL_COPY_IO_API(fil_iothread_read);        \
     _FIL_COPY_IO_API(fil_iothread_write);       \
-    _FIL_COPY_IO_API(fil_iothread_connect);     \
     _FIL_COPY_IO_API(fil_iothread_recv);        \
-    _FIL_COPY_IO_API(fil_iothread_recvfrom);    \
-    _FIL_COPY_IO_API(fil_iothread_recvmsg);     \
     _FIL_COPY_IO_API(fil_iothread_send);        \
-    _FIL_COPY_IO_API(fil_iothread_sendto);      \
-    _FIL_COPY_IO_API(fil_iothread_sendmsg);     \
 } while(0)
 
 #ifndef __FIL_BUILDING_IO__
