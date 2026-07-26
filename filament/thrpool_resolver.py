@@ -6,6 +6,8 @@ every greenthread, we run each lookup inside ``_filament.thrpool.ThreadPool``
 (real OS worker threads) and cooperatively wait for the result.
 """
 
+import functools
+
 import _socket
 
 from filament import thrpool
@@ -28,16 +30,16 @@ _proxy_methods = [
 def _meth(orig_meth, self, *args, **kwargs):
     """Run ``orig_meth(*args, **kwargs)`` in the pool and return its result.
 
-    ``ThreadPool.run(fn, *args, kwargs=<dict>, timeout=<float>)`` forwards the
-    ``kwargs`` dict through to ``fn``, and ``timeout`` bounds how long we wait.
-    So we hand the user's keyword arguments through run()'s dedicated ``kwargs``
-    passthrough -- NOT as top-level keywords, which run() would reject.
+    ``ThreadPool.run(fn, *args, kwargs=<dict>, timeout=<float>)``'s ``kwargs``
+    is NOT expanded into keywords: run() calls ``fn(*args, kwargs=<dict>)``,
+    handing the dict to ``fn`` as a literal ``kwargs`` keyword (see run()'s
+    docstring).  The resolver functions (``getaddrinfo`` et al) obviously do
+    not accept that, so bind the caller's keywords with ``partial`` instead and
+    let run() call the result with positionals only.
     """
-    mkwargs = {'timeout': self.timeout}
     if kwargs:
-        # Forward the caller's kwargs to orig_meth via run()'s passthrough.
-        mkwargs['kwargs'] = kwargs
-    return self.run(orig_meth, *args, **mkwargs)
+        orig_meth = functools.partial(orig_meth, **kwargs)
+    return self.run(orig_meth, *args, timeout=self.timeout)
 
 
 class Resolver(thrpool.ThreadPool):
