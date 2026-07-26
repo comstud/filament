@@ -62,6 +62,14 @@ static void _thrpool_deinitthr_cb(PyFilThrState *thr_state)
 {
     if (thr_state != FIL_THRPOOL_THR_INIT_FAILURE_RESULT)
     {
+        if (fil_py_is_finalizing())
+        {
+            /* The interpreter is tearing down; attaching this worker's
+             * thread state now would abort (the gilstate TSS key is gone on
+             * 3.14+).  Leak the thread state -- the process is exiting. */
+            free(thr_state);
+            return;
+        }
         PyEval_RestoreThread(thr_state->thr_state);
         PyGILState_Release(thr_state->gstate);
         free(thr_state);
