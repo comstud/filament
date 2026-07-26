@@ -1,3 +1,66 @@
+# Release history
+
+## 0.9.0 (2026-07-26)
+
+First release. Thirteen years after the proof of concept, filament is a
+complete, fast, drop-in alternative to gevent and eventlet (the origin story
+is below).
+
+**Core**
+
+- C scheduler with lightweight greenthreads: spawn/join, `sleep`, timers,
+  events, and message-passing, all implemented in C (`_filament.*` extension
+  modules).
+- Per-OS-thread schedulers with safe cross-thread synchronization: switches
+  requested from a foreign thread are deferred to the greenlet's home
+  scheduler (the design that fixes eventlet **#137**). Semaphores, locks,
+  conditions, and queues work between greenthreads *and* native threads —
+  a single bounded `Queue` can be shared by greenthread and
+  `threading.Thread` producers/consumers simultaneously.
+- C `Queue`/`SimpleQueue`, locking primitives, timers, a libevent-backed
+  I/O thread with edge-triggered persistent readiness events, cooperative
+  sockets, and a real-OS-thread pool (`tpool`) with MRU worker wakeup.
+- Cross-thread wakeup is pure futex/condvar — no file-descriptor round-trip.
+
+**Compatibility**
+
+- Drop-in **gevent** and **eventlet** compatibility shims
+  (`filament.gevent_compat`, `filament.eventlet_compat`) covering the
+  greenlet/Greenlet lifecycle, Group/Pool, Timeout, AsyncResult/Event/Waiter,
+  Channel, queue family, StreamServer/pywsgi, and ThreadPool semantics.
+- Cooperative stdlib replacements: `socket`, `ssl`, `select`, `time`,
+  `threading`, `thread`, `subprocess`, `os`, `queue`, plus a monkey-patcher.
+
+**Vendored greenlet (Python 3)**
+
+- Ships its own greenlet runtime (`_fil_greenlet`, based on greenlet 3.5.4)
+  with a private capsule — no conflict with an installed greenlet — a C
+  fast-switch entry, and ported upstream performance patches.
+- Optional private-stack **fiber core** (mmap'd stacks + asm switch), the
+  default where the interpreter supports it; classic stack-slicing core
+  everywhere else. Python 2.7 transparently uses stock greenlet.
+- Runtime-selectable debug introspection (`filament.set_debug(True)` /
+  `FILAMENT_DEBUG=1`, auto-armed under trace/profile hooks); frame exposure
+  stays off the hot path by default.
+
+**Performance**
+
+- Faster than gevent and eventlet across the full benchmark matrix — spawn,
+  context switch, semaphores, queues, tpool round-trips, and echo servers —
+  on every tested interpreter and both architectures. See
+  `benchmarks/RESULTS.md`.
+
+**Platforms & packaging**
+
+- Python 3.8–3.15 on Linux (amd64/arm64); Python 2.7 still builds and passes
+  the suite (test-only, no published wheels).
+- PEP 517/621 build; manylinux wheels for cp38–cp314 and a verified sdist
+  attached to GitHub Releases on tag.
+- OS packaging: RPM spec (`packaging/rpm/`) and Debian packaging (`debian/`),
+  each building `python3-filament` for the system Python at build time.
+
+---
+
 # How filament began
 
 In early 2013 while I was working on OpenStack, which used eventlet, we
