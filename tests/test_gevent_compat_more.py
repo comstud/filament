@@ -682,3 +682,103 @@ with DummySemaphore() as ds:
     assert ds is not None
 print("OK")
 ''')
+
+
+def test_gevent_iwait_does_not_spawn_a_watcher_per_object():
+    """
+    iwait/joinall must learn about completions via a callback, not by parking
+    a greenthread on each object.
+
+    This is a performance contract, but it is worth pinning as a test: the
+    watcher-per-object version doubled the greenthread count of every fan-out
+    and cost ~2x throughput on a 20-way scatter-gather, and nothing else in the
+    test suite would notice the regression coming back.
+    """
+    _check('''
+import gc as _gc
+import _filament.core
+from gevent.event import Event
+
+def count_filaments():
+    return sum(1 for o in _gc.get_objects()
+               if type(o) is _filament.core.Filament)
+
+# The count has to be sampled while joinall is BLOCKED.  Sampling after it
+# returns proves nothing: the watchers have finished and been reclaimed by
+# then, so the regression is invisible.  So park the fan-out on an Event,
+# run joinall in its own greenlet, and measure while everything is parked.
+gate = Event()
+
+def work():
+    gate.wait()
+
+N = 20
+
+# Warm up first: lazily-built machinery must not land in the measurement.
+warm = Event()
+warm_gs = [gevent.spawn(warm.wait) for _ in range(5)]
+warm.set()
+gevent.joinall(warm_gs)
+_gc.collect()
+
+baseline = count_filaments()
+gs = [gevent.spawn(work) for _ in range(N)]
+gevent.sleep(0)                       # let them all reach gate.wait()
+parked = count_filaments() - baseline
+assert parked == N, "spawning %d greenlets created %d filaments" % (N, parked)
+
+joiner = gevent.spawn(lambda: gevent.joinall(gs))
+gevent.sleep(0)                       # let joinall attach and park
+during = count_filaments() - baseline
+
+gate.set()
+joiner.join()
+
+# N fan-out greenlets + the joiner itself.  The watcher-per-object version
+# scored 2N + 1 here.
+assert during <= N + 1, \\
+    "joinall(%d) had %d filaments live, expected <= %d -- a watcher " \\
+    "greenthread per object is back" % (N, during, N + 1)
+print("OK")
+''')
+
+
+def test_gevent_iwait_detaches_when_abandoned():
+    # The generator can be dropped without being exhausted (count=, timeout, or
+    # the caller simply walking away).  A stale completion callback would keep
+    # the internal queue -- and everything it references -- alive for as long
+    # as the greenlet runs.
+    _check('''
+g = gevent.spawn(gevent.sleep, 5)
+
+it = gevent.iwait([g])
+it.close()
+assert g._done_callbacks == [], g._done_callbacks
+
+# count= short of the full set leaves the unfinished ones detached too.
+fast = gevent.spawn(lambda: 1)
+slow = gevent.spawn(gevent.sleep, 5)
+assert len(list(gevent.iwait([fast, slow], count=1))) == 1
+assert slow._done_callbacks == [], slow._done_callbacks
+
+gevent.killall([g, slow])
+print("OK")
+''')
+
+
+def test_gevent_iwait_mixes_raw_and_wrapped_greenlets():
+    # spawn_raw returns a bare filament with no _add_done_callback, so it still
+    # needs a watcher greenthread; both kinds must work in one iwait().
+    _check('''
+raw = gevent.spawn_raw(gevent.sleep, 0.01)
+wrapped = gevent.spawn(gevent.sleep, 0.02)
+done = list(gevent.iwait([raw, wrapped]))
+assert len(done) == 2, done
+assert set(id(x) for x in done) == set([id(raw), id(wrapped)])
+
+# An already-finished greenlet fires its callback immediately.
+g = gevent.spawn(lambda: 1)
+g.join()
+assert list(gevent.iwait([g])) == [g]
+print("OK")
+''')
