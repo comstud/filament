@@ -27,6 +27,8 @@
 #include "core/filament.h"
 #include "io/fil_io.h"
 
+#include <sys/stat.h>
+
 #ifdef EWOULDBLOCK
 #define WOULDBLOCK_ERRNO(__x) (((__x) == EAGAIN) || ((__x) == EWOULDBLOCK))
 #else
@@ -97,9 +99,39 @@ static PyTypeObject _fdesc_type = {
     0,                                          /* tp_version_tag */
 };
 
-static inline int _act_nonblock(PyObject *fd_obj)
+/*
+ * Should this fd be read/written with a plain blocking syscall instead of
+ * being handed to the io thread?
+ *
+ * Yes for regular files and directories. epoll (and therefore libevent)
+ * refuses them outright -- a regular file is defined to be always ready, so
+ * there is nothing to wait for -- and event_add() fails with EPERM. Routing
+ * them through the io thread anyway meant that under monkey.patch_all() a
+ * plain os.write() to a file raised "RuntimeError: Couldn't add event". That
+ * is not exotic: it is what tempfile does, so e.g. a WSGI app receiving a
+ * request body large enough for the framework to spill it to a temporary file
+ * died with a 500. Regular-file I/O does not block in the poll sense, so
+ * doing the syscall directly is both correct and what every other cooperative
+ * runtime does.
+ *
+ * Everything else (sockets, pipes, fifos, ttys) stays on the io thread: those
+ * really can block, and blocking here would stall every greenthread.
+ *
+ * This costs one fstat() per os.read()/os.write(). That is acceptable because
+ * these entry points only back the patched `os` module -- filament's sockets
+ * have their own path (src/socket) and never come through here.
+ */
+static inline int _fd_wants_direct_syscall(int fd)
 {
-    return 0;
+    struct stat st;
+
+    if (fstat(fd, &st) < 0)
+    {
+        /* Let the normal path report the error (EBADF etc.). */
+        return 0;
+    }
+
+    return S_ISREG(st.st_mode) || S_ISDIR(st.st_mode);
 }
 
 PyDoc_STRVAR(_os_read_doc, "os.read() compatible method.");
@@ -135,7 +167,7 @@ static PyObject *_os_read(PyObject *self, PyObject *args)
     if (buffer == NULL)
         return NULL;
 
-    if (_act_nonblock(PyTuple_GET_ITEM(args, 0)))
+    if (_fd_wants_direct_syscall(fd))
     {
         Py_BEGIN_ALLOW_THREADS;
 
@@ -187,7 +219,7 @@ static PyObject *_os_write(PyObject *self, PyObject *args)
 
     len = pbuf.len;
 
-    if (_act_nonblock(PyTuple_GET_ITEM(args, 0)))
+    if (_fd_wants_direct_syscall(fd))
     {
         Py_BEGIN_ALLOW_THREADS;
 

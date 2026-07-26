@@ -370,3 +370,72 @@ def test_fdopen_setfl_failure_falls_back_to_blocking(monkeypatch):
     assert f._act_nonblocking is True
     f.close()
     _real_os.close(w)
+
+
+def test_os_write_and_read_work_on_a_regular_file(tmp_path):
+    """
+    Regular files must take a direct syscall, not the io thread.
+
+    epoll refuses regular files outright -- they are by definition always
+    ready, so there is nothing to poll for -- and routing them to the io
+    thread made ``event_add()`` fail with ``RuntimeError: Couldn't add
+    event``.  That broke any ``os.write()`` to a file under monkey-patching,
+    which is what ``tempfile`` does, so a WSGI app whose framework spilled a
+    large request body to disk died with a 500.
+    """
+    path = str(tmp_path / "regular.bin")
+    payload = b"x" * (256 * 1024)
+
+    def body():
+        fd = _real_os.open(path, _real_os.O_RDWR | _real_os.O_CREAT, 0o600)
+        try:
+            written = 0
+            while written < len(payload):
+                written += fos.write(fd, payload[written:])
+            assert written == len(payload)
+            _real_os.lseek(fd, 0, _real_os.SEEK_SET)
+            got = b""
+            while len(got) < len(payload):
+                chunk = fos.read(fd, 65536)
+                if not chunk:
+                    break
+                got += chunk
+            return got
+        finally:
+            _real_os.close(fd)
+
+    assert run(body) == payload
+
+
+def test_os_write_to_a_directory_fd_reports_oserror(tmp_path):
+    # A directory is also unpollable; it must reach the real syscall and
+    # surface its normal EBADF/EISDIR rather than an io-thread RuntimeError.
+    fd = _real_os.open(str(tmp_path), _real_os.O_RDONLY)
+    try:
+        with pytest.raises(OSError):
+            run(lambda: fos.write(fd, b"nope"))
+    finally:
+        _real_os.close(fd)
+
+
+def test_monkey_patched_tempfile_roundtrips_a_large_body():
+    # The end-to-end shape of the original failure: patch everything, then let
+    # tempfile create and write a spill file the way a WSGI framework would.
+    from tests._helpers import run_py
+
+    res = run_py('''
+import filament.patcher
+filament.patcher.patch_all()
+import tempfile
+
+payload = b"x" * (512 * 1024)
+with tempfile.NamedTemporaryFile() as fh:
+    fh.write(payload)
+    fh.flush()
+    fh.seek(0)
+    assert fh.read() == payload
+print("OK")
+''')
+    assert not res.timed_out, repr(res)
+    assert res.returncode == 0, repr(res)
+    assert "OK" in res.stdout, repr(res)

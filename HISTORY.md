@@ -26,6 +26,14 @@
   greenthread on every object just to observe that it finished, which doubled
   the greenthread count of every scatter-gather. A 20-way fan-out over HTTP
   went from 2386 to 5392 rps (real gevent: 4136).
+- Fixed `os.read()` / `os.write()` on regular files raising
+  `RuntimeError: Couldn't add event` under monkey-patching. The predicate
+  deciding whether an fd needs the io thread was a stub that always said yes,
+  so file descriptors were handed to epoll, which refuses regular files. Any
+  write to a file broke, `tempfile` included -- so a WSGI app whose framework
+  spilled a large request body to disk returned a 500. Regular files and
+  directories now take a direct syscall; sockets, pipes, fifos and ttys still
+  go through the io thread.
 - Python 2.7: importing any `_filament` submodule before the `filament`
   package raised `AttributeError: 'module' object has no attribute 'core'`,
   because `_filament.core`'s init re-enters itself through `filament.exc`.

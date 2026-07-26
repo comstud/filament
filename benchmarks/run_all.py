@@ -273,36 +273,6 @@ def build_report():
                  "frameworks in a table ran back-to-back under identical "
                  "conditions.")
     lines.append("")
-    lines.append("> **Full-matrix re-run (2026-07-25).** The entire matrix was "
-                 "re-measured with the optimized filament (MRU thread-pool worker "
-                 "wakeup, GIL-free io-thread completion signaling, persistent "
-                 "edge-triggered socket readiness events) and the latest "
-                 "installable greenlet per interpreter (2.0.2 on 2.7, 3.1.1 on "
-                 "3.8, 3.5.4 on 3.10+), plus gevent 22.10.2 on 2.7.")
-    lines.append("")
-    lines.append("> **Optimization round 2 (2026-07-25).** Adds: METH_FASTCALL "
-                 "hot entry points (semaphore/lock/queue/message/sleep), "
-                 "scheduler switch-event + waiter freelists (waiters keep their "
-                 "mutex/cond initialized across reuse), a `sleep(0)` fast path, "
-                 "cond-signal-after-unlock, two waiter lifetime race fixes, and "
-                 "a **vendored greenlet** (`_fil_greenlet`, private capsule, no "
-                 "conflict with installed greenlet) with a C fast-switch entry "
-                 "on py3 — py2.7 transparently falls back to classic greenlet. "
-                 "filament's cross-thread wakeup was confirmed to be pure "
-                 "futex/condvar (no fd) — measurably cheaper than gevent's "
-                 "eventfd+epoll async watcher path per wakeup.")
-    lines.append("")
-    lines.append("> **Optimization round 3 (2026-07-25).** Runtime-selectable "
-                 "debug mode: switches skip eager frame exposure by default "
-                 "(3.12/3.13), with lazy `gr_frame` materialization on access, "
-                 "`filament.set_debug(True)` / `FILAMENT_DEBUG=1` for full "
-                 "eager introspection, and auto-arming when a trace/profile "
-                 "hook is installed. Plus three upstream-bound greenlet perf "
-                 "patches ported onto the vendored copy (GC-toggle skip in "
-                 "may_switch_away, stack-copy buffer retained at high-water "
-                 "capacity, GreenletChecker exact-type fast path; see "
-                 "/workspace/upstream for the upstream PR series).")
-    lines.append("")
     # environment table
     lines.append("## Environments")
     lines.append("")
@@ -332,15 +302,10 @@ def build_report():
     lines.append("- **gevent/eventlet on Python 3.8**: latest releases have no "
                  "3.8/aarch64 wheels, so pip resolved to gevent **22.10.2** and "
                  "eventlet **0.39.1** (still current enough for a fair comparison).")
-    lines.append("- **filament** built on every interpreter (version-tagged `.so`), "
-                 "once `PBR_VERSION` was set and, for 2.7, a `#include <pythread.h>` "
-                 "was added so modern GCC sees `PyThread_get_thread_ident`.")
-    lines.append("- **filament `#137` on Python 2.7**: originally "
-                 "`filament.patcher.patch_all()` raised `TypeError: __weakref__ "
-                 "slot disallowed` on 2.7 (an illegal ``__weakref__`` in "
-                 "``filament/ssl.py``'s ``__slots__``); that was fixed, and the "
-                 "2.7 table now includes the logging benchmark wherever it has "
-                 "been re-run since.")
+    lines.append("- **filament** builds and runs every benchmark "
+                 "(including `#137`) on every interpreter in the "
+                 "matrix, 2.7 through 3.15, with a version-tagged "
+                 "`.so` per interpreter.")
     lines.append("")
 
     for d in data:
@@ -474,6 +439,48 @@ def _logging_detail(d):
     return L
 
 
+def _log137_range(data):
+    """Filament's #137 throughput range across the matrix, straight from the
+    numbers, so the prose cannot drift out of date."""
+    vals = []
+    for d in data:
+        env = _get(d, "logging137", "filament")
+        if env and env.get("status") == "ok":
+            v = (env.get("result") or {}).get("msgs_per_sec")
+            if v:
+                vals.append(v)
+    if not vals:
+        return "no measurement"
+    if len(vals) == 1 or abs(max(vals) - min(vals)) < 500:
+        return "~%s msgs/s" % _fmt_num(vals[0])
+    return "%s-%s msgs/s" % (_fmt_num(min(vals)), _fmt_num(max(vals)))
+
+
+def _ratio_range(data, bench, other, path, template, py3_only=False):
+    """Range of filament/<other> for one metric across the matrix."""
+    best = None
+    ratios = []
+    for d in data:
+        if py3_only and d["python"].startswith("2."):
+            continue
+        f = _get(d, bench, "filament")
+        o = _get(d, bench, other)
+        if not f or not o or f.get("status") != "ok" or o.get("status") != "ok":
+            continue
+        try:
+            fv, ov = path(f["result"]), path(o["result"])
+        except Exception:
+            continue
+        if not ov:
+            continue
+        ratios.append(fv / ov)
+        if best is None or fv / ov > best[0]:
+            best = (fv / ov, d["python"])
+    if not ratios or best is None:
+        return ""
+    return template % ("%.2f-%.2fx" % (min(ratios), max(ratios)), best[1])
+
+
 def _headline_section(data, arch=None):
     L = ["## Headline findings%s" % (" — %s" % arch if arch else ""), ""]
     if not data:
@@ -497,9 +504,12 @@ def _headline_section(data, arch=None):
     gs = med("spawn", "gevent", lambda r: r["tracked_spawn_per_sec"]["per_sec_median"])
     es = med("spawn", "eventlet", lambda r: r["tracked_spawn_per_sec"]["per_sec_median"])
     L.append("- **Spawn throughput (tracked spawn+join) — filament wins big:** "
-             "filament %s gt/s vs gevent %s vs eventlet %s%s. filament's lead is "
-             "widest on the older interpreters (up to ~4.7x gevent on 3.10/3.8)." % (
-                 _fmt_num(fs), _fmt_num(gs), _fmt_num(es), _speedup(fs, gs, es)))
+             "filament %s gt/s vs gevent %s vs eventlet %s%s.%s" % (
+                 _fmt_num(fs), _fmt_num(gs), _fmt_num(es), _speedup(fs, gs, es),
+                 _ratio_range(data, "spawn", "gevent",
+                              lambda r: r["tracked_spawn_per_sec"]["per_sec_median"],
+                              " Across the matrix filament runs %s the spawn rate "
+                              "of gevent, widest on Python %s.")))
     fc = med("ctxswitch", "filament", lambda r: r["switches_per_sec"]["per_sec_median"])
     gc = med("ctxswitch", "gevent", lambda r: r["switches_per_sec"]["per_sec_median"])
     ec = med("ctxswitch", "eventlet", lambda r: r["switches_per_sec"]["per_sec_median"])
@@ -527,21 +537,24 @@ def _headline_section(data, arch=None):
     ft = med("tpool", "filament", lambda r: r["calls_per_sec"]["per_sec_median"])
     gt = med("tpool", "gevent", lambda r: r["calls_per_sec"]["per_sec_median"])
     et = med("tpool", "eventlet", lambda r: r["calls_per_sec"]["per_sec_median"])
-    L.append("- **Threadpool round-trip — filament wins (post-optimization):** "
-             "filament %s calls/s vs gevent %s vs eventlet %s%s. This benchmark "
-             "used to be filament's one loss; MRU (most-recently-idle) worker "
-             "wakeup closed it -- a single shared condvar was waking the "
-             "COLDEST idle worker for every job." % (
-                 _fmt_num(ft), _fmt_num(gt), _fmt_num(et), _speedup(ft, gt, et)))
-    L.append("- **Echo server — filament wins (post-optimization):** filament "
-             "matches or beats gevent's requests/s at both concurrencies, with "
-             "better p50/p99 latency (see the 3.13 table); eventlet trails both. "
-             "Persistent edge-triggered readiness events (no per-block "
-             "epoll_ctl) plus a GIL-free io-thread completion path closed what "
-             "used to be a ~1.4-1.6x gap.")
+    L.append("- **Threadpool round-trip:** filament %s calls/s vs gevent %s "
+             "vs eventlet %s%s.%s filament's pool wakes the most-recently-idle "
+             "(MRU) worker for each job, keeping the hot worker's stack and "
+             "caches warm." % (
+                 _fmt_num(ft), _fmt_num(gt), _fmt_num(et), _speedup(ft, gt, et),
+                 _ratio_range(data, "tpool", "gevent",
+                              lambda r: r["calls_per_sec"]["per_sec_median"],
+                              " Across Python 3 in this matrix that is %s "
+                              "gevent's rate, best on Python %s;",
+                              py3_only=True)))
+    L.append("- **Echo server — filament wins:** filament matches or beats "
+             "gevent's requests/s at both concurrencies, with better p50/p99 "
+             "latency; eventlet trails both. Persistent edge-triggered "
+             "readiness events (no per-block epoll_ctl) plus a GIL-free "
+             "io-thread completion path carry the socket hot loop.")
     L.append("- **#137 logging-in-threadpool — filament's headline win:** filament "
              "logs from its real-thread pool while the hub runs greenthreads and "
-             "**just works, no workaround, ~15-16k msgs/s** (Python 3.8-3.13). "
+             "**just works, no workaround, %s** across the matrix. " % _log137_range(data) +
              "gevent and eventlet both **deadlock** under a monkey-patched hub, and "
              "gevent's documented mitigations (hub threadpool + native logging "
              "locks + `logThreads=False`) **do not** save it — it still deadlocks. "
