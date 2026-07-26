@@ -22,7 +22,7 @@
 %global srcname filament
 
 Name:           python-%{srcname}
-Version:        0.9.1
+Version:        0.9.2
 Release:        1%{?dist}
 Summary:        Microthreads for Python
 
@@ -77,14 +77,37 @@ Summary:        %{summary}
 %pyproject_check_import -t
 
 %files -n python%{python3_pkgversion}-%{srcname} -f %{pyproject_files}
-%doc README.md HISTORY.md THIRD_PARTY_NOTICES.md AUTHORS
+%doc README.md RELEASES.md THIRD_PARTY_NOTICES.md AUTHORS
 
 %changelog
+* Sun Jul 26 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.2-1
+- Fix unbounded greenthread leak in the gevent/eventlet compat shims and in
+  the core (uncollectable reference cycle plus a leaked greenlet object).
+- Fix hang at interpreter exit when a thread pool was never shut down.
+- Fix os.read()/os.write() on regular files failing under monkey-patching,
+  which broke tempfile and large WSGI request bodies.
+- Fix Group/Pool retaining every greenthread they ever spawned.
+- Speed up gevent joinall()/wait()/iwait(): 20-way HTTP fan-out 2386 -> 5392
+  req/s.
+
 * Sun Jul 26 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.1-1
-- Bump to 0.9.1.
+- Fix heap corruption when deallocating Python subclasses of the C types.
+- Fix intermittent abort at interpreter exit on Python 3.14 caused by DNS
+  resolver worker threads racing finalization.
+- Fix threading.Timer never firing, and Event.wait()/Thread.join() leaking an
+  internal timeout exception instead of returning on expiry.
+- Fix resolver lookups with keyword arguments, and negative file descriptors
+  parking forever instead of raising EBADF.
+- Python 2.7 repairs across filament.os, pyqueue, subprocess.
 
 * Sat Jul 25 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.0-1
-- Bump to 0.9.0.
+- First full release: C scheduler with per-OS-thread schedulers and safe
+  cross-thread synchronization, C queues/locks/timers, libevent-backed I/O.
+- Drop-in gevent and eventlet compatibility shims, cooperative stdlib
+  replacements, and a monkey patcher.
+- Ships its own vendored greenlet runtime with an optional private-stack
+  fiber core.
+- Python 3.8-3.15 on Linux (amd64/arm64); Python 2.7 still builds.
 
 * Sat Jul 25 2026 Chris Behrens <cbehrens@codestud.com> - 0.1.0-1
 - Initial package.

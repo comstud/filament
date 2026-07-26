@@ -6,7 +6,7 @@ graft include
 graft vendor/greenlet
 recursive-include tests *.py
 
-include README.md HISTORY.md
+include README.md RELEASES.md HISTORY.md
 include LICENSE LICENSE.PSF THIRD_PARTY_NOTICES.md AUTHORS
 include requirements.txt test-requirements.txt
 
