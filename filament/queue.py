@@ -16,6 +16,17 @@ import sys as _sys
 from _filament.queue import *  # noqa: F401,F403
 from _filament.queue import Empty, Full, Queue, SimpleQueue  # noqa: F401
 
+# The C queue only implements the FIFO ``Queue`` and ``SimpleQueue``; the rest
+# of the stdlib's queue API has to come from the pure-Python fallback, or code
+# that does ``queue.LifoQueue`` after patch_all() (urllib3's connection pool,
+# for one) breaks with an AttributeError.
+from filament.pyqueue import LifoQueue, PriorityQueue  # noqa: F401,E402
+
+try:  # pragma: no cover - Python 3.13+ only
+    from queue import ShutDown  # noqa: F401
+except ImportError:  # pragma: no cover - older Python / Python 2
+    pass
+
 if _sys.version_info[0] >= 3:
     __filament__ = {'patch': 'queue'}
 else:  # pragma: no cover - Python 2

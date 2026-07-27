@@ -7,6 +7,8 @@ from filament import socket
 from _filament import socket as _socket
 from _filament import queue
 
+from tests._helpers import run_py
+
 _PY3 = sys.version_info[0] >= 3
 
 
@@ -118,3 +120,43 @@ class SocketTestCase(testtools.TestCase):
         s.close()
         self.assertEqual(b'hi there again', q.get())
         thr.wait()
+
+
+def test_kill_beats_ready_data():
+    # A greenthread parked in recv() can be woken by data arriving and thrown
+    # into (kill / an expiring Timeout) in the same turn.  The throw has to
+    # win: handing back the bytes with the GreenletExit still pending is what
+    # CPython reports as "SystemError: ... returned a result with an exception
+    # set", which any application that kills greenthreads holding sockets hits
+    # on every shutdown unless src/socket/fil_socket.c checks.
+    #
+    # Runs in a subprocess deliberately.  Killing a greenthread that already
+    # has a queued wakeup also trips a separate, still-open use-after-free in
+    # the scheduler; in-process that leaves the runtime damaged for every test
+    # that follows, and can segfault.  So we
+    # assert on what the child printed, not on how it exited.
+    res = run_py("""
+import filament
+from filament import socket
+
+left, right = socket.socketpair()
+outcome = []
+
+def parked():
+    try:
+        outcome.append(("data", left.recv(100)))
+    except BaseException as e:
+        outcome.append(("exc", type(e).__name__))
+
+greenthread = filament.spawn(parked)
+filament.sleep(0.05)          # let it park inside recv
+right.send(b"hello")          # readable: wakeup queued
+filament.kill(greenthread)    # ... then throw, before it resumes
+print("OUTCOME:%s" % (outcome,))
+""", timeout=25)
+    assert not res.timed_out, repr(res)
+    assert 'SystemError' not in res.stdout + res.stderr, repr(res)
+    # Whichever of the two wins is a race; only the third outcome is a bug.
+    assert ("OUTCOME:[('exc', 'GreenletExit')]" in res.stdout or
+            "OUTCOME:[('data', b'hello')]" in res.stdout or
+            "OUTCOME:[('data', 'hello')]" in res.stdout), repr(res)   # py2

@@ -6,18 +6,22 @@ version instead waits on the descriptors *cooperatively* using filament's IO
 thread (``_filament.io.fd_wait_read_ready`` / ``fd_wait_write_ready``), so a
 greenthread doing its own IO multiplexing yields instead of blocking.
 
-Only ``select()`` is implemented cooperatively.  ``poll`` is intentionally left
-as a clear NotImplementedError (see below) rather than silently falling back to
-the blocking stdlib version.  Constants and error types are copied from the
-stdlib module.
+``select()`` and ``poll()`` are both cooperative; ``poll`` is built on top of
+``select`` and carries the stdlib's millisecond timeout and event bitmasks.
+urllib3 reaches for ``select.poll()`` on every pooled-connection reuse, so a
+missing one takes ``requests`` down with it.  Constants and error types are
+copied from the stdlib module.
 
 Importing this module does NOT patch anything; use ``patch_select()``.
 """
+
+import errno as _errno
 
 from filament import _util as _fil_util
 from filament import patcher as _fil_patcher
 import filament as _fil
 import _filament.io as _fil_io
+from filament import event as _fil_event
 from filament import exc
 
 __filament__ = {'patch': 'select'}
@@ -44,14 +48,28 @@ def select(rlist, wlist, xlist, timeout=None):
     filament scheduler while it waits.  Returns the usual
     ``(readable, writable, exceptional)`` triple.
 
-    Implementation: we spawn one helper greenthread per descriptor of interest.
-    Each helper blocks (cooperatively) on its descriptor becoming ready and, on
-    success, records the original object.  We then wait for the helpers, bounded
-    by ``timeout``.  ``xlist`` (exceptional conditions) is accepted but not
-    monitored -- filament's IO layer only distinguishes read/write readiness --
-    so it always comes back empty; this matches how most cooperative libraries
-    treat it.
+    Implementation notes:
+
+    * ``timeout=0`` means "poll, don't block".  Our IO layer reads a zero
+      timeout as "expire immediately" rather than "check readiness now", and
+      the stdlib call cannot stall the thread when it is told not to wait, so
+      that case goes straight to the pristine ``select.select``.
+    * one descriptor is handled inline; several are handled by a helper
+      greenthread each, and we wake as soon as the *first* one is ready --
+      waiting for them all would turn every multi-fd select into a
+      full-timeout stall.  The ready set is then read back with a
+      non-blocking stdlib select, so we report every ready descriptor and not
+      just the one that woke us.
+    * ``xlist`` (exceptional conditions) is reported when the stdlib sees one,
+      but we never *wake* on it -- filament's IO layer only distinguishes
+      read/write readiness -- so an xlist-only select just runs out its
+      timeout.  This matches how most cooperative libraries treat it.
     """
+    if timeout is not None and timeout <= 0:
+        # Non-blocking: no yielding needed, and no cooperative machinery can
+        # express "check right now" anyway.
+        return _orig_select.select(rlist, wlist, xlist, 0)
+
     # Map fd -> original object so we can return exactly what we were given.
     read_objs = {}
     write_objs = {}
@@ -60,58 +78,106 @@ def select(rlist, wlist, xlist, timeout=None):
     for obj in wlist:
         write_objs[_fileno(obj)] = obj
 
-    readable = []
-    writable = []
+    if not read_objs and not write_objs:
+        # Nothing to watch: select() degenerates to a sleep.
+        if timeout:
+            _fil.sleep(timeout)
+        return [], [], []
 
-    # Each helper waits on one fd and appends the source object when ready.
-    def _wait_read(fd, obj):
+    # One descriptor is the common case (a socket checking its own readiness);
+    # do it in the calling greenthread rather than spawning anything.
+    if len(read_objs) + len(write_objs) == 1:
+        if read_objs:
+            fd, obj = list(read_objs.items())[0]
+            waiter, bucket = _fil_io.fd_wait_read_ready, 0
+        else:
+            fd, obj = list(write_objs.items())[0]
+            waiter, bucket = _fil_io.fd_wait_write_ready, 1
         try:
-            _fil_io.fd_wait_read_ready(fd, timeout=timeout)
-            readable.append(obj)
+            waiter(fd, timeout=timeout)
+        except exc.Timeout as e:
+            if type(e) is not exc.Timeout:
+                raise          # an outer with-Timeout fired in *us*; propagate
+            return [], [], []
+        except Exception:
+            return [], [], []
+        return ([obj], [], []) if bucket == 0 else ([], [obj], [])
+
+    ready = _fil_event.Event()
+
+    # Each helper waits on one fd and wakes us as soon as it is ready.
+    def _wait(fd, waiter):
+        try:
+            waiter(fd, timeout=timeout)
         except (exc.Timeout, Exception):
             # A timeout or error just means "not ready"; select() reports that
             # by omission, so swallow it here.  (exc.Timeout is a BaseException
             # and must be named explicitly.)
-            pass
-
-    def _wait_write(fd, obj):
-        try:
-            _fil_io.fd_wait_write_ready(fd, timeout=timeout)
-            writable.append(obj)
-        except (exc.Timeout, Exception):
-            pass
+            return
+        ready.set()
 
     helpers = []
-    for fd, obj in read_objs.items():
-        helpers.append(_fil.spawn(_wait_read, fd, obj))
-    for fd, obj in write_objs.items():
-        helpers.append(_fil.spawn(_wait_write, fd, obj))
+    for fd in read_objs:
+        helpers.append(_fil.spawn(_wait, fd, _fil_io.fd_wait_read_ready))
+    for fd in write_objs:
+        helpers.append(_fil.spawn(_wait, fd, _fil_io.fd_wait_write_ready))
 
-    # Wait for all helpers to settle.  Because each helper is itself bounded by
-    # ``timeout``, joining them all cannot exceed roughly ``timeout`` seconds.
-    for helper in helpers:
-        try:
-            helper.join()
-        except exc.Timeout as e:
-            if type(e) is not exc.Timeout:
-                raise          # an outer with-Timeout fired in *us*; propagate
-        except Exception:
-            pass
+    try:
+        ready.wait(timeout)
+    finally:
+        # Whether we woke on readiness or on the timeout, no helper may outlive
+        # this call -- a leaked waiter would hold its fd (and itself) forever.
+        _fil.killall(helpers)
 
-    # xlist is not monitored (see docstring); always empty.
-    return readable, writable, []
+    # We now know something is ready (or that we timed out); ask the stdlib
+    # which descriptors, non-blocking, so we report the COMPLETE ready set the
+    # way select() is supposed to -- and hand back the caller's own objects.
+    return _orig_select.select(rlist, wlist, xlist, 0)
 
 
-def poll(*args, **kwargs):
-    """Not implemented cooperatively -- use :func:`select` instead.
-
-    A cooperative ``poll`` object is a larger piece of work than we take on
-    here; failing loudly is better than silently handing back the blocking
-    stdlib poll (which would stall every greenthread).
+class poll(object):
     """
-    raise NotImplementedError(
-        'filament.select does not provide a cooperative poll(); '
-        'use filament.select.select() instead')
+    Cooperative ``select.poll`` object.
+
+    Registration and the returned ``(fd, eventmask)`` pairs follow the stdlib;
+    the wait itself is :func:`select`, so it yields instead of blocking the
+    thread.  Timeouts are in milliseconds (``None`` or negative blocks), as the
+    stdlib has them -- note that differs from :func:`select`'s seconds.
+
+    ``POLLPRI`` is treated as read interest and never reported on its own;
+    filament's IO layer does not distinguish out-of-band data.
+    """
+
+    def __init__(self):
+        self._registry = {}
+
+    def register(self, fd, eventmask=None):
+        if eventmask is None:
+            eventmask = POLLIN | POLLPRI | POLLOUT
+        self._registry[_fileno(fd)] = eventmask
+
+    def modify(self, fd, eventmask):
+        fd = _fileno(fd)
+        if fd not in self._registry:
+            raise OSError(_errno.ENOENT, 'No such file descriptor')
+        self._registry[fd] = eventmask
+
+    def unregister(self, fd):
+        # Stdlib raises KeyError for an unregistered descriptor.
+        del self._registry[_fileno(fd)]
+
+    def poll(self, timeout=None):
+        rlist = [fd for fd, mask in self._registry.items()
+                 if mask & (POLLIN | POLLPRI)]
+        wlist = [fd for fd, mask in self._registry.items() if mask & POLLOUT]
+        seconds = None if timeout is None or timeout < 0 else timeout / 1000.0
+        readable, writable, _ = select(rlist, wlist, [], seconds)
+        events = {}
+        for fd in readable:
+            events[fd] = events.get(fd, 0) | POLLIN
+        for fd in writable:
+            events[fd] = events.get(fd, 0) | POLLOUT
+        return list(events.items())
 
 
 # Copy across constants (POLLIN, etc.) and anything else, but do NOT clobber our

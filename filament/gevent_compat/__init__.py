@@ -37,6 +37,7 @@ import filament.subprocess as _green_subprocess
 import filament.os as _green_os
 import filament.time as _green_time
 import filament.threading as _green_threading
+import filament.timeout as _timeout
 
 from filament.gevent_compat import main
 from filament.gevent_compat import greenlet as _greenlet
@@ -55,6 +56,8 @@ from filament.gevent_compat import pywsgi
 # (so ``gevent.monkey`` / ``gevent.pool`` resolve via attribute access as well
 # as via ``import gevent.monkey``).
 main.monkey = monkey
+main.greenlet = _greenlet
+main.timeout = _timeout
 main.event = event
 main.lock = lock
 main.pool = pool
@@ -75,6 +78,11 @@ main.threading = _green_threading
 # The full name -> module registration table applied by install().
 _MODULE_MAP = {
     "gevent": main,
+    # ``from gevent import greenlet`` / ``from gevent.timeout import Timeout``
+    # are common in the wild, so these need real entries in
+    # sys.modules, not just attributes on the top-level shim.
+    "gevent.greenlet": _greenlet,
+    "gevent.timeout": _timeout,
     "gevent.event": event,
     "gevent.lock": lock,
     "gevent.pool": pool,

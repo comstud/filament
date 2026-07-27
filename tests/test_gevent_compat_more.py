@@ -575,6 +575,10 @@ srv = WSGIServer(("127.0.0.1", 0), app, log=None, error_log=None)
 srv.start()
 
 def fetch(req):
+    # Read-until-EOF, so ask for the connection to be closed; keep-alive and
+    # chunked framing get their own coverage in tests/test_gevent_compat.py.
+    if b"Connection:" not in req:
+        req = req.replace(b"\\r\\n\\r\\n", b"\\r\\nConnection: close\\r\\n\\r\\n", 1)
     c = fsocket.create_connection(("127.0.0.1", srv.address[1]))
     c.sendall(req)
     resp = b""
@@ -618,6 +622,89 @@ resp = fetch(b"GET /done HTTP/1.1\\r\\nHost: x\\r\\n"
 assert b"204" in resp, resp
 assert calls["first"] == b"hel" and calls["rest"] == b"lo"
 assert calls["eof"] == b""
+srv.stop()
+print("OK")
+''')
+
+
+def test_gevent_pywsgi_keepalive_chunked_and_handler_hooks():
+    # Persistent connections, chunked framing when the app gives no length,
+    # chunked request bodies, and the handler hooks real projects subclass
+    # (handle() to count connections, log_request() to count requests).
+    _check('''
+from gevent.pywsgi import WSGIServer, WSGIHandler
+import filament.socket as fsocket
+
+counts = {"conns": 0, "reqs": 0}
+seen = {}
+
+class CountingHandler(WSGIHandler):
+    def handle(self):
+        counts["conns"] += 1
+        WSGIHandler.handle(self)
+
+    def log_request(self):
+        counts["reqs"] += 1
+        WSGIHandler.log_request(self)
+
+def app(environ, start_response):
+    seen["body"] = environ["wsgi.input"].read()
+    start_response("200 OK", [("Content-Type", "text/plain")])
+    return [b"chunk-a", b"chunk-b"]          # no Content-Length -> chunked
+
+srv = WSGIServer(("127.0.0.1", 0), app, log=None, handler_class=CountingHandler)
+srv.start()
+c = fsocket.create_connection(("127.0.0.1", srv.address[1]))
+rfile = c.makefile("rb")
+
+def read_response():
+    head = b""
+    with gevent.Timeout(5):
+        while b"\\r\\n\\r\\n" not in head:
+            b = rfile.read(1)
+            assert b, "connection closed mid-response"
+            head += b
+        if b"Transfer-Encoding: chunked" in head:
+            body = b""
+            while True:
+                size = int(rfile.readline().strip(), 16)
+                if size == 0:
+                    rfile.readline()
+                    break
+                body += rfile.read(size)
+                rfile.read(2)
+            return head, body
+        length = 0
+        for line in head.split(b"\\r\\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        return head, rfile.read(length)
+
+# Two requests down one socket: one connection, two log_request calls.
+c.sendall(b"GET /one HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+head, body = read_response()
+assert b"Transfer-Encoding: chunked" in head, head
+assert body == b"chunk-achunk-b", body
+
+# A chunked *request* body is decoded for the app.
+c.sendall(b"POST /two HTTP/1.1\\r\\nHost: x\\r\\nTransfer-Encoding: chunked\\r\\n"
+          b"\\r\\n3\\r\\nabc\\r\\n2\\r\\nde\\r\\n0\\r\\n\\r\\n")
+head, body = read_response()
+assert seen["body"] == b"abcde", seen
+assert body == b"chunk-achunk-b", body
+assert counts == {"conns": 1, "reqs": 2}, counts
+c.close()
+
+# stop_accepting() leaves the socket bound but takes no new connections;
+# start_accepting() resumes.
+srv.stop_accepting()
+assert srv._accept_greenlet is None
+srv.start_accepting()
+c2 = fsocket.create_connection(("127.0.0.1", srv.address[1]))
+c2.sendall(b"GET /three HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n")
+assert c2.recv(12).startswith(b"HTTP/1.1 200")
+c2.close()
+assert counts["conns"] == 2, counts
 srv.stop()
 print("OK")
 ''')

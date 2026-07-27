@@ -240,10 +240,21 @@ def patch_dns():
         from _filament import socket as _fil_socket
     except ImportError:  # pragma: no cover - C ext not built
         return
+    # Prefer filament.socket's versions over the raw C ones: it is a copy of
+    # the stdlib module built over the cooperative _socket, so its
+    # getaddrinfo() is the stdlib wrapper -- cooperative *and* returning
+    # AddressFamily/SocketKind enums rather than bare ints.  Real code reads
+    # those back (IPv6 support is commonly detected by looking for
+    # "Family.AF_INET6" in the repr), so the conversion is not cosmetic.
+    try:
+        from filament import socket as _green_socket
+    except ImportError:  # pragma: no cover - partial install
+        _green_socket = None
     socket_mod = sys.modules.get('socket') or _import('socket')
     for name in ('getaddrinfo', 'gethostbyname', 'gethostbyname_ex',
                  'gethostbyaddr', 'getnameinfo'):
-        green = getattr(_fil_socket, name, None)
+        green = getattr(_green_socket, name, None) \
+            or getattr(_fil_socket, name, None)
         if green is not None and hasattr(socket_mod, name):
             patch_item(socket_mod, name, green)
 

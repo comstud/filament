@@ -12,6 +12,7 @@ from __future__ import absolute_import
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -204,9 +205,56 @@ def test_select_error_export():
     assert fil_select.error is getattr(std_select, 'error', OSError)
 
 
-def test_poll_raises_notimplemented():
-    with pytest.raises(NotImplementedError):
-        fil_select.poll()
+def test_poll_registration_and_readiness():
+    # poll() is cooperative now: stdlib registration surface, millisecond
+    # timeouts, (fd, eventmask) pairs.  urllib3 uses exactly this to decide
+    # whether a pooled connection is still alive.
+    import socket
+
+    left, right = socket.socketpair()
+    try:
+        poller = fil_select.poll()
+        poller.register(left, fil_select.POLLIN)
+        assert poller.poll(0) == []                  # nothing to read yet
+
+        start = time.time()
+        assert poller.poll(50) == []                 # honours the timeout (ms)
+        assert time.time() - start >= 0.04
+
+        right.send(b'x')
+        assert poller.poll(0) == [(left.fileno(), fil_select.POLLIN)]
+        assert poller.poll() == [(left.fileno(), fil_select.POLLIN)]
+
+        # modify()/unregister() follow the stdlib's error behaviour.
+        poller.modify(left, fil_select.POLLOUT)
+        assert poller.poll(0) == [(left.fileno(), fil_select.POLLOUT)]
+        poller.unregister(left)
+        with pytest.raises(KeyError):
+            poller.unregister(left)
+        with pytest.raises(OSError):
+            poller.modify(left, fil_select.POLLIN)
+    finally:
+        left.close()
+        right.close()
+
+
+def test_select_returns_on_first_ready():
+    # Several descriptors, one ready: select must come back immediately rather
+    # than waiting out the timeout on the others.
+    import socket
+
+    ready_l, ready_r = socket.socketpair()
+    idle_l, idle_r = socket.socketpair()
+    try:
+        ready_r.send(b'x')
+        start = time.time()
+        readable, writable, _ = fil_select.select(
+            [ready_l, idle_l], [], [], 5)
+        assert readable == [ready_l], readable
+        assert time.time() - start < 1
+    finally:
+        for sock in (ready_l, ready_r, idle_l, idle_r):
+            sock.close()
 
 
 def test_stdlib_constants_copied():

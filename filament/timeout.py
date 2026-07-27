@@ -128,6 +128,17 @@ class Timeout(exc.Timeout):
             self._timer.cancel()
             self._timer = None
 
+    def close(self):
+        """
+        Disarm and release the timeout (gevent parity).
+
+        gevent's ``close()`` cancels and returns the object to its pool; we
+        have nothing to pool, so cancelling is the whole job.  Libraries call
+        this in ``finally`` blocks -- pyzmq's green sockets do it around every
+        send and recv -- so it has to exist.
+        """
+        self.cancel()
+
     @property
     def pending(self):
         """True while the timeout is armed and has not fired/been cancelled."""

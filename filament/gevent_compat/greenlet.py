@@ -35,6 +35,9 @@ GreenletExit = filament.GreenletExit
 # Sentinel: no outcome recorded yet (distinguishes a stored ``None`` value).
 _UNSET = object()
 
+# Serial number behind Greenlet.minimal_ident / the default Greenlet.name.
+_ident_counter = 0
+
 
 class Greenlet(object):
     """
@@ -65,6 +68,8 @@ class Greenlet(object):
         self._links = []
         # Internal, synchronous; see _add_done_callback.  Not _links.
         self._done_callbacks = []
+        self._name = None
+        self._minimal_ident = None
 
     # -- construction helpers ------------------------------------------------
 
@@ -241,6 +246,59 @@ class Greenlet(object):
     def exception(self):
         """The exception instance the greenlet raised, or None."""
         return self._exc_info[1] if self._exc_info else None
+
+    @property
+    def exc_info(self):
+        """
+        ``(type, value, traceback)`` if the greenlet raised, else a triple of
+        ``None`` -- gevent's shape, which callers index into unconditionally
+        (exception handlers do ``exc_info[0] is SomeError`` without checking).
+        """
+        return self._exc_info if self._exc_info else (None, None, None)
+
+    @property
+    def args(self):
+        """
+        The positional arguments the greenlet was spawned with.
+
+        gevent exposes these, and code in the wild reaches through them to
+        get at the object a greenlet is running for, via ``greenlet.args[0]``.
+        """
+        return self._args
+
+    @property
+    def kwargs(self):
+        """The keyword arguments the greenlet was spawned with."""
+        return self._kwargs
+
+    @property
+    def minimal_ident(self):
+        """
+        A small per-process serial number, gevent-style.
+
+        gevent hands these out lazily from a per-hub registry so greenlets get
+        short, readable identifiers; we do the same with a counter.
+        """
+        if self._minimal_ident is None:
+            global _ident_counter
+            _ident_counter += 1
+            self._minimal_ident = _ident_counter
+        return self._minimal_ident
+
+    @property
+    def name(self):
+        """
+        Human-readable name, defaulting to ``Greenlet-<minimal_ident>``.
+
+        Settable, as in gevent, and read by logging in real projects.
+        """
+        if self._name is None:
+            self._name = "Greenlet-%d" % self.minimal_ident
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        self._name = value
 
     # -- links ---------------------------------------------------------------
 
