@@ -100,9 +100,20 @@ class Greenlet(object):
             self._value = value
         finally:
             self._finished = True
-            self._done.set()
-            self._fire_done_callbacks()
-            self._fire_links()
+            # Links before joiners, and do not "simplify" that.  gevent's
+            # join() *is* a link on the same ordered notification list, so
+            # every link registered before the join -- link_exception's
+            # included -- has run by the time join() returns; waking the
+            # joiner first would let join() return with the link greenthreads
+            # merely queued, which is what a link is meant to rule out.  The
+            # scheduler's immediate queue is FIFO, so scheduling the links
+            # first puts them ahead of the joiner's wakeup.  The finally keeps
+            # a raising callback from stranding the joiners.
+            try:
+                self._fire_done_callbacks()
+                self._fire_links()
+            finally:
+                self._done.set()
 
     def run(self, *args, **kwargs):  # pragma: no cover - subclass hook
         """Override point for Greenlet subclasses that define behaviour."""
@@ -182,9 +193,12 @@ class Greenlet(object):
             self._exc_info = (type(exception), exception, None)
         self._start_cancelled = True
         self._finished = True
-        self._done.set()
-        self._fire_done_callbacks()
-        self._fire_links()
+        # Links first, joiner wakeup last -- see _target().
+        try:
+            self._fire_done_callbacks()
+            self._fire_links()
+        finally:
+            self._done.set()
 
     def kill(self, exception=GreenletExit, block=True, timeout=None):
         """Kill the greenlet (gevent.Greenlet.kill)."""

@@ -197,9 +197,15 @@ class AsyncResult(object):
         self._value = value
         self._exc_info = None
         self._ready = True
-        if not was_ready:
-            self._msg.send(value)      # wakes/re-arms all Message waiters
-        self._fire_links()
+        # Links first, waiters second, and do not reorder.  gevent notifies
+        # both from one ordered list, so a link registered before a get() has
+        # run by the time that get() returns; the scheduler's immediate queue
+        # is FIFO, so links must be scheduled before waiters are woken.
+        try:
+            self._fire_links()
+        finally:
+            if not was_ready:
+                self._msg.send(value)  # wakes/re-arms all Message waiters
 
     def set_exception(self, exception, exc_info=None):
         """
@@ -214,9 +220,12 @@ class AsyncResult(object):
         self._exc_info = exc_info
         self._value = None
         self._ready = True
-        if not was_ready:
-            self._msg.send_exception(exc_info[0], exc_info[1], exc_info[2])
-        self._fire_links()
+        try:
+            self._fire_links()          # links before waiters; see set()
+        finally:
+            if not was_ready:
+                self._msg.send_exception(exc_info[0], exc_info[1],
+                                         exc_info[2])
 
     # -- getting the result --------------------------------------------------
 

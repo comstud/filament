@@ -869,3 +869,53 @@ g.join()
 assert list(gevent.iwait([g])) == [g]
 print("OK")
 ''')
+
+
+def test_gevent_link_fires_before_join_returns():
+    """
+    A link registered before join() must have run by the time join() returns.
+
+    gevent guarantees this structurally: its join() *is* a link, appended to
+    the same ordered notification list, so everything linked earlier is
+    notified first.  Wake the joiners from a separate Event before firing the
+    links and join() returns with them merely queued -- which is exactly what
+    a link is supposed to rule out.  Real projects route their whole
+    unhandled-exception logging through link_exception(), so nothing gets
+    logged at all when the ordering is wrong.
+    """
+    _check('''
+order = []
+
+def boom():
+    raise ValueError("Boom!?")
+
+g = gevent.spawn(boom)
+g.link_exception(lambda gt: order.append("link_exception"))
+g.join()
+order.append("join returned")
+
+assert order == ["link_exception", "join returned"], order
+
+# Same contract on the value side, and for a plain link().
+order2 = []
+g2 = gevent.spawn(lambda: 7)
+g2.link_value(lambda gt: order2.append(("value", gt.value)))
+g2.link(lambda gt: order2.append("link"))
+g2.join()
+order2.append("join returned")
+assert order2 == [("value", 7), "link", "join returned"], order2
+
+# AsyncResult carries the same guarantee: a link registered before get()
+# has run by the time get() returns.
+from gevent.event import AsyncResult
+
+order3 = []
+ar = AsyncResult()
+ar.link(lambda r: order3.append("link"))
+gevent.spawn(lambda: ar.set(3))
+assert ar.get() == 3
+order3.append("get returned")
+assert order3 == ["link", "get returned"], order3
+
+print("OK")
+''')
