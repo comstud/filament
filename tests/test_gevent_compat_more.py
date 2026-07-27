@@ -919,3 +919,62 @@ assert order3 == ["link", "get returned"], order3
 
 print("OK")
 ''')
+
+
+def test_gevent_greenlet_is_what_raw_getcurrent_returns():
+    """
+    ``greenlet.getcurrent()`` must be the running gevent Greenlet.
+
+    Under real gevent this is structural -- ``gevent.Greenlet`` subclasses
+    ``greenlet.greenlet``, so the two are literally the same object -- and
+    code in the wild branches on the identity to ask "is the greenlet I am
+    about to stop *me*?", taking a self-kill-safe path only when it holds.
+    Answer that wrongly and the caller kills the greenlet it is running on, or
+    waits on a Group containing itself; either way it deadlocks.
+
+    filament switches on its own runtime, so the installed greenlet package
+    can never see our greenthreads.  ``install()`` therefore also owns the
+    top-level ``greenlet`` name; this pins the invariant that buys.
+    """
+    _check('''
+import greenlet
+from gevent.pool import Group
+
+seen = {}
+g = Group()
+gl = g.spawn(lambda: seen.__setitem__("cur", greenlet.getcurrent()))
+g.join()
+assert seen["cur"] is gl, (seen["cur"], gl)
+
+# gevent.getcurrent() and greenlet.getcurrent() agree, as they do in gevent.
+seen2 = {}
+g2 = gevent.spawn(lambda: seen2.__setitem__("cur", gevent.getcurrent()))
+g2.join()
+assert seen2["cur"] is g2, (seen2["cur"], g2)
+
+# The tag does not outlive the body -- no Greenlet <-> Filament cycle left.
+assert not hasattr(gl._filament, "_gevent_greenlet")
+
+# A bare greenthread has no wrapper, so the greenthread itself comes back.
+raw_seen = {}
+raw = gevent.spawn_raw(lambda: raw_seen.__setitem__("cur", greenlet.getcurrent()))
+gevent.sleep(0.05)
+assert raw_seen["cur"] is raw, (raw_seen["cur"], raw)
+
+# And the pattern real code relies on: a member killing itself out of its group.
+g3, log = Group(), []
+def suicide():
+    g3.killone(greenlet.getcurrent(), block=False)
+    log.append("scheduled")
+g3.spawn(suicide)
+g3.join(timeout=1)
+assert log == ["scheduled"], log
+
+# isinstance() against the runtime's class still works, and the module keeps
+# the surface libraries version-gate on.
+assert isinstance(raw, greenlet.greenlet)
+assert greenlet.GreenletExit is gevent.GreenletExit
+assert isinstance(greenlet.__version__, str)
+
+print("OK")
+''')

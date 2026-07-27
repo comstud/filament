@@ -41,6 +41,7 @@ import filament.timeout as _timeout
 
 from filament.gevent_compat import main
 from filament.gevent_compat import greenlet as _greenlet
+from filament.gevent_compat import rawgreenlet as _rawgreenlet
 from filament.gevent_compat import event
 from filament.gevent_compat import lock
 from filament.gevent_compat import pool
@@ -78,6 +79,13 @@ main.threading = _green_threading
 # The full name -> module registration table applied by install().
 _MODULE_MAP = {
     "gevent": main,
+    # The top-level ``greenlet`` package.  Under real gevent
+    # ``greenlet.getcurrent()`` IS the running gevent Greenlet, and code in the
+    # wild branches on that identity to decide whether it is about to act on
+    # itself.  filament switches on its own
+    # ``_fil_greenlet`` runtime, so the installed greenlet package can never
+    # see our greenthreads; see :mod:`filament.gevent_compat.rawgreenlet`.
+    "greenlet": _rawgreenlet,
     # ``from gevent import greenlet`` / ``from gevent.timeout import Timeout``
     # are common in the wild, so these need real entries in
     # sys.modules, not just attributes on the top-level shim.

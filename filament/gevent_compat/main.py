@@ -21,6 +21,7 @@ import signal as _signal
 import filament
 
 from filament.gevent_compat import greenlet as _greenlet
+from filament.gevent_compat import rawgreenlet as _rawgreenlet
 from filament.gevent_compat import hub as _hub
 
 # -- greenlet spawning / control (faithful mappings) ------------------------
@@ -41,7 +42,9 @@ def sleep(seconds=0, ref=True):
     return filament.sleep(seconds)
 
 
-getcurrent = filament.getcurrent
+# gevent.getcurrent IS greenlet.getcurrent; keep the two answers identical so
+# ``gevent.getcurrent() is <the Greenlet you were handed>`` holds here too.
+getcurrent = _rawgreenlet.getcurrent
 idle = lambda priority=0: filament.sleep(0)  # noqa: E731 - gevent.idle parity
 
 # -- timeouts (faithful mapping) --------------------------------------------

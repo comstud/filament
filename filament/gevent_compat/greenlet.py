@@ -85,6 +85,16 @@ class Greenlet(object):
     def _target(self):
         # Runs inside the filament greenthread.  Subclasses may override
         # ``_run``; if ``self._run`` is None we look for that.
+        #
+        # Tag the greenthread with a back-pointer to us.  Under real gevent
+        # the Greenlet *is* the running greenlet, so ``greenlet.getcurrent()``
+        # returns it, and code in the wild branches on that identity to decide
+        # whether it is about to act on itself.  ``rawgreenlet.getcurrent()``
+        # reads this tag.  Dropped again in the finally so we leave no
+        # Greenlet <-> Filament reference cycle behind.
+        current = filament.getcurrent()
+        current._gevent_greenlet = self
+
         run = self._run
         if run is None:
             run = getattr(self, "_run_impl", None) or self.run
@@ -114,6 +124,10 @@ class Greenlet(object):
                 self._fire_links()
             finally:
                 self._done.set()
+            try:
+                del current._gevent_greenlet
+            except AttributeError:
+                pass
 
     def run(self, *args, **kwargs):  # pragma: no cover - subclass hook
         """Override point for Greenlet subclasses that define behaviour."""
