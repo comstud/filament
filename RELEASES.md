@@ -35,6 +35,18 @@ generator against the shim.
   `SocketKind` enums like the stdlib instead of bare ints. Code does read
   those back -- IPv6 support is commonly detected by looking for
   `Family.AF_INET6` in the repr.
+- `install()` now also owns the top-level `greenlet` name, so
+  `greenlet.getcurrent()` returns the running `gevent.Greenlet` the way it
+  does under real gevent (where `Greenlet` *is* a `greenlet.greenlet`
+  subclass).
+  `gevent.getcurrent` is the same function, as it is in gevent. The real
+  greenlet package is never mutated and `uninstall()` puts it back.
+- A callback registered with `link_exception()` / `link_value()` / `link()`
+  before `join()` has now run by the time `join()` returns, matching gevent
+  (whose `join()` *is* a link on the same ordered list). The shim woke
+  joiners first and merely queued the links, so anything that logs unhandled
+  greenlet exceptions through a link saw nothing.
+  `AsyncResult.set()` / `set_exception()` had the same inversion.
 
 **Bug fixes**
 
