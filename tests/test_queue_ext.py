@@ -253,3 +253,68 @@ def test_pyqueue_priority_blocking_across_greenthreads():
     # Consumer parks on the first get until an item exists; ordering within the
     # queue is by priority once both are present.
     assert sorted(run(body)) == [1, 10]
+
+
+# --------------------------------------------------------------------------- #
+# Killed while an item / a slot is being handed over
+#
+# put() wakes exactly one parked getter, and get() wakes exactly one parked
+# putter.  If that greenthread is thrown into (kill(), an expiring Timeout) in
+# the same wakeup, it cannot use what it was woken for -- so the wakeup has to
+# be passed on, or the next waiter sleeps through a queue that is no longer
+# empty (or no longer full).
+# --------------------------------------------------------------------------- #
+
+def _queue_throw(g):
+    """Queue a throw into `g` WITHOUT yielding (kill() yields)."""
+    from filament.greenthread import GreenletExit
+    from filament.timer import Timer
+
+    Timer(0, g.throw, GreenletExit)
+
+
+def test_get_wakeup_passed_on_when_getter_is_killed():
+    def body():
+        q = cqueue.Queue()
+        got = []
+
+        v = filament.spawn(lambda: got.append(("victim", q.get())))
+        s = filament.spawn(lambda: got.append(("survivor", q.get())))
+        filament.sleep(0)              # both parked in get()
+
+        _queue_throw(v)                # the victim is on its way out ...
+        q.put("item")                  # ... and put() wakes exactly one getter
+
+        filament.sleep(0.05)
+        assert v.dead
+        with filament.Timeout(1.0):
+            s.wait()
+        return got, q.qsize()
+
+    got, qsize = run(body)
+    assert got == [("survivor", "item")], got
+    assert qsize == 0
+
+
+def test_put_wakeup_passed_on_when_putter_is_killed():
+    def body():
+        q = cqueue.Queue(maxsize=1)
+        q.put("first")                 # queue is now full
+        done = []
+
+        v = filament.spawn(lambda: (q.put("victim"), done.append("victim")))
+        s = filament.spawn(lambda: (q.put("survivor"), done.append("survivor")))
+        filament.sleep(0)              # both parked in put()
+
+        _queue_throw(v)
+        assert q.get() == "first"      # makes room, wakes exactly one putter
+
+        filament.sleep(0.05)
+        assert v.dead
+        with filament.Timeout(1.0):
+            s.wait()
+        return done, q.get()
+
+    done, item = run(body)
+    assert done == ["survivor"], done
+    assert item == "survivor"

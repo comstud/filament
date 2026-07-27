@@ -79,6 +79,27 @@ generator against the shim.
   still pending. The exception now wins and the bytes are dropped, as they
   would be if the throw had landed a moment earlier. This fired on every
   shutdown of a load test, taking the run's results with it.
+- Fixed `SystemError: <built-in method __enter__ of _filament.locking.RLock
+  object> returned a result with an exception set` at interpreter exit, which
+  every run under a patched `logging` printed a pair of. `fil_get_ident()`
+  asks greenlet for the current greenlet to build an RLock ownership id, and
+  that call *fails* once the interpreter is tearing down
+  (`RuntimeError: greenlet is being finalized`). The exception was left
+  pending, so the acquire that followed -- which succeeded -- handed a result
+  back to CPython with an error set. Any lock use from a `__del__` or a
+  weakref callback at shutdown hit it; a fifteen-line script with no
+  monkey-patching reproduces it.
+- A greenthread that is handed a lock, a semaphore permit, a queue item or a
+  thread-pool result and is *thrown into in the same wakeup* no longer walks
+  off with it. `release()` transfers ownership straight to a parked waiter,
+  and if a `kill()` or an expiring `Timeout` landed in the same scheduler
+  pass, `acquire()` returned success with the exception still pending: another
+  `SystemError`, and worse, a lock left permanently held by a greenthread that
+  no longer existed. `fil_waiter_wait()` now reports that case distinctly
+  (`FIL_WAITER_SIGNALED_UNWIND`) and every primitive passes the hand-over on
+  -- to the next waiter, or back to itself -- before letting the exception
+  out. The thread-pool paths were leaking or writing to freed memory on the
+  same race.
 
 **Scheduler**
 

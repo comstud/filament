@@ -86,6 +86,8 @@ static int _semaphore_init(PyFilSemaphore *self, PyObject *args, PyObject *kwarg
     return 0;
 }
 
+static void __semaphore_release(PyFilSemaphore *sema);
+
 static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timespec *ts)
 {
     /* If there are waiters, we should let them acquire before we do */
@@ -107,6 +109,20 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
     if (err < 0)
     {
         return err;
+    }
+
+    if (err == FIL_WAITER_SIGNALED_UNWIND)
+    {
+        /* The count release() decremented for us is ours, and we are leaving
+         * with an exception: give it back (to the next waiter if there is
+         * one) or the semaphore loses a permit permanently.  Signaling can
+         * raise, so keep the exception we are propagating out of its way. */
+        PyObject *exc_type, *exc_value, *exc_tb;
+
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+        __semaphore_release(sema);
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+        return -1;
     }
 
     return 0;

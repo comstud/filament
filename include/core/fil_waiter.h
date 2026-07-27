@@ -27,6 +27,9 @@ struct _fil_waiter {
     /* A wakeup switch event has been queued for this waiter and has not run
      * yet.  Set and cleared under waiter_lock; see the wakeup contract below. */
     #define FIL_WAITER_FLAGS_SWITCH_PENDING 0x008
+/* fil_waiter_wait() return code: signaled, but an exception is pending too.
+ * See the contract above fil_waiter_wait(). */
+#define FIL_WAITER_SIGNALED_UNWIND 1
     unsigned int flags;
     /* 'refcnt' is a plain (non-atomic) counter. This is safe because of a
      * strict invariant: a waiter is only ever incref'd/decref'd while holding
@@ -243,12 +246,35 @@ static inline void _fil_waiter_queue_switch(FilWaiter *waiter, PyFilScheduler *s
     waiter->flags |= FIL_WAITER_FLAGS_SWITCH_PENDING;
 }
 
+/*
+ * Wait for this waiter to be signaled.
+ *
+ * Returns:
+ *   0                          signaled: whatever the signal handed over
+ *                              (lock ownership, a semaphore count, a queued
+ *                              item, a completed job) is yours.
+ *   FIL_WAITER_SIGNALED_UNWIND signaled AND an exception is pending: the
+ *                              hand-over happened, but this greenthread was
+ *                              thrown into (kill(), an expiring Timeout) in
+ *                              the same wakeup and is on its way out.  The
+ *                              caller MUST pass the hand-over on -- to the
+ *                              next waiter, or back to the primitive -- and
+ *                              then return failure, letting the exception
+ *                              propagate.  Ignore it and a killed greenthread
+ *                              walks off with a lock nobody can release, and
+ *                              acquire() hands back a result with an
+ *                              exception set.
+ *   -ETIMEDOUT                 the deadline passed (timeout_exc is pending).
+ *   -1                         not signaled; an exception is pending.
+ */
 static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObject *timeout_exc)
 {
     int err;
 
     if (fil_waiter_signaled(waiter))
     {
+        /* Signaled before we ever parked, so nothing can have been thrown
+         * into us in the meantime: no wait, no unwind. */
         return 0;
     }
 
@@ -326,10 +352,22 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
             }
         }
 
-        return 0;
+        /* Signaled. A signal handler run by PyErr_CheckSignals() above can
+         * have raised in the same round trip, so report it the same way the
+         * greenlet path does rather than handing back a hand-over the caller
+         * is about to abandon. */
+        return PyErr_Occurred() ? FIL_WAITER_SIGNALED_UNWIND : 0;
     }
 
     waiter->gl = PyGreenlet_GetCurrent();
+    if (waiter->gl == NULL)
+    {
+        /* Only fails once the interpreter is finalizing ("greenlet is being
+         * finalized"), and parking with a NULL gl would park forever: a
+         * signaler skips a waiter it cannot switch into.  Bail out with the
+         * exception greenlet set, as the re-park below does. */
+        return -1;
+    }
 
     /* Publish the parked state under waiter_lock. A signaler (possibly on
      * another thread, possibly WITHOUT the GIL -- e.g. the io thread) either
@@ -438,7 +476,12 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
 
         if (err)
         {
-            return 0;                       /* signaled: the wait is over */
+            /* Signaled: the wait is over.  We can have been thrown into by
+             * the same wakeup (a kill() or an expiring Timeout that landed
+             * after the signaler had already handed us the lock / item /
+             * result), in which case the caller has to give it back before
+             * the exception unwinds it out of here. */
+            return PyErr_Occurred() ? FIL_WAITER_SIGNALED_UNWIND : 0;
         }
 
         if (PyErr_Occurred())
@@ -671,5 +714,24 @@ static inline void _fil_waiterlist_signal_first(FilWaiterList *waiter_list)
         __fil_waiterlist_signal_first(waiter_list);
     }
 }
+
+/*
+ * Pass a signal we cannot use on to the next waiter, keeping the exception
+ * that is unwinding us pending (see FIL_WAITER_SIGNALED_UNWIND).  Signaling
+ * can raise -- fil_scheduler_add_event_ref() allocates -- and an exception
+ * set here would replace the one the caller is propagating, so hold it out of
+ * the way for the duration.
+ */
+static inline void _fil_waiterlist_signal_first_keep_exc(FilWaiterList *waiter_list)
+{
+    PyObject *exc_type, *exc_value, *exc_tb;
+
+    PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+    _fil_waiterlist_signal_first(waiter_list);
+    PyErr_Restore(exc_type, exc_value, exc_tb);
+}
+
+#define fil_waiterlist_signal_first_keep_exc(waiter_list) \
+    _fil_waiterlist_signal_first_keep_exc(&(waiter_list))
 
 #endif /* __FIL_WAITER_H__ */

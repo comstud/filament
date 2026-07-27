@@ -112,6 +112,15 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
         PyObject *exc_type, *exc_value, *exc_tb;
         PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
 
+        if (err == FIL_WAITER_SIGNALED_UNWIND)
+        {
+            /* notify() woke us and something threw into us in the same
+             * wakeup.  We cannot use the notification, so pass it to the next
+             * waiter rather than swallowing it -- a notify_all() that reaches
+             * a greenthread being killed must still reach the others. */
+            fil_waiterlist_signal_first(cond->waiters);
+        }
+
         result = PyObject_CallMethod(cond->lock, "acquire", NULL);
         Py_XDECREF(result);
         PyErr_Restore(exc_type, exc_value, exc_tb);

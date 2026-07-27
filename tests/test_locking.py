@@ -4,17 +4,17 @@ Cooperative locking tests: Lock mutual exclusion, RLock reentrancy, Condition
 wait/notify/notify_all, Semaphore counting, BoundedSemaphore, and acquire
 timeouts.
 
-NOTE ON A LIBRARY BUG (documented, not worked around):
-``_filament.locking.Lock.acquire(timeout=...)`` and ``RLock.acquire(timeout=...)``
-raise ``SystemError`` when the timeout expires -- the C code returns ``Py_False``
-on the ``-ETIMEDOUT`` path without clearing the ``exc.Timeout`` that
-``fil_waiterlist_wait`` set, so CPython reports "returned a result with an
-exception set" (src/locking/fil_lock.c, the ``_lock_acquire`` / ``_rlock_acquire``
-ETIMEDOUT return path).  ``Semaphore.acquire(timeout=...)`` is unaffected (it
-propagates ``exc.Timeout`` cleanly).  The two ``xfail`` tests below pin this so a
-future fix flips them to ``xpass``.  For a working "acquire with a deadline" the
-tests use the ``filament.Timeout`` context manager, which interrupts the blocking
-acquire correctly.
+Three classes of "returned a result with an exception set" bug have been fixed
+here and are pinned by the tests below; all three came from C code handing a
+result back to CPython with an exception still pending:
+
+  * ``acquire(timeout=...)`` on expiry -- reported the timeout by returning
+    False without clearing the ``exc.Timeout`` that set it;
+  * being killed while the lock is handed over -- ``release()`` transfers
+    ownership to a parked waiter, and a throw landing in the same wakeup used
+    to walk off with it (see the hand-off tests at the end of this file);
+  * using a lock while the interpreter is finalizing -- ``fil_get_ident()``
+    left greenlet's "greenlet is being finalized" RuntimeError pending.
 """
 
 from __future__ import absolute_import
@@ -369,3 +369,225 @@ def test_bounded_semaphore_over_release_raises():
         with pytest.raises(ValueError):
             bs.release()   # released above the ceiling
     run(body)
+
+
+# --------------------------------------------------------------------------- #
+# Killed while being handed the lock / permit / notification
+#
+# release() hands ownership straight to a parked waiter (it leaves 'locked'
+# set and signals it).  If that waiter is ALSO thrown into -- a kill(), an
+# expiring Timeout -- before it gets to run, it must not walk off with what it
+# was handed: acquire() has to give it back, or the primitive is lost for
+# everyone else.  Before the fix the C code returned success with the
+# exception still pending, which CPython reports as "SystemError: <method
+# 'acquire' ...> returned a result with an exception set" and which left the
+# lock permanently held by a greenthread that no longer existed.
+# --------------------------------------------------------------------------- #
+
+def _queue_throw(g):
+    """Queue a throw into `g` WITHOUT yielding.
+
+    ``greenthread.kill()`` yields, which lets the throw land before whatever
+    we do next; here we want the throw and the hand-off to be in flight at the
+    same time.
+    """
+    from filament.greenthread import GreenletExit
+    from filament.timer import Timer
+
+    Timer(0, g.throw, GreenletExit)
+
+
+def test_lock_handed_on_when_acquirer_is_killed():
+    def body():
+        lk = locking.Lock()
+        lk.acquire()
+        out = []
+
+        def victim():
+            with lk:
+                out.append("victim")
+
+        def survivor():
+            with lk:
+                out.append("survivor")
+
+        v = filament.spawn(victim)
+        s = filament.spawn(survivor)
+        filament.sleep(0)              # both parked on the lock
+
+        _queue_throw(v)                # ... and the victim is being killed
+        lk.release()                   # hands the lock to the victim
+
+        filament.sleep(0.05)
+        assert v.dead, "victim should have been killed"
+        s.wait()
+        return out, lk.locked()
+
+    out, locked = run(body)
+    assert out == ["survivor"], out
+    assert locked is False
+
+
+def test_rlock_handed_on_when_acquirer_is_killed():
+    def body():
+        lk = locking.RLock()
+        lk.acquire()
+        out = []
+
+        def victim():
+            with lk:
+                out.append("victim")
+
+        def survivor():
+            with lk:
+                out.append("survivor")
+
+        v = filament.spawn(victim)
+        s = filament.spawn(survivor)
+        filament.sleep(0)
+
+        _queue_throw(v)
+        lk.release()
+
+        filament.sleep(0.05)
+        assert v.dead
+        s.wait()
+        # The lock is fully usable afterwards, including recursively.
+        lk.acquire()
+        lk.acquire()
+        lk.release()
+        lk.release()
+        return out
+
+    assert run(body) == ["survivor"]
+
+
+def test_lock_not_stranded_when_only_acquirer_is_killed():
+    """No second waiter to hand to: the lock must simply go back to unlocked."""
+    def body():
+        lk = locking.Lock()
+        lk.acquire()
+
+        def victim():
+            with lk:
+                pass
+
+        v = filament.spawn(victim)
+        filament.sleep(0)
+
+        _queue_throw(v)
+        lk.release()
+
+        filament.sleep(0.05)
+        assert v.dead
+        # Nobody owns it now, so this must not block.
+        with Timeout(0.5):
+            lk.acquire()
+        lk.release()
+        return lk.locked()
+
+    assert run(body) is False
+
+
+def test_semaphore_permit_returned_when_acquirer_is_killed():
+    def body():
+        sem = locking.Semaphore(1)
+        sem.acquire()
+
+        def victim():
+            sem.acquire()
+            sem.release()
+
+        v = filament.spawn(victim)
+        filament.sleep(0)
+
+        _queue_throw(v)
+        sem.release()                  # hands the permit to the victim
+
+        filament.sleep(0.05)
+        assert v.dead
+        # The permit must have come back, not vanished with the victim.
+        with Timeout(0.5):
+            sem.acquire()
+        sem.release()
+        return True
+
+    assert run(body) is True
+
+
+def test_condition_notification_passed_on_when_waiter_is_killed():
+    def body():
+        lk = locking.Lock()
+        cond = locking.Condition(lk)
+        out = []
+
+        def victim():
+            with cond:
+                cond.wait()
+                out.append("victim")
+
+        def survivor():
+            with cond:
+                cond.wait()
+                out.append("survivor")
+
+        v = filament.spawn(victim)
+        s = filament.spawn(survivor)
+        filament.sleep(0.01)           # both parked in cond.wait()
+
+        _queue_throw(v)
+        with cond:
+            cond.notify()              # aimed at the victim
+
+        filament.sleep(0.05)
+        assert v.dead
+        # The notification must have been passed on rather than swallowed.
+        with Timeout(1.0):
+            s.wait()
+        return out
+
+    assert run(body) == ["survivor"]
+
+
+# --------------------------------------------------------------------------- #
+# Using a lock while the interpreter is finalizing
+# --------------------------------------------------------------------------- #
+
+FINALIZE_RLOCK_SCRIPT = '''
+import sys
+import filament                                   # noqa: F401
+from _filament import locking
+
+lk = locking.RLock()
+
+
+class LateUser(object):
+    def __del__(self):
+        with lk:
+            pass
+
+
+# Module-global, so it is torn down during interpreter finalization -- which
+# is the point at which greenlet's API starts failing.
+KEEPALIVE = LateUser()
+sys.stdout.write("ok\\n")
+sys.stdout.flush()
+'''
+
+
+def test_rlock_usable_during_interpreter_finalization():
+    """RLock at shutdown must not hand back a result with an exception set.
+
+    ``fil_get_ident()`` calls ``PyGreenlet_GetCurrent()``, which fails once the
+    interpreter is tearing down (RuntimeError: "greenlet is being finalized").
+    It used to leave that exception pending, so the acquire that followed --
+    which succeeded -- returned to CPython with an error set, and CPython
+    reported ``SystemError: <built-in method __enter__ ...> returned a result
+    with an exception set``.  Every filament run under a monkey-patched
+    ``logging`` printed a pair of these at exit, from ``_removeHandlerRef``.
+    """
+    res = run_py(FINALIZE_RLOCK_SCRIPT, timeout=30)
+    assert not res.timed_out, repr(res)
+    assert "ok" in res.stdout, repr(res)
+    assert "SystemError" not in res.stderr, repr(res)
+    assert "Exception ignored" not in res.stderr, repr(res)
