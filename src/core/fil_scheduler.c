@@ -42,64 +42,230 @@ static pthread_key_t _scheduler_key = 0;
 
 /****************/
 
-static inline FilSchedEvent *_get_ready_events(FilSchedEventList *elist, struct timespec **next_run_ret)
+/* Called under sched_lock the moment an event leaves a queue, so an owner
+ * holding a handle (see fil_scheduler_add_event_ref) can see that the node is
+ * no longer theirs to cancel. */
+static inline void _event_detached(FilSchedEvent *event)
 {
-    /* Extract events that we can run out of 'elist' and keep
-     * the list as 'cur_events'.
-     */
-    FilSchedEvent *cur_events = elist->head;
-
-    if (cur_events == NULL)
+    if (event->owner_ref != NULL)
     {
-        *next_run_ret = NULL;
-        return NULL;
+        *(event->owner_ref) = NULL;
+        event->owner_ref = NULL;
+    }
+}
+
+/**********************
+ * immediate FIFO
+ *********************/
+
+static inline void _imm_push(FilSchedEventList *elist, FilSchedEvent *event)
+{
+    event->heap_idx = FIL_SCHED_HEAP_NOT_QUEUED;
+    event->next = NULL;
+    event->prev = elist->tail;
+    if (elist->tail != NULL)
+        elist->tail->next = event;
+    else
+        elist->head = event;
+    elist->tail = event;
+}
+
+static inline void _imm_unlink(FilSchedEventList *elist, FilSchedEvent *event)
+{
+    if (event->prev != NULL)
+        event->prev->next = event->next;
+    else
+        elist->head = event->next;
+    if (event->next != NULL)
+        event->next->prev = event->prev;
+    else
+        elist->tail = event->prev;
+}
+
+/**********************
+ * timer min-heap
+ *********************/
+
+/* Below this the array is left alone; shrinking a handful of pointers is not
+ * worth a realloc. */
+#define FIL_SCHED_HEAP_MIN_SHRINK 128
+
+static int _heap_reserve(FilSchedTimerHeap *heap, size_t want)
+{
+    FilSchedEvent **entries;
+    size_t capacity;
+
+    if (heap->capacity >= want)
+        return 0;
+
+    capacity = heap->capacity ? heap->capacity * 2 : 32;
+    while (capacity < want)
+        capacity *= 2;
+
+    entries = realloc(heap->entries, capacity * sizeof(*entries));
+    if (entries == NULL)
+        return -1;
+
+    heap->entries = entries;
+    heap->capacity = capacity;
+    return 0;
+}
+
+static void _heap_sift_up(FilSchedTimerHeap *heap, size_t idx)
+{
+    FilSchedEvent *event = heap->entries[idx];
+
+    while (idx > 0)
+    {
+        size_t parent = (idx - 1) / 2;
+
+        if (!FIL_EVENT_COMPARE(event, heap->entries[parent], <))
+            break;
+        heap->entries[idx] = heap->entries[parent];
+        heap->entries[idx]->heap_idx = idx;
+        idx = parent;
+    }
+    heap->entries[idx] = event;
+    event->heap_idx = idx;
+}
+
+static void _heap_sift_down(FilSchedTimerHeap *heap, size_t idx)
+{
+    FilSchedEvent *event = heap->entries[idx];
+    size_t half = heap->len / 2;
+
+    while (idx < half)
+    {
+        size_t child = idx * 2 + 1;
+
+        if (child + 1 < heap->len &&
+            FIL_EVENT_COMPARE(heap->entries[child + 1], heap->entries[child], <))
+        {
+            child++;
+        }
+        if (!FIL_EVENT_COMPARE(heap->entries[child], event, <))
+            break;
+        heap->entries[idx] = heap->entries[child];
+        heap->entries[idx]->heap_idx = idx;
+        idx = child;
+    }
+    heap->entries[idx] = event;
+    event->heap_idx = idx;
+}
+
+static int _heap_push(FilSchedTimerHeap *heap, FilSchedEvent *event)
+{
+    if (_heap_reserve(heap, heap->len + 1) < 0)
+        return -1;
+    heap->entries[heap->len] = event;
+    event->heap_idx = heap->len;
+    heap->len++;
+    _heap_sift_up(heap, heap->len - 1);
+    return 0;
+}
+
+static void _heap_remove_at(FilSchedTimerHeap *heap, size_t idx)
+{
+    FilSchedEvent *moved;
+
+    heap->entries[idx]->heap_idx = FIL_SCHED_HEAP_NOT_QUEUED;
+    heap->len--;
+
+    if (idx != heap->len)
+    {
+        /* Backfill with the last entry and let it find its level.  Only one
+         * of the two passes can move it, but which one depends on where the
+         * hole was, so run both. */
+        moved = heap->entries[heap->len];
+        heap->entries[idx] = moved;
+        moved->heap_idx = idx;
+        _heap_sift_down(heap, idx);
+        _heap_sift_up(heap, moved->heap_idx);
     }
 
-    struct timespec now;
+    /* A burst of timers (a load test arming one per request, say) can leave a
+     * big array behind; hand the memory back once it is mostly empty. */
+    if (heap->capacity > FIL_SCHED_HEAP_MIN_SHRINK && heap->len < heap->capacity / 4)
+    {
+        size_t capacity = heap->capacity / 2;
+        FilSchedEvent **entries = realloc(heap->entries,
+                                          capacity * sizeof(*entries));
+
+        if (entries != NULL)
+        {
+            heap->entries = entries;
+            heap->capacity = capacity;
+        }
+    }
+}
+
+/**********************
+ * ready-batch selection
+ *********************/
+
+static inline FilSchedEvent *_get_ready_events(PyFilScheduler *sched, struct timespec **next_run_ret)
+{
+    FilSchedEventList *elist = &(sched->immediate);
+    FilSchedTimerHeap *heap = &(sched->timers);
+    FilSchedEvent *ready_head = NULL;
+    FilSchedEvent *ready_tail = NULL;
     FilSchedEvent *event;
+    struct timespec now;
     int have_now = 0;
 
-    /* 'Immediate' events carry ts == {0,0} and are by definition always
-     * ready, so only read the clock lazily -- the first time we hit an
-     * event with a real timestamp.  In switch-heavy workloads (where the
-     * queue is all immediate wakeups) this removes a clock_gettime() from
-     * every scheduler loop iteration. */
-    for(event=cur_events;event;event=event->next)
+    /* Expired timers lead the batch.  They are already past a deadline they
+     * asked for, whereas everything on the immediate FIFO was queued during
+     * this pass and is by definition not late; both sets still run in this
+     * same pass, so putting timers first costs the immediates nothing and
+     * keeps sleep()/timeout wakeups from queueing behind a switch storm. */
+    while (heap->len > 0)
     {
-        if (event->ts.tv_sec == 0 && event->ts.tv_nsec == 0)
-            continue;
+        event = heap->entries[0];
         if (!have_now)
         {
+            /* The clock is read lazily: a queue that is all immediate
+             * wakeups (the switch-heavy case) never reads it at all. */
             fil_timespec_now(&now);
             have_now = 1;
         }
         if (FIL_TIMESPEC_COMPARE(&(event->ts), &now, >))
             break;
+        _heap_remove_at(heap, 0);
+        _event_detached(event);
+        event->next = NULL;
+        if (ready_tail != NULL)
+            ready_tail->next = event;
+        else
+            ready_head = event;
+        ready_tail = event;
     }
-    if (event == cur_events)
+
+    /* Then everything queued for right now, in the order it was queued, so
+     * 'schedule a callback, then yield' idioms keep their relative order. */
+    if ((event = elist->head) != NULL)
     {
-        /* No events ready */
-        *next_run_ret = &(event->ts);
+        FilSchedEvent *cur;
+
+        elist->head = NULL;
+        elist->tail = NULL;
+        for (cur = event; cur != NULL; cur = cur->next)
+        {
+            _event_detached(cur);
+        }
+        if (ready_tail != NULL)
+            ready_tail->next = event;
+        else
+            ready_head = event;
+    }
+
+    if (ready_head == NULL)
+    {
+        *next_run_ret = heap->len > 0 ? &(heap->entries[0]->ts) : NULL;
         return NULL;
     }
 
-    if (event == NULL)
-    {
-        /* All events ready */
-        elist->head = NULL;
-        elist->tail = NULL;
-        *next_run_ret = NULL;
-    }
-    else
-    {
-        /* 'event' is not ready yet.  Cut the list short here */
-        elist->head = event;
-        event->prev->next = NULL;
-        event->prev = NULL;
-        *next_run_ret = &event->ts;
-    }
-
-    return cur_events;
+    *next_run_ret = NULL;
+    return ready_head;
 }
 
 static void _scheduler_key_delete(void *sched)
@@ -110,10 +276,10 @@ static void _scheduler_key_delete(void *sched)
     }
 }
 
-static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg)
+static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg, FilSchedEvent **owner_ref)
 {
-    FilSchedEventList *elist = &sched->events;
     FilSchedEvent *event;
+    int wake_scheduler;
 
     pthread_mutex_lock(&(sched->sched_lock));
 
@@ -139,68 +305,112 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     event->flags = flags;
     event->cb = cb;
     event->cb_arg = cb_arg;
+    event->owner_ref = owner_ref;
+    if (owner_ref != NULL)
+    {
+        *owner_ref = event;
+    }
+
     if (ts == NULL)
     {
+        /* Ready now: straight onto the FIFO, no clock, no ordering work. */
         event->ts.tv_sec = 0;
         event->ts.tv_nsec = 0;
+        /* Only the empty -> non-empty transition can find the scheduler
+         * asleep: if the FIFO already had an entry, the scheduler either is
+         * running or is about to be woken for that one. */
+        wake_scheduler = (sched->immediate.head == NULL);
+        _imm_push(&(sched->immediate), event);
     }
     else
     {
         event->ts = *ts;
+        if (_heap_push(&(sched->timers), event) < 0)
+        {
+            if (owner_ref != NULL)
+            {
+                *owner_ref = NULL;
+            }
+            /* Hand the node back rather than leaking it. */
+            if (sched->event_freelist_len < FIL_SCHED_EVENT_FREELIST_MAX)
+            {
+                event->next = sched->event_freelist;
+                sched->event_freelist = event;
+                sched->event_freelist_len++;
+                event = NULL;
+            }
+            pthread_mutex_unlock(&(sched->sched_lock));
+            free(event);
+            PyErr_NoMemory();
+            return -1;
+        }
+        /* Only a new earliest deadline shortens the scheduler's sleep. */
+        wake_scheduler = (event->heap_idx == 0);
     }
 
-    /* FIXME: Convert to a priority queue */
-    if (elist->head == NULL ||
-        FIL_EVENT_COMPARE(event, elist->head, <))
-    {
-        event->prev = NULL;
-        if ((event->next = elist->head) == NULL)
-            elist->tail = event;
-        else
-            event->next->prev = event;
-        elist->head = event;
-
-        /* Signal AFTER dropping sched_lock: waking the scheduler while we
-         * still hold the mutex just makes it collide with the held lock and
-         * costs an extra futex round trip. The predicate (a ready head
-         * event) was published under the lock, so this is safe; 'sched'
-         * remains valid for the duration of the call by the caller's
-         * contract (it holds a reference directly or transitively). */
-        pthread_mutex_unlock(&(sched->sched_lock));
-        pthread_cond_signal(&(sched->sched_cond));
-        return 0;
-    }
-
-    /* See if we can just add to the end of the list */
-    if (FIL_EVENT_COMPARE(event, elist->tail, >=))
-    {
-        event->next = NULL;
-        event->prev = elist->tail;
-        event->prev->next = event;
-        elist->tail = event;
-
-        /* No need to signal as something is before this event */
-        pthread_mutex_unlock(&(sched->sched_lock));
-        return 0;
-    }
-
-    FilSchedEvent *cur_event = elist->head;
-
-    /* Find event we should insert AFTER */
-    while (cur_event->next && FIL_EVENT_COMPARE(event, cur_event->next, >=))
-    {
-        cur_event = cur_event->next;
-    }
-
-    event->next = cur_event->next;
-    event->prev = cur_event;
-    event->next->prev = event;
-    cur_event->next = event;
-
-    /* No need to signal as something is before this event */
+    /* Signal AFTER dropping sched_lock: waking the scheduler while we still
+     * hold the mutex just makes it collide with the held lock and costs an
+     * extra futex round trip. The predicate was published under the lock, so
+     * this is safe; 'sched' remains valid for the duration of the call by the
+     * caller's contract (it holds a reference directly or transitively). */
     pthread_mutex_unlock(&(sched->sched_lock));
+    if (wake_scheduler)
+    {
+        pthread_cond_signal(&(sched->sched_cond));
+    }
 
     return 0;
+}
+
+/*
+ * Remove a still-queued event, identified by the handle its owner was given
+ * by fil_scheduler_add_event_ref().
+ *
+ * Returns 1 if the event was ours to remove (the caller now owns whatever the
+ * callback would have released -- a reference, typically), or 0 if the
+ * scheduler had already taken it out of the queue to run it.  Reading the
+ * handle under sched_lock is what makes that race decidable.
+ */
+int fil_scheduler_del_event(PyFilScheduler *sched, FilSchedEvent **owner_ref)
+{
+    FilSchedEvent *event;
+
+    pthread_mutex_lock(&(sched->sched_lock));
+
+    if ((event = *owner_ref) == NULL)
+    {
+        pthread_mutex_unlock(&(sched->sched_lock));
+        return 0;
+    }
+
+    if (event->heap_idx == FIL_SCHED_HEAP_NOT_QUEUED)
+    {
+        _imm_unlink(&(sched->immediate), event);
+    }
+    else
+    {
+        _heap_remove_at(&(sched->timers), event->heap_idx);
+    }
+
+    *owner_ref = NULL;
+    event->owner_ref = NULL;
+
+    /* Removing an event never makes another one ready sooner, so there is
+     * nothing to signal; the scheduler may wake once at the old deadline,
+     * find nothing ready and go back to sleep. */
+    if (sched->event_freelist_len < FIL_SCHED_EVENT_FREELIST_MAX)
+    {
+        event->next = sched->event_freelist;
+        sched->event_freelist = event;
+        sched->event_freelist_len++;
+        event = NULL;
+    }
+
+    pthread_mutex_unlock(&(sched->sched_lock));
+
+    free(event);
+
+    return 1;
 }
 
 /***********************************************
@@ -269,7 +479,10 @@ static PyObject *_sched_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     pthread_cond_init(&(self->sched_cond), NULL);
     self->greenlet = NULL;
     self->thread_state = NULL;
-    self->events.head = self->events.tail = NULL;
+    self->immediate.head = self->immediate.tail = NULL;
+    self->timers.entries = NULL;
+    self->timers.len = 0;
+    self->timers.capacity = 0;
     self->event_freelist = NULL;
     self->event_freelist_len = 0;
     self->running = 0;
@@ -347,6 +560,13 @@ static void _sched_dealloc(PyFilScheduler *self)
         free(event);
     }
     self->event_freelist_len = 0;
+    /* Any events still queued here would be a bug (each holds a reference to
+     * something that would have kept this scheduler alive); the heap's array
+     * is ours either way. */
+    free(self->timers.entries);
+    self->timers.entries = NULL;
+    self->timers.len = 0;
+    self->timers.capacity = 0;
     pthread_mutex_destroy(&(self->sched_lock));
     pthread_cond_destroy(&(self->sched_cond));
     Py_CLEAR(self->system_exceptions);
@@ -511,10 +731,9 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
 
     pthread_mutex_lock(&(self->sched_lock));
     self->running = 1;
-    while (!self->aborting || self->events.head)
+    while (!self->aborting || self->immediate.head != NULL || self->timers.len)
     {
-        ready_events = _get_ready_events(&(self->events),
-                                         &wait_time);
+        ready_events = _get_ready_events(self, &wait_time);
         if (ready_events == NULL)
         {
             err = fil_pthread_cond_wait_min(&(self->sched_cond),
@@ -675,7 +894,31 @@ static PyObject *_sched_greenlet(PyFilScheduler *self, PyObject *args)
     return (PyObject *)self->greenlet;
 }
 
+PyDoc_STRVAR(sched_queue_depth_doc,
+"queue_depth() -> (immediate_count, timer_count)\n\
+\n\
+How many events are queued right now: ready-to-run ones, and ones waiting\n\
+for a deadline.  Diagnostic -- it is what tells you whether cancelled\n\
+timeouts are actually leaving the queue.");
+static PyObject *_sched_queue_depth(PyFilScheduler *self, PyObject *args)
+{
+    FilSchedEvent *event;
+    Py_ssize_t immediate = 0;
+    Py_ssize_t timers;
+
+    pthread_mutex_lock(&(self->sched_lock));
+    for (event = self->immediate.head; event != NULL; event = event->next)
+    {
+        immediate++;
+    }
+    timers = (Py_ssize_t)self->timers.len;
+    pthread_mutex_unlock(&(self->sched_lock));
+
+    return Py_BuildValue("(nn)", immediate, timers);
+}
+
 static PyMethodDef _sched_methods[] = {
+    {"queue_depth", (PyCFunction)_sched_queue_depth, METH_NOARGS, sched_queue_depth_doc},
     {"fil_switch", (PyCFunction)_sched_fil_switch, METH_O, sched_fil_switch_doc},
     {"main", (PyCFunction)_sched_main, METH_VARARGS, sched_main_doc},
     {"abort", (PyCFunction)_sched_abort, METH_VARARGS, sched_abort_doc},
@@ -765,7 +1008,21 @@ PyFilScheduler *fil_scheduler_get(int create)
 int fil_scheduler_add_event(PyFilScheduler *sched, struct timespec *ts,
                        uint32_t flags, fil_event_cb_t cb, void *cb_arg)
 {
-   return _scheduler_add_event(sched, ts, flags, cb, cb_arg);
+   return _scheduler_add_event(sched, ts, flags, cb, cb_arg, NULL);
+}
+
+/*
+ * Same, but hand the caller a handle on the queued event: *owner_ref is set to
+ * the node while it is queued and NULLed (under sched_lock) as soon as the
+ * event leaves the queue.  Pass that same address to fil_scheduler_del_event()
+ * to cancel.  The handle must outlive the event -- it lives in the owning
+ * object, which the event holds a reference to.
+ */
+int fil_scheduler_add_event_ref(PyFilScheduler *sched, struct timespec *ts,
+                       uint32_t flags, fil_event_cb_t cb, void *cb_arg,
+                       FilSchedEvent **owner_ref)
+{
+   return _scheduler_add_event(sched, ts, flags, cb, cb_arg, owner_ref);
 }
 
 int fil_scheduler_switch(PyFilScheduler *sched)
@@ -849,6 +1106,8 @@ int fil_scheduler_init(PyObject *module, PyFilCore_CAPIObject *capi)
 
     capi->fil_scheduler_get = fil_scheduler_get;
     capi->fil_scheduler_add_event = fil_scheduler_add_event;
+    capi->fil_scheduler_add_event_ref = fil_scheduler_add_event_ref;
+    capi->fil_scheduler_del_event = fil_scheduler_del_event;
     capi->fil_scheduler_switch = fil_scheduler_switch;
     capi->fil_scheduler_gl_switch = fil_scheduler_gl_switch;
     capi->fil_scheduler_greenlet = fil_scheduler_greenlet;

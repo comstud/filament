@@ -57,6 +57,13 @@ typedef struct _pyfilcore_capi
     int (*fil_scheduler_switch)(PyFilScheduler *sched);
     int (*fil_scheduler_gl_switch)(PyFilScheduler *sched, struct timespec *ts, PyGreenlet *greenlet);
     PyGreenlet *(*fil_scheduler_greenlet)(PyFilScheduler *sched);
+    /* Append new entries HERE, at the end.  setuptools does not track header
+     * dependencies, so an incremental build can leave a sibling extension
+     * compiled against an older copy of this struct; keeping existing slots
+     * at fixed offsets turns that into a missing feature rather than a call
+     * through a shifted pointer. */
+    int (*fil_scheduler_add_event_ref)(PyFilScheduler *sched, struct timespec *ts, uint32_t flags, fil_event_cb_t cb, void *cb_arg, FilSchedEvent **owner_ref);
+    int (*fil_scheduler_del_event)(PyFilScheduler *sched, FilSchedEvent **owner_ref);
 } PyFilCore_CAPIObject;
 
 #ifdef __FIL_BUILDING_CORE__
@@ -100,6 +107,8 @@ static inline int PyFilCore_Import(void)
     PyFil_TimeoutExc = _PY_FIL_CORE_API->timeout_exc;
     fil_scheduler_get = _PY_FIL_CORE_API->fil_scheduler_get;
     fil_scheduler_add_event = _PY_FIL_CORE_API->fil_scheduler_add_event;
+    fil_scheduler_add_event_ref = _PY_FIL_CORE_API->fil_scheduler_add_event_ref;
+    fil_scheduler_del_event = _PY_FIL_CORE_API->fil_scheduler_del_event;
     fil_scheduler_switch = _PY_FIL_CORE_API->fil_scheduler_switch;
     fil_scheduler_gl_switch = _PY_FIL_CORE_API->fil_scheduler_gl_switch;
     fil_scheduler_greenlet = _PY_FIL_CORE_API->fil_scheduler_greenlet;

@@ -1,5 +1,73 @@
 # Release notes
 
+## Unreleased
+
+Most of this came out of swapping `gevent_compat` in for gevent under a
+large gevent-native application -- running both its test suite and its load
+generator against the shim.
+
+**gevent compatibility**
+
+- `patch_all()` no longer breaks `queue.LifoQueue` / `queue.PriorityQueue`:
+  the green `queue` module only carried `Queue` and `SimpleQueue`, so patched
+  code that used the others (urllib3's connection pool, for one) died with an
+  `AttributeError` on import.
+- `filament.select` gained a cooperative `poll()` object, which `urllib3`
+  reaches for on every reused connection -- so `requests` over a pooled
+  connection failed outright. `select()` itself no longer waits out the full
+  timeout when it has more than one descriptor and one of them is ready, and
+  `timeout=0` now means "poll" instead of "expire immediately".
+- `gevent.hub`'s loop grew real `io()` watchers, which is what `zmq.green`
+  builds its whole gevent integration on; without them `import zmq.green`
+  fell through to a gevent<1.0 path and raised.
+- `gevent.pywsgi` now speaks HTTP/1.1 keep-alive, with gevent's framing rules
+  (the app's `Content-Length` is honoured, an HTTP/1.1 response without one is
+  chunked, anything else is close-delimited), decodes chunked request bodies,
+  drains a body the app did not read, and exposes the `handle()` /
+  `log_request()` / `format_request()` hooks that handler subclasses override.
+  `StreamServer` gained `start_accepting()` / `stop_accepting()`.
+- New API surface that real projects use and we did not have:
+  `gevent.signal_handler()`, `Timeout.close()`, `gevent.greenlet` and
+  `gevent.timeout` as importable modules, `monkey.MonkeyPatchWarning`, and
+  `Greenlet.args` / `.kwargs` / `.exc_info` / `.name` / `.minimal_ident`.
+- `patch_dns()` installs the `filament.socket` resolver functions rather than
+  the raw C ones, so a patched `getaddrinfo()` returns `AddressFamily` /
+  `SocketKind` enums like the stdlib instead of bare ints. Code does read
+  those back -- IPv6 support is commonly detected by looking for
+  `Family.AF_INET6` in the repr.
+
+**Bug fixes**
+
+- Fixed `SystemError: <method 'recv' of '_filament.socket.Socket' objects>
+  returned a result with an exception set`, raised whenever a greenthread
+  parked in `recv`/`send` was killed (or timed out) in the same wakeup that
+  made the descriptor ready: the byte count came back with the exception
+  still pending. The exception now wins and the bytes are dropped, as they
+  would be if the throw had landed a moment earlier. This fired on every
+  shutdown of a load test, taking the run's results with it.
+
+**Scheduler**
+
+- The scheduler's event queue is no longer a single sorted linked list.
+  "Wake up now" events -- one per greenthread switch, the hottest path there
+  is -- go on a FIFO that is O(1) to push and pop and keeps the relative order
+  of `sleep(0)` yields. Timed events go in a binary min-heap keyed on the
+  deadline, so arming a timeout is O(log n) instead of a linear walk. With
+  1000 timers already armed, arming another went from 9.4us to 0.5us; with
+  50000, from 19.0us to 0.5us.
+- `Timeout.cancel()` (and `_filament.timer.Timer.cancel()`) now removes the
+  event from the scheduler instead of just flagging it. A cancelled timeout
+  used to occupy its slot until the deadline it was never going to reach, so
+  code that arms a timeout per operation -- any HTTP client does -- grew the
+  queue in proportion to *request rate x timeout*. 20000 armed-and-cancelled
+  30-second timeouts retained 9.4 MB before and 0 now, and the cost of the
+  next arm/cancel stopped scaling with the dead ones (23.6us -> 0.4us).
+- Each scheduler pass now runs expired timers before the ready-now queue.
+  Both sets still run in the same pass, so this costs the immediate wakeups
+  nothing; it just stops timer callbacks from queueing behind a switch storm.
+- New `Scheduler.queue_depth()` returns `(immediate_count, timer_count)` for
+  diagnosing exactly this kind of thing.
+
 ## 0.9.2 (2026-07-26)
 
 **Bug fixes**

@@ -179,3 +179,86 @@ def test_timeout_repr_and_str():
     assert "3" in str(t)
     assert "Timeout" in repr(t)
     assert str(Timeout(None)) == ""
+
+
+def _queue_depth():
+    """(ready-now events, events waiting on a deadline) in this scheduler."""
+    return filament.Scheduler().queue_depth()
+
+
+def test_cancel_drains_the_timer_queue():
+    # cancel() has to take the event back out of the scheduler.  Leaving it
+    # queued until its original deadline (which is what filament used to do)
+    # costs a node plus a reference for the whole timeout -- and code that
+    # arms a timeout per operation, like every HTTP client, then grows the
+    # timer queue without bound.
+    before_immediate, before_timers = _queue_depth()
+
+    timeouts = [Timeout(3600) for _ in range(64)]
+    for timeout in timeouts:
+        timeout.start()
+    assert _queue_depth()[1] == before_timers + 64
+
+    for timeout in timeouts[:32]:
+        timeout.cancel()
+    assert _queue_depth()[1] == before_timers + 32
+
+    for timeout in timeouts[32:]:
+        timeout.cancel()
+    assert _queue_depth() == (before_immediate, before_timers)
+
+    # Cancelling twice, or after the fact, stays harmless.
+    timeouts[0].cancel()
+    assert _queue_depth() == (before_immediate, before_timers)
+
+
+def test_cancel_releases_the_callback():
+    # The queued event holds a reference to the timer's callback; cancelling
+    # has to drop it rather than wait for the deadline.
+    import gc
+    import weakref
+
+    class Callback(object):
+        def __call__(self):
+            pass
+
+    callback = Callback()
+    ref = weakref.ref(callback)
+    timer = filament.Timer(3600, callback)
+    del callback
+
+    gc.collect()
+    assert ref() is not None                 # the queued event still holds it
+    timer.cancel()
+    gc.collect()
+    assert ref() is None
+
+
+def test_timers_fire_in_deadline_order():
+    # The timer queue is a heap; deadlines must come out earliest-first no
+    # matter what order they went in.
+    fired = []
+    delays = [0.05, 0.01, 0.04, 0.02, 0.03, 0.015, 0.045]
+    timers = [filament.Timer(delay, fired.append, delay) for delay in delays]
+    filament.sleep(0.15)
+    assert fired == sorted(delays), fired
+    for timer in timers:
+        timer.cancel()
+
+
+def test_expired_timer_does_not_starve_behind_yields():
+    # Ready-now wakeups and expired timers both run in the same scheduler
+    # pass, so a greenthread spinning on sleep(0) cannot hold a timer off.
+    fired = []
+    spins = []
+
+    def spinner():
+        while not fired:
+            spins.append(1)
+            filament.sleep(0)
+
+    timer = filament.Timer(0.02, fired.append, 'fired')
+    filament.spawn(spinner).wait()
+    assert fired == ['fired']
+    assert len(spins) > 1                    # it really was spinning
+    timer.cancel()
