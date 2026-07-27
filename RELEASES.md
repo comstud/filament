@@ -38,6 +38,20 @@ generator against the shim.
 
 **Bug fixes**
 
+- Fixed a leak of one libevent `struct event` (~144 bytes) per blocking io
+  operation. `_iothread_process()` created an event for every call that had to
+  park in the io thread and never freed it -- the io callback only
+  `event_del()`s, which unregisters but does not release. The classic path it
+  sits on is taken by `connect()`, by `recv`/`send` on a socket with a timeout
+  set, by `os.read`/`os.write` and by `select`/`poll`, so an HTTP client (which
+  sets a timeout) leaked on every request: a sustained load test grew
+  ~2 MB/s where gevent was flat, and now holds steady slightly below it. The same
+  function also skipped `fil_waiter_decref()` when the parked greenthread was
+  thrown into, leaking a 136-byte waiter per cancelled wait.
+- A timed wait that is satisfied before its deadline now cancels its timeout
+  event instead of leaving it queued -- `Queue.get(timeout=60)` and friends
+  used to pin an event, and a reference to the waiter, for the full 60
+  seconds after returning in a millisecond.
 - Fixed `SystemError: <method 'recv' of '_filament.socket.Socket' objects>
   returned a result with an exception set`, raised whenever a greenthread
   parked in `recv`/`send` was killed (or timed out) in the same wakeup that

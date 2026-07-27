@@ -262,3 +262,37 @@ def test_expired_timer_does_not_starve_behind_yields():
     assert fired == ['fired']
     assert len(spins) > 1                    # it really was spinning
     timer.cancel()
+
+
+def test_timed_wait_drains_when_satisfied_early():
+    # A wait that is signalled before its deadline has to take its timeout
+    # event back out of the scheduler.  Leaving it queued pins the waiter --
+    # and a slot in the timer heap -- for the whole timeout, so a client that
+    # passes a 60s timeout to every operation grows the queue in proportion to
+    # its request rate.
+    before_immediate, before_timers = _queue_depth()
+
+    queue = filament.Queue()
+
+    def feeder():
+        for i in range(32):
+            filament.sleep(0)
+            queue.put(i)
+
+    feeding = filament.spawn(feeder)
+    for _ in range(32):
+        queue.get(timeout=3600)
+    feeding.wait()
+    assert _queue_depth() == (before_immediate, before_timers)
+
+    for _ in range(32):
+        event = filament.Event()
+        filament.spawn(event.set)
+        assert event.wait(timeout=3600) is True
+    assert _queue_depth() == (before_immediate, before_timers)
+
+    # And a wait that really does time out still times out.
+    empty = filament.Queue()
+    with pytest.raises(Exception):
+        empty.get(timeout=0.01)
+    assert _queue_depth() == (before_immediate, before_timers)

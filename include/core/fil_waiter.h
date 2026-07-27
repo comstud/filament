@@ -36,6 +36,13 @@ struct _fil_waiter {
      * last touch of the waiter strictly before the free. If a code path ever
      * needs to change refcnt from another thread, this must become atomic. */
     unsigned int refcnt;
+    /* Handle on the scheduler event that would fire this waiter's timeout,
+     * while it is queued (see fil_scheduler_add_event_ref).  The scheduler
+     * NULLs it when the event leaves the queue, so a wait that is signaled
+     * before its deadline can take the event back out instead of leaving it
+     * to occupy the timer heap -- and hold a reference to this waiter -- for
+     * the rest of the timeout. */
+    FilSchedEvent *timeout_event;
     pthread_mutex_t waiter_lock;
     pthread_cond_t waiter_cond;
     FilWaiterList waiter_list;
@@ -77,6 +84,7 @@ static inline FilWaiter *fil_waiter_alloc(void)
         waiter->gl = NULL;
         waiter->flags = 0;
         waiter->refcnt = 1;
+        waiter->timeout_event = NULL;
         return waiter;
     }
 
@@ -88,6 +96,7 @@ static inline FilWaiter *fil_waiter_alloc(void)
         waiter->gl = NULL;
         waiter->flags = 0;
         waiter->refcnt = 1;
+        waiter->timeout_event = NULL;
         pthread_mutex_init(&(waiter->waiter_lock), NULL);
         pthread_cond_init(&(waiter->waiter_cond), NULL);
     }
@@ -257,11 +266,25 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
     if (ts != NULL)
     {
         waiter->refcnt++;
-        fil_scheduler_add_event(waiter->sched, ts, 0,
-                                (fil_event_cb_t)_fil_waiter_handle_timeout, waiter);
+        fil_scheduler_add_event_ref(waiter->sched, ts, 0,
+                                    (fil_event_cb_t)_fil_waiter_handle_timeout,
+                                    waiter, &(waiter->timeout_event));
     }
 
     fil_scheduler_switch(waiter->sched);
+
+    /* Signaled (or thrown into) before the deadline?  Take the timeout event
+     * back out of the scheduler.  Leaving it queued would hold this waiter --
+     * and its slot in the timer heap -- for the rest of the timeout, which for
+     * the 60s timeouts network clients like to use means a wait that finished
+     * in a millisecond keeps its memory for a minute.  del_event tells us
+     * whether we won the race against the scheduler running it; if we did, the
+     * reference the event held is ours to drop. */
+    if (waiter->timeout_event != NULL &&
+        fil_scheduler_del_event(waiter->sched, &(waiter->timeout_event)))
+    {
+        fil_waiter_decref(waiter);
+    }
 
     /* Synchronization barrier: a signaler's last touch of this waiter happens
      * under waiter_lock (see fil_waiter_signal), and we can only have resumed

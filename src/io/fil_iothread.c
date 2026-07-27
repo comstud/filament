@@ -675,6 +675,8 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
 
+        /* Never added, so the io thread has never seen it. */
+        event_free(ev);
         fil_waiter_decref(waiter);
 
         PyErr_Format(PyExc_RuntimeError, "Couldn't add event: %d", errno_save);
@@ -711,6 +713,12 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
         pthread_mutex_destroy(&(ecbi->ecbi_lock));
         pthread_cond_destroy(&(ecbi->ecbi_cond));
 
+        /* We waited for DONE above, so the io thread has made its last touch
+         * of both objects (see the synchronization invariant) and this side
+         * owns them -- including on the way out. */
+        event_free(ev);
+        fil_waiter_decref(waiter);
+
         if (err == 0)
         {
             /* should not happen */
@@ -723,6 +731,13 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
     pthread_mutex_unlock(&(ecbi->ecbi_lock));
     pthread_mutex_destroy(&(ecbi->ecbi_lock));
     pthread_cond_destroy(&(ecbi->ecbi_cond));
+    /* The event is ours to free: event_del() (all the callback ever does)
+     * unregisters without releasing, and DONE means the io thread is finished
+     * with it.  Every exit path from here must free it -- this classic path
+     * runs for connect(), for recv/send on a socket with a timeout set, for
+     * os.read/write and for select/poll, so one missed free is ~144 bytes per
+     * blocking io call. */
+    event_free(ev);
     fil_waiter_decref(waiter);
 
     if (ecbi->flags & IOTHR_ECBI_FLAGS_TIMEOUT && !err)
