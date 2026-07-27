@@ -38,6 +38,15 @@ generator against the shim.
 
 **Bug fixes**
 
+- Fixed a wait with no timeout reporting a timeout -- `Queue.get()` raising
+  `Empty`, a lock acquire failing, and so on. A `sleep()` cut short by
+  anything other than its own deadline (an expiring `Timeout`, a `kill()`)
+  left the wakeup it had queued for itself in the scheduler, and that wakeup
+  later fired into whatever the greenthread had moved on to; a wait resumed
+  that way saw no signal, no exception, and concluded it must have timed out.
+  Timed `sleep()` now parks on a waiter, so its wakeup is cancelled when
+  something else resumes it first, and a wait that is resumed without being
+  signalled goes back to waiting instead of fabricating a timeout.
 - Fixed a use-after-free that segfaulted the scheduler when a greenthread was
   killed (or timed out) while a wakeup was already queued for it. Waking a
   parked greenthread queues a scheduler event that switches into it, and that

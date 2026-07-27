@@ -296,3 +296,58 @@ def test_timed_wait_drains_when_satisfied_early():
     with pytest.raises(Exception):
         empty.get(timeout=0.01)
     assert _queue_depth() == (before_immediate, before_timers)
+
+
+def test_interrupted_sleep_leaves_no_stale_wakeup():
+    # A sleep that is cut short by a Timeout must take its own wakeup with it.
+    # Left queued, that wakeup fires into whatever the greenthread does next:
+    # landing in an unrelated *untimed* wait, it used to surface as
+    # "_queue.Empty: timed out" from a queue that had no timeout at all.
+    before_immediate, before_timers = _queue_depth()
+    queue = filament.Queue()
+    outcome = []
+
+    def body():
+        try:
+            with Timeout(0.005):
+                filament.sleep(0.02)          # interrupted, wakeup pending
+        except Timeout:
+            pass
+        try:
+            outcome.append(('got', queue.get()))   # no timeout on this wait
+        except BaseException as e:                 # noqa: B902 - want the type
+            outcome.append((type(e).__name__, str(e)))
+
+    greenthread = filament.spawn(body)
+    filament.sleep(0.05)                     # the stale wakeup would fire here
+    queue.put('value')
+    greenthread.wait()
+
+    assert outcome == [('got', 'value')], outcome
+    assert _queue_depth() == (before_immediate, before_timers)
+
+
+def test_untimed_wait_never_reports_a_timeout():
+    # Belt and braces for the above: whatever resumes a greenthread that was
+    # not signalled and was not thrown into, a wait with no deadline must go
+    # back to waiting rather than invent a timeout.
+    queue = filament.Queue()
+    outcome = []
+
+    def body():
+        for _ in range(5):
+            try:
+                with Timeout(0.002):
+                    filament.sleep(0.01)
+            except Timeout:
+                pass
+        try:
+            outcome.append(('got', queue.get()))
+        except BaseException as e:            # noqa: B902 - want the type
+            outcome.append((type(e).__name__, str(e)))
+
+    greenthread = filament.spawn(body)
+    filament.sleep(0.08)
+    queue.put('value')
+    greenthread.wait()
+    assert outcome == [('got', 'value')], outcome
