@@ -7,7 +7,6 @@ from filament import socket
 from _filament import socket as _socket
 from _filament import queue
 
-from tests._helpers import run_py
 
 _PY3 = sys.version_info[0] >= 3
 
@@ -124,39 +123,66 @@ class SocketTestCase(testtools.TestCase):
 
 def test_kill_beats_ready_data():
     # A greenthread parked in recv() can be woken by data arriving and thrown
-    # into (kill / an expiring Timeout) in the same turn.  The throw has to
-    # win: handing back the bytes with the GreenletExit still pending is what
-    # CPython reports as "SystemError: ... returned a result with an exception
-    # set", which any application that kills greenthreads holding sockets hits
-    # on every shutdown unless src/socket/fil_socket.c checks.
+    # into (kill / an expiring Timeout) in the same turn.  Two things have to
+    # hold when that happens:
     #
-    # Runs in a subprocess deliberately.  Killing a greenthread that already
-    # has a queued wakeup also trips a separate, still-open use-after-free in
-    # the scheduler; in-process that leaves the runtime damaged for every test
-    # that follows, and can segfault.  So we
-    # assert on what the child printed, not on how it exited.
-    res = run_py("""
-import filament
-from filament import socket
+    #  * the throw wins over the bytes.  Handing back the data with the
+    #    GreenletExit still pending is what CPython reports as "SystemError:
+    #    ... returned a result with an exception set" -- it used to fire on
+    #    every shutdown of a load test.
+    #  * the wakeup that lost the race must not linger.  It used to be queued
+    #    with a borrowed pointer to a greenlet that was already finishing, so
+    #    the scheduler segfaulted the next time it ran the queue (see the
+    #    wakeup contract in include/core/fil_waiter.h).  Hence the loop: one
+    #    round never crashed, the second one did.
+    for _ in range(20):
+        left, right = socket.socketpair()
+        outcome = []
 
-left, right = socket.socketpair()
-outcome = []
+        def parked():
+            try:
+                outcome.append(('data', left.recv(100)))
+            except BaseException as e:
+                outcome.append(('exc', type(e).__name__))
 
-def parked():
-    try:
-        outcome.append(("data", left.recv(100)))
-    except BaseException as e:
-        outcome.append(("exc", type(e).__name__))
+        greenthread = filament.spawn(parked)
+        filament.sleep(0.002)         # let it park inside recv
+        right.send(b'hello')          # readable: wakeup queued
+        filament.kill(greenthread)    # ... then throw, before it resumes
+        # Which of the two wins is a race; the broken third outcome is recv
+        # returning its bytes with the exception still set.
+        assert outcome in ([('exc', 'GreenletExit')], [('data', b'hello')]), outcome
+        left.close()
+        right.close()
 
-greenthread = filament.spawn(parked)
-filament.sleep(0.05)          # let it park inside recv
-right.send(b"hello")          # readable: wakeup queued
-filament.kill(greenthread)    # ... then throw, before it resumes
-print("OUTCOME:%s" % (outcome,))
-""", timeout=25)
-    assert not res.timed_out, repr(res)
-    assert 'SystemError' not in res.stdout + res.stderr, repr(res)
-    # Whichever of the two wins is a race; only the third outcome is a bug.
-    assert ("OUTCOME:[('exc', 'GreenletExit')]" in res.stdout or
-            "OUTCOME:[('data', b'hello')]" in res.stdout or
-            "OUTCOME:[('data', 'hello')]" in res.stdout), repr(res)   # py2
+    # Nothing stale left behind: the scheduler's queues are empty.
+    assert filament.Scheduler().queue_depth() == (0, 0)
+
+
+def test_stale_wakeup_does_not_hit_a_later_wait():
+    # The greenthread survives the throw and parks again somewhere else.  A
+    # wakeup left over from the first wait used to resume it in the middle of
+    # the second one, which surfaced as an untimed Queue.get() reporting a
+    # timeout it never had.
+    for _ in range(20):
+        left, right = socket.socketpair()
+        handoff = queue.Queue()
+        results = []
+
+        def parked():
+            try:
+                with filament.Timeout(0.002):
+                    left.recv(100)
+            except filament.Timeout:
+                pass
+            results.append(handoff.get())      # must not wake up early
+
+        greenthread = filament.spawn(parked)
+        filament.sleep(0.002)
+        right.send(b'x')                       # wakeup aimed at the FIRST wait
+        filament.sleep(0.002)
+        handoff.put('correct')
+        greenthread.wait()
+        assert results == ['correct'], results
+        left.close()
+        right.close()

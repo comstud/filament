@@ -38,6 +38,17 @@ generator against the shim.
 
 **Bug fixes**
 
+- Fixed a use-after-free that segfaulted the scheduler when a greenthread was
+  killed (or timed out) while a wakeup was already queued for it. Waking a
+  parked greenthread queues a scheduler event that switches into it, and that
+  event carried a *borrowed* pointer to the greenlet -- safe only while a
+  parked greenlet resumes exclusively via that event, which a throw does not
+  respect. The event now carries the waiter, together with a reference
+  reserved before parking (so the off-GIL io thread still never touches a
+  refcount), and a greenthread that resumes any other way cancels the queued
+  wakeup. The same staleness could also resume a greenthread in the middle of
+  a *later*, unrelated wait, which showed up as an untimed `Queue.get()`
+  raising `Empty`.
 - Fixed a leak of one libevent `struct event` (~144 bytes) per blocking io
   operation. `_iothread_process()` created an event for every call that had to
   park in the io thread and never freed it -- the io callback only
