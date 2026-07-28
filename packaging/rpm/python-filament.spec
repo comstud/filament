@@ -22,7 +22,7 @@
 %global srcname filament
 
 Name:           python-%{srcname}
-Version:        0.9.2
+Version:        0.9.3
 Release:        1%{?dist}
 Summary:        Microthreads for Python
 
@@ -80,6 +80,31 @@ Summary:        %{summary}
 %doc README.md RELEASES.md THIRD_PARTY_NOTICES.md AUTHORS
 
 %changelog
+* Tue Jul 28 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.3-1
+- gevent compat: install() now also owns the top-level greenlet name, so
+  greenlet.getcurrent() returns the running gevent Greenlet as it does under
+  real gevent; code branching on that identity no longer deadlocks.
+- gevent compat: links registered before join() now run before it returns,
+  matching gevent, so unhandled-exception logging through a link works.
+- gevent compat: cooperative select.poll(), hub loop io() watchers (all of
+  zmq.green), HTTP/1.1 keep-alive and chunked bodies in pywsgi,
+  signal_handler(), Timeout.close(), Greenlet introspection attributes, and
+  LifoQueue/PriorityQueue under patch_all().
+- Fix an untimed wait reporting a timeout, from a cut-short sleep leaving its
+  wakeup queued to fire into a later, unrelated wait.
+- Fix a use-after-free that segfaulted the scheduler when a greenthread was
+  killed while a wakeup was already queued for it.
+- Fix a libevent event leaked per blocking io operation (~144 bytes), which
+  grew an HTTP client's memory by ~2 MB/s under sustained load.
+- Fix three cases of C code returning a result with an exception still set
+  (recv/send, RLock at interpreter exit, and a primitive handed ownership and
+  thrown into in the same wakeup -- the last also stranded locks).
+- Fix an assertion in the scheduler's deallocator that aborted builds with
+  assertions enabled.
+- Scheduler: immediate-wakeup FIFO plus a timer min-heap, and Timeout cancel()
+  now removes the event. Arming a timeout with 50000 queued went 19.0us ->
+  0.5us; 20000 armed-and-cancelled timeouts retained 9.4MB -> 0.
+
 * Sun Jul 26 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.2-1
 - Fix unbounded greenthread leak in the gevent/eventlet compat shims and in
   the core (uncollectable reference cycle plus a leaked greenlet object).

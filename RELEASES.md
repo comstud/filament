@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.9.3 (2026-07-28)
 
 Most of this came out of swapping `gevent_compat` in for gevent under a
 large gevent-native application -- running both its test suite and its load
