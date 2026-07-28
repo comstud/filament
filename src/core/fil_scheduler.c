@@ -573,11 +573,16 @@ static void _sched_dealloc(PyFilScheduler *self)
 #if 1 /* why did I disable this? */
     _handle_greenlet_done(&(self->greenlet));
 #endif
-    /* a ref is held when in thread specific data. if we're
-     * being deallocated, that means we've been removed from it
-     * already
+    /* The TSD slot holds a reference, so being deallocated means this
+     * scheduler is no longer in *its own* thread's slot.
+     *
+     * It does NOT mean the running thread has no scheduler: the last
+     * reference to a scheduler is often dropped by the cycle collector, which
+     * runs wherever the allocation that triggered it happened -- routinely a
+     * different, scheduler-owning thread. Asserting _scheduler_get() == NULL
+     * aborted there, in any build with assertions enabled.
      */
-    assert(_scheduler_get() == NULL);
+    assert(_scheduler_get() != self);
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -821,13 +826,13 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     PyEval_RestoreThread(self->thread_state);
     self->thread_state = NULL;
 
-    /* Release the reference the scheduler holds on itself while it is stored
-     * in thread-specific data. After this Py_DECREF, 'self' may already be
-     * freed, so we must NOT read any of its fields (e.g. Py_REFCNT(self)) --
-     * doing so was a use-after-free. Clearing the TSD slot uses the local
-     * key, not 'self', so it remains safe. */
-    Py_DECREF(self);
+    /* Clear the slot BEFORE releasing the reference it held.  If this is the
+     * last reference, _sched_dealloc() runs inside the Py_DECREF, and it must
+     * not find this thread still pointing at the scheduler being freed.  Note
+     * that after the Py_DECREF 'self' may already be gone, so nothing may
+     * read its fields (reading Py_REFCNT(self) here was a use-after-free). */
     _scheduler_set(NULL);
+    Py_DECREF(self);
 
     Py_RETURN_NONE;
 }

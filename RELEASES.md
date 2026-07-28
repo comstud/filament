@@ -112,6 +112,15 @@ generator against the shim.
   -- to the next waiter, or back to itself -- before letting the exception
   out. The thread-pool paths were leaking or writing to freed memory on the
   same race.
+- Fixed an assertion in the scheduler's deallocator that aborted any build
+  with assertions enabled. It required the *running* thread to have no
+  scheduler, but the last reference to a scheduler is usually dropped by the
+  cycle collector, which runs on whatever thread happened to allocate --
+  routinely another one with a scheduler of its own. It now asserts what was
+  meant: that the scheduler is not still installed in its own thread's slot.
+  The scheduler's exit path also cleared that slot only after dropping the
+  reference it held, so a last-reference drop reached the deallocator with
+  the slot still pointing at it.
 
 **Scheduler**
 
