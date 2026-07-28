@@ -675,19 +675,43 @@ def app(environ, start_response):
 srv = WSGIServer(("127.0.0.1", 0), app, environ={"X_CUSTOM": "yes"})
 srv.start()
 c = fsocket.create_connection(("127.0.0.1", srv.address[1]))
+rfile = c.makefile("rb")
+
+def read_response():
+    """Read one HTTP response using its Content-Length (no close needed)."""
+    head = b""
+    with gevent.Timeout(5):
+        while b"\\r\\n\\r\\n" not in head:
+            chunk = rfile.read(1)
+            assert chunk, "connection closed mid-response"
+            head += chunk
+        length = 0
+        for line in head.split(b"\\r\\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        return head + rfile.read(length)
+
 c.sendall(b"POST /a%20b HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 5\\r\\n\\r\\nhello")
-resp = b""
-with gevent.Timeout(5):
-    while True:
-        chunk = c.recv(4096)
-        if not chunk:
-            break
-        resp += chunk
+resp = read_response()
+assert b"BODY=hello" in resp, resp
+assert b"Connection: close" not in resp, resp     # HTTP/1.1 keeps it alive
+assert seen["path"] == "/a b", seen               # percent-decoded
+assert seen["custom"] == "yes"                    # environ= merged
+
+# The same connection serves a second request (keep-alive), and a request
+# whose body the app reads leaves the stream positioned correctly.
+c.sendall(b"POST /again HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 3\\r\\n\\r\\nabc")
+resp2 = read_response()
+assert b"BODY=abc" in resp2, resp2
+assert seen["path"] == "/again"
+
+# Connection: close is honoured -- the server closes after responding.
+c.sendall(b"GET /bye HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n")
+resp3 = read_response()
+assert b"Connection: close" in resp3, resp3
+assert rfile.read(1) == b""
 c.close()
 srv.stop()
-assert b"BODY=hello" in resp, resp
-assert seen["path"] == "/a b", seen              # percent-decoded
-assert seen["custom"] == "yes"                   # environ= merged
 assert srv.log is not None and srv.error_log is not None
 
 # ssl kwargs are forwarded, not silently swallowed.

@@ -34,6 +34,13 @@ typedef struct _pyfil_timer {
     PyObject *func;
     PyObject *args;
     PyObject *kwargs;
+    /* The scheduler we armed on (strong ref, so it cannot go away under a
+     * pending timer), and our handle on the queued event.  The scheduler
+     * NULLs 'event' the moment it takes the event out of the queue, so a
+     * non-NULL 'event' under sched_lock is exactly the condition for cancel()
+     * being able to unlink it. */
+    PyFilScheduler *sched;
+    FilSchedEvent *event;
 } PyFilTimer;
 
 typedef struct _pyfil_localtimer {
@@ -151,11 +158,16 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
 
     Py_INCREF(self);
 
-    err = fil_scheduler_add_event(sched, ts, 0,
-                                  (fil_event_cb_t)_timer_callback, self);
+    /* Keep the scheduler reference: cancel() needs it to unlink the event,
+     * and it must not be torn down while our event is still queued. */
+    self->sched = sched;
+
+    err = fil_scheduler_add_event_ref(sched, ts, 0,
+                                      (fil_event_cb_t)_timer_callback, self,
+                                      &self->event);
     if (err)
     {
-        Py_DECREF(sched);
+        Py_CLEAR(self->sched);
         Py_CLEAR(self->func);
         Py_CLEAR(self->args);
         Py_CLEAR(self->kwargs);
@@ -163,13 +175,14 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
         return -1;
     }
 
-    Py_DECREF(sched);
-
     return 0;
 }
 
 static void _timer_dealloc(PyFilTimer *self)
 {
+    /* A queued event holds a reference to us, so by the time we get here the
+     * event has either fired or been cancelled -- self->event is NULL. */
+    Py_CLEAR(self->sched);
     Py_CLEAR(self->func);
     Py_CLEAR(self->args);
     Py_CLEAR(self->kwargs);
@@ -182,7 +195,28 @@ static void _timer_dealloc(PyFilTimer *self)
 PyDoc_STRVAR(_timer_cancel_doc, "Cancel the timer.");
 static PyObject *_timer_cancel(PyFilTimer *self, PyObject *args)
 {
+    /* The flag alone still matters: the event may already be out of the queue
+     * and on its way to running, in which case unlinking is impossible and
+     * this is what stops the callback. */
     self->flags |= FIL_TIMER_FLAGS_CANCELLED;
+
+    /* Drop the event out of the scheduler rather than leaving a dead entry
+     * behind until its deadline.  A cancelled 60s timeout that lingers costs
+     * a node and a reference for the full minute -- with a timeout armed per
+     * request (which is what any HTTP client does) that is unbounded growth
+     * of both memory and the timer heap. */
+    if (self->event != NULL && self->sched != NULL &&
+        fil_scheduler_del_event(self->sched, &self->event))
+    {
+        /* We took the event, so we own what its callback would have
+         * released. */
+        Py_CLEAR(self->func);
+        Py_CLEAR(self->args);
+        Py_CLEAR(self->kwargs);
+        Py_CLEAR(self->sched);
+        Py_DECREF(self);
+    }
+
     Py_RETURN_NONE;
 }
 

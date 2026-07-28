@@ -410,8 +410,10 @@ static PyObject *_fil_sleep(PyObject *_self, PyObject *timeout)
 {
     PyGreenlet *current_gl;
     PyFilScheduler *fil_scheduler;
+    FilWaiter *waiter;
     struct timespec tsbuf;
     struct timespec *ts;
+    int err;
 
     /* Fast path for the extremely common cooperative-yield idiom sleep(0):
      * skip the number->double->timespec conversion AND the clock_gettime.
@@ -501,29 +503,46 @@ static PyObject *_fil_sleep(PyObject *_self, PyObject *timeout)
         }
     }
 
-    current_gl = PyGreenlet_GetCurrent();
-    if (current_gl == NULL)
+    /*
+     * Park on a waiter rather than queueing a bare switch back to ourselves.
+     * Nobody will ever signal this waiter, so the wait ends when the deadline
+     * arrives -- but going through the waiter means the wakeup is CANCELLED if
+     * something else resumes us first (an expiring gevent Timeout, a kill(),
+     * any throw).  A bare self-switch would stay queued and later fire into
+     * whatever this greenthread went on to do; landing in an unrelated untimed
+     * wait, that surfaced as "Empty: timed out" from a queue that had no
+     * timeout at all.
+     *
+     * It also keeps the scheduler's handle on the heap.  On the
+     * classic-greenlet builds (2.7, 3.8) a parked greenlet's C stack is copied
+     * away and restored on resume, so anything the scheduler writes to an
+     * address inside that stack is undone -- a cancellation handle held in a
+     * local variable silently stops working there.
+     */
+    waiter = fil_waiter_alloc();
+    if (waiter == NULL)
     {
         Py_DECREF(fil_scheduler);
         return NULL;
     }
 
-    if (fil_scheduler_gl_switch(fil_scheduler, ts, current_gl) < 0)
-    {
-        Py_DECREF(current_gl);
-        Py_DECREF(fil_scheduler);
-        return NULL;
-    }
-    Py_DECREF(current_gl);
-    fil_scheduler_switch(fil_scheduler);
-
-    if (PyErr_Occurred())
-    {
-        Py_DECREF(fil_scheduler);
-        return NULL;
-    }
-
+    err = fil_waiter_wait(waiter, ts, NULL);
+    fil_waiter_decref(waiter);
     Py_DECREF(fil_scheduler);
+
+    if (err == -ETIMEDOUT)
+    {
+        /* The deadline arriving is the whole point of a sleep, not an error;
+         * drop the timeout exception the waiter raised for it. */
+        PyErr_Clear();
+        Py_RETURN_NONE;
+    }
+
+    if (err || PyErr_Occurred())
+    {
+        return NULL;
+    }
+
     Py_RETURN_NONE;
 }
 

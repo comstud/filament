@@ -21,6 +21,11 @@ import filament.socket as fsocket
 
 
 def http_request(addr, raw):
+    # These tests read the response until EOF, so ask the server to close:
+    # an HTTP/1.1 request without it is served keep-alive (and, with no
+    # Content-Length from the app, chunked) exactly as gevent would.
+    if b"Connection:" not in raw:
+        raw = raw.replace(b"\\r\\n\\r\\n", b"\\r\\nConnection: close\\r\\n\\r\\n", 1)
     c = fsocket.create_connection(addr)
     c.sendall(raw)
     chunks = []

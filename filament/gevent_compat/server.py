@@ -125,7 +125,26 @@ class StreamServer(object):
             return
         self.started = True
         self._stopped = False
-        self._accept_greenlet = filament.spawn(self._accept_loop)
+        self.start_accepting()
+
+    def start_accepting(self):
+        """
+        (Re)start the accept loop, leaving the listening socket alone.
+
+        gevent parity: paired with :meth:`stop_accepting`, this lets a caller
+        stop taking new connections without tearing the server down.
+        """
+        if self._accept_greenlet is None and not self._stopped:
+            self._accept_greenlet = filament.spawn(self._accept_loop)
+
+    def stop_accepting(self):
+        """
+        Stop the accept loop but keep the listening socket open and let
+        in-flight handlers run to completion (gevent semantics).
+        """
+        accept_greenlet, self._accept_greenlet = self._accept_greenlet, None
+        if accept_greenlet is not None:
+            filament.kill(accept_greenlet)
 
     def _accept_loop(self):
         while not self._stopped:
@@ -165,9 +184,7 @@ class StreamServer(object):
         contract).
         """
         self._stopped = True
-        if self._accept_greenlet is not None:
-            filament.kill(self._accept_greenlet)
-            self._accept_greenlet = None
+        self.stop_accepting()
         try:
             self.socket.close()
         except Exception:

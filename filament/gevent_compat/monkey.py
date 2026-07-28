@@ -19,6 +19,20 @@ from __future__ import absolute_import
 
 from filament import patcher as _patcher
 
+
+class MonkeyPatchWarning(RuntimeWarning):
+    """
+    Parity with ``gevent.monkey.MonkeyPatchWarning``.
+
+    gevent raises this when patching happens too late (a module was already
+    imported unpatched) or is otherwise incomplete.  filament's patcher does
+    not currently warn, but the class has to exist: real-world code filters on
+    it by name -- a pytest config carrying
+    ``ignore::gevent.monkey.MonkeyPatchWarning`` fails to parse outright if
+    the attribute is missing.
+    """
+
+
 # Faithful re-exports of the patcher's introspection surface.
 is_module_patched = _patcher.is_module_patched
 is_object_patched = _patcher.is_object_patched
@@ -95,4 +109,5 @@ def patch_dns():
 __all__ = ["patch_all", "patch_socket", "patch_ssl", "patch_select",
            "patch_os", "patch_time", "patch_thread", "patch_subprocess",
            "patch_queue", "patch_dns", "is_module_patched",
-           "is_object_patched", "get_original", "saved"]
+           "is_object_patched", "get_original", "saved",
+           "MonkeyPatchWarning"]

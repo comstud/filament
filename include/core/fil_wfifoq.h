@@ -117,8 +117,18 @@ static inline PyObject *fil_wfifoq_put(FilWFifoQ *q, PyObject *item, struct time
 {
     while(fil_wfifoq_full(q))
     {
-        if (fil_waiterlist_wait(q->putters, ts, q->full_error))
+        int err = fil_waiterlist_wait(q->putters, ts, q->full_error);
+
+        if (err)
         {
+            if (err == FIL_WAITER_SIGNALED_UNWIND)
+            {
+                /* A get() made room and woke us, and we are unwinding out of
+                 * put() with an exception: hand the room to the next putter,
+                 * which would otherwise sleep through a queue that is no
+                 * longer full. */
+                fil_waiterlist_signal_first_keep_exc(q->putters);
+            }
             return NULL;
         }
     }
@@ -144,8 +154,17 @@ static inline PyObject *fil_wfifoq_get(FilWFifoQ *q, struct timespec *ts)
 {
     while(!q->queue.len)
     {
-        if (fil_waiterlist_wait(q->getters, ts, q->empty_error))
+        int err = fil_waiterlist_wait(q->getters, ts, q->empty_error);
+
+        if (err)
         {
+            if (err == FIL_WAITER_SIGNALED_UNWIND)
+            {
+                /* An item arrived for us and we are unwinding out of get()
+                 * with an exception: wake the next getter, which would
+                 * otherwise sleep through a queue that is not empty. */
+                fil_waiterlist_signal_first_keep_exc(q->getters);
+            }
             return NULL;
         }
     }

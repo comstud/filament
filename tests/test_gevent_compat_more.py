@@ -575,6 +575,10 @@ srv = WSGIServer(("127.0.0.1", 0), app, log=None, error_log=None)
 srv.start()
 
 def fetch(req):
+    # Read-until-EOF, so ask for the connection to be closed; keep-alive and
+    # chunked framing get their own coverage in tests/test_gevent_compat.py.
+    if b"Connection:" not in req:
+        req = req.replace(b"\\r\\n\\r\\n", b"\\r\\nConnection: close\\r\\n\\r\\n", 1)
     c = fsocket.create_connection(("127.0.0.1", srv.address[1]))
     c.sendall(req)
     resp = b""
@@ -618,6 +622,89 @@ resp = fetch(b"GET /done HTTP/1.1\\r\\nHost: x\\r\\n"
 assert b"204" in resp, resp
 assert calls["first"] == b"hel" and calls["rest"] == b"lo"
 assert calls["eof"] == b""
+srv.stop()
+print("OK")
+''')
+
+
+def test_gevent_pywsgi_keepalive_chunked_and_handler_hooks():
+    # Persistent connections, chunked framing when the app gives no length,
+    # chunked request bodies, and the handler hooks real projects subclass
+    # (handle() to count connections, log_request() to count requests).
+    _check('''
+from gevent.pywsgi import WSGIServer, WSGIHandler
+import filament.socket as fsocket
+
+counts = {"conns": 0, "reqs": 0}
+seen = {}
+
+class CountingHandler(WSGIHandler):
+    def handle(self):
+        counts["conns"] += 1
+        WSGIHandler.handle(self)
+
+    def log_request(self):
+        counts["reqs"] += 1
+        WSGIHandler.log_request(self)
+
+def app(environ, start_response):
+    seen["body"] = environ["wsgi.input"].read()
+    start_response("200 OK", [("Content-Type", "text/plain")])
+    return [b"chunk-a", b"chunk-b"]          # no Content-Length -> chunked
+
+srv = WSGIServer(("127.0.0.1", 0), app, log=None, handler_class=CountingHandler)
+srv.start()
+c = fsocket.create_connection(("127.0.0.1", srv.address[1]))
+rfile = c.makefile("rb")
+
+def read_response():
+    head = b""
+    with gevent.Timeout(5):
+        while b"\\r\\n\\r\\n" not in head:
+            b = rfile.read(1)
+            assert b, "connection closed mid-response"
+            head += b
+        if b"Transfer-Encoding: chunked" in head:
+            body = b""
+            while True:
+                size = int(rfile.readline().strip(), 16)
+                if size == 0:
+                    rfile.readline()
+                    break
+                body += rfile.read(size)
+                rfile.read(2)
+            return head, body
+        length = 0
+        for line in head.split(b"\\r\\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        return head, rfile.read(length)
+
+# Two requests down one socket: one connection, two log_request calls.
+c.sendall(b"GET /one HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+head, body = read_response()
+assert b"Transfer-Encoding: chunked" in head, head
+assert body == b"chunk-achunk-b", body
+
+# A chunked *request* body is decoded for the app.
+c.sendall(b"POST /two HTTP/1.1\\r\\nHost: x\\r\\nTransfer-Encoding: chunked\\r\\n"
+          b"\\r\\n3\\r\\nabc\\r\\n2\\r\\nde\\r\\n0\\r\\n\\r\\n")
+head, body = read_response()
+assert seen["body"] == b"abcde", seen
+assert body == b"chunk-achunk-b", body
+assert counts == {"conns": 1, "reqs": 2}, counts
+c.close()
+
+# stop_accepting() leaves the socket bound but takes no new connections;
+# start_accepting() resumes.
+srv.stop_accepting()
+assert srv._accept_greenlet is None
+srv.start_accepting()
+c2 = fsocket.create_connection(("127.0.0.1", srv.address[1]))
+c2.sendall(b"GET /three HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n")
+assert c2.recv(12).startswith(b"HTTP/1.1 200")
+c2.close()
+assert counts["conns"] == 2, counts
 srv.stop()
 print("OK")
 ''')
@@ -780,5 +867,433 @@ assert set(id(x) for x in done) == set([id(raw), id(wrapped)])
 g = gevent.spawn(lambda: 1)
 g.join()
 assert list(gevent.iwait([g])) == [g]
+print("OK")
+''')
+
+
+def test_gevent_link_fires_before_join_returns():
+    """
+    A link registered before join() must have run by the time join() returns.
+
+    gevent guarantees this structurally: its join() *is* a link, appended to
+    the same ordered notification list, so everything linked earlier is
+    notified first.  Wake the joiners from a separate Event before firing the
+    links and join() returns with them merely queued -- which is exactly what
+    a link is supposed to rule out.  Real projects route their whole
+    unhandled-exception logging through link_exception(), so nothing gets
+    logged at all when the ordering is wrong.
+    """
+    _check('''
+order = []
+
+def boom():
+    raise ValueError("Boom!?")
+
+g = gevent.spawn(boom)
+g.link_exception(lambda gt: order.append("link_exception"))
+g.join()
+order.append("join returned")
+
+assert order == ["link_exception", "join returned"], order
+
+# Same contract on the value side, and for a plain link().
+order2 = []
+g2 = gevent.spawn(lambda: 7)
+g2.link_value(lambda gt: order2.append(("value", gt.value)))
+g2.link(lambda gt: order2.append("link"))
+g2.join()
+order2.append("join returned")
+assert order2 == [("value", 7), "link", "join returned"], order2
+
+# AsyncResult carries the same guarantee: a link registered before get()
+# has run by the time get() returns.
+from gevent.event import AsyncResult
+
+order3 = []
+ar = AsyncResult()
+ar.link(lambda r: order3.append("link"))
+gevent.spawn(lambda: ar.set(3))
+assert ar.get() == 3
+order3.append("get returned")
+assert order3 == ["link", "get returned"], order3
+
+print("OK")
+''')
+
+
+def test_gevent_greenlet_is_what_raw_getcurrent_returns():
+    """
+    ``greenlet.getcurrent()`` must be the running gevent Greenlet.
+
+    Under real gevent this is structural -- ``gevent.Greenlet`` subclasses
+    ``greenlet.greenlet``, so the two are literally the same object -- and
+    code in the wild branches on the identity to ask "is the greenlet I am
+    about to stop *me*?", taking a self-kill-safe path only when it holds.
+    Answer that wrongly and the caller kills the greenlet it is running on, or
+    waits on a Group containing itself; either way it deadlocks.
+
+    filament switches on its own runtime, so the installed greenlet package
+    can never see our greenthreads.  ``install()`` therefore also owns the
+    top-level ``greenlet`` name; this pins the invariant that buys.
+    """
+    _check('''
+import greenlet
+from gevent.pool import Group
+
+seen = {}
+g = Group()
+gl = g.spawn(lambda: seen.__setitem__("cur", greenlet.getcurrent()))
+g.join()
+assert seen["cur"] is gl, (seen["cur"], gl)
+
+# gevent.getcurrent() and greenlet.getcurrent() agree, as they do in gevent.
+seen2 = {}
+g2 = gevent.spawn(lambda: seen2.__setitem__("cur", gevent.getcurrent()))
+g2.join()
+assert seen2["cur"] is g2, (seen2["cur"], g2)
+
+# The tag does not outlive the body -- no Greenlet <-> Filament cycle left.
+assert not hasattr(gl._filament, "_gevent_greenlet")
+
+# A bare greenthread has no wrapper, so the greenthread itself comes back.
+raw_seen = {}
+raw = gevent.spawn_raw(lambda: raw_seen.__setitem__("cur", greenlet.getcurrent()))
+gevent.sleep(0.05)
+assert raw_seen["cur"] is raw, (raw_seen["cur"], raw)
+
+# And the pattern real code relies on: a member killing itself out of its group.
+g3, log = Group(), []
+def suicide():
+    g3.killone(greenlet.getcurrent(), block=False)
+    log.append("scheduled")
+g3.spawn(suicide)
+g3.join(timeout=1)
+assert log == ["scheduled"], log
+
+# isinstance() against the runtime's class still works, and the module keeps
+# the surface libraries version-gate on.
+assert isinstance(raw, greenlet.greenlet)
+assert greenlet.GreenletExit is gevent.GreenletExit
+assert isinstance(greenlet.__version__, str)
+
+print("OK")
+''')
+
+
+def test_gevent_hub_loop_io_watcher():
+    """
+    ``hub.loop.io(fd, events)`` -- the fd-watcher API pyzmq's green
+    integration is built on. Without it `import zmq.green` falls through to a
+    gevent<1.0 path and raises, so the shape matters: create/start/stop,
+    read and write masks, ``pass_events``, and the ``cancel`` alias.
+    """
+    _check('''
+import filament.socket as fsocket
+
+hub = gevent.get_hub()
+loop = hub.loop
+a, b = fsocket.socketpair()
+
+# READ watcher: not active until started, fires once the peer writes.
+w = loop.io(a.fileno(), 1)
+assert w.active is False
+seen = []
+w.start(lambda: seen.append(a.recv(16)))
+assert w.active is True
+b.sendall(b"ping")
+for _ in range(50):
+    gevent.sleep(0.01)
+    if seen:
+        break
+assert seen == [b"ping"], seen
+
+# pass_events hands the mask to the callback, as gevent does.
+got = []
+w.start(lambda ev: got.append(ev) or a.recv(16), pass_events=True)
+b.sendall(b"x")
+for _ in range(50):
+    gevent.sleep(0.01)
+    if got:
+        break
+assert got == [1], got
+
+w.stop()
+assert w.active is False
+w.stop()                       # idempotent
+
+# WRITE watcher: a fresh socketpair end is immediately writable.
+w2 = loop.io(a.fileno(), 2)
+wrote = []
+w2.start(lambda: wrote.append(True))
+for _ in range(50):
+    gevent.sleep(0.01)
+    if wrote:
+        break
+assert wrote, "write watcher never fired"
+w2.close()                     # close() == stop()
+assert w2.active is False
+
+# gevent<1.0 spelling that some libraries still call.
+w3 = loop.io(a.fileno(), 1)
+w3.start(lambda: None)
+w3.cancel()
+assert w3.active is False
+
+# run_callback is fire-and-forget on the next turn.
+ran = []
+loop.run_callback(lambda: ran.append(1))
+gevent.sleep(0.01)
+assert ran == [1]
+
+a.close(); b.close()
+print("OK")
+''')
+
+
+def test_gevent_signal_handler_delivers_and_cancels():
+    """
+    `gevent.signal_handler()` runs the handler in a greenthread. Applications
+    install their SIGTERM handler this way; a missing one takes the process
+    down.
+    """
+    _check('''
+import os, signal
+
+# Install a baseline handler first: cancel() restores whatever was there
+# before, and the default SIGUSR1 action would kill this process.
+baseline = []
+signal.signal(signal.SIGUSR1, lambda *a: baseline.append(a))
+
+fired = []
+h = gevent.signal_handler(signal.SIGUSR1, lambda *a: fired.append(a), "tag")
+assert h.ref is True
+assert h.signalnum == signal.SIGUSR1
+
+os.kill(os.getpid(), signal.SIGUSR1)
+for _ in range(50):
+    gevent.sleep(0.01)
+    if fired:
+        break
+assert fired == [("tag",)], fired
+
+# cancel() puts the previous handler back, and is idempotent.
+h.cancel()
+h.cancel()
+fired[:] = []
+os.kill(os.getpid(), signal.SIGUSR1)
+gevent.sleep(0.05)
+assert fired == [], fired
+assert baseline, "the previous handler was not restored"
+print("OK")
+''')
+
+
+def test_gevent_greenlet_introspection_attrs():
+    """
+    `args` / `kwargs` / `exc_info` / `name` / `minimal_ident` -- the
+    attributes real projects reach through to identify what a greenlet is
+    running for, and that logging prints.
+    """
+    _check('''
+g = gevent.spawn(lambda a, b=None: (a, b), 1, b=2)
+assert g.args == (1,), g.args
+assert g.kwargs == {"b": 2}, g.kwargs
+assert g.exc_info == (None, None, None), g.exc_info
+
+# minimal_ident is assigned lazily and stable; name defaults from it.
+ident = g.minimal_ident
+assert isinstance(ident, int) and ident > 0
+assert g.minimal_ident is ident or g.minimal_ident == ident
+assert g.name == "Greenlet-%d" % ident, g.name
+g.name = "worker-1"
+assert g.name == "worker-1"
+
+g.join()
+
+# A failed greenlet reports a real (type, value, tb) triple.
+bad = gevent.spawn(lambda: 1 / 0)
+bad.join()
+ei = bad.exc_info
+assert ei[0] is ZeroDivisionError, ei
+assert isinstance(ei[1], ZeroDivisionError), ei
+assert ei[2] is not None
+print("OK")
+''')
+
+
+def test_gevent_pywsgi_chunked_request_body_reads():
+    """
+    A chunked request body read through the WSGI ``Input`` object: sized
+    read(), readline(), and read-to-EOF all have to decode the framing.
+    """
+    _check('''
+from gevent.pywsgi import WSGIServer
+import filament.socket as fsocket
+
+seen = {}
+
+def app(environ, start_response):
+    inp = environ["wsgi.input"]
+    seen["first5"] = inp.read(5)
+    seen["line"] = inp.readline()
+    seen["rest"] = inp.read()
+    start_response("200 OK", [("Content-Type", "text/plain")])
+    return [b"ok"]
+
+srv = WSGIServer(("127.0.0.1", 0), app)
+srv.start()
+addr = srv.address
+
+c = fsocket.socket()
+c.connect(addr)
+body = b"5\\r\\nhello\\r\\n6\\r\\n world\\r\\n5\\r\\n\\ntail\\r\\n0\\r\\n\\r\\n"
+c.sendall(b"POST / HTTP/1.1\\r\\nHost: x\\r\\n"
+          b"Transfer-Encoding: chunked\\r\\n\\r\\n" + body)
+resp = b""
+while b"ok" not in resp:
+    d = c.recv(4096)
+    if not d:
+        break
+    resp += d
+c.close()
+srv.stop()
+
+assert seen["first5"] == b"hello", seen
+assert seen["line"] == b" world\\n", seen
+assert seen["rest"] == b"tail", seen
+print("OK")
+''')
+
+
+def test_gevent_hub_io_watcher_shutdown_paths():
+    """
+    The ways a watcher stops watching: the fd is closed under it, and the
+    watcher is stopped while its greenthread is parked. A libev watcher just
+    stops firing in both cases, so ours must too -- quietly, with no
+    traceback escaping into the hub.
+    """
+    _check('''
+import filament.socket as fsocket
+
+loop = gevent.get_hub().loop
+
+# fd closed under a parked watcher: the wait raises, the watcher gives up.
+a, b = fsocket.socketpair()
+fired = []
+w = loop.io(a.fileno(), 1)
+w.start(lambda: fired.append(1))
+gevent.sleep(0.01)              # let it park on the fd
+a.close()
+b.close()
+gevent.sleep(0.05)
+assert fired == [], fired
+
+# Stopped while parked: the greenthread is killed and unwinds quietly.
+c, d = fsocket.socketpair()
+w2 = loop.io(c.fileno(), 1)
+w2.start(lambda: fired.append(2))
+gevent.sleep(0.01)
+w2.stop()
+gevent.sleep(0.01)
+d.sendall(b"z")                 # would have fired the callback if still armed
+gevent.sleep(0.05)
+assert fired == [], fired
+c.close(); d.close()
+print("OK")
+''')
+
+
+def test_gevent_pywsgi_degenerate_requests():
+    """
+    Framing paths a real client eventually produces: a stray blank line
+    between keep-alive requests, a body the app never reads (both lengths and
+    chunked), a malformed chunk size, and an app that forgets
+    start_response.
+    """
+    _check('''
+from gevent.pywsgi import WSGIServer
+import filament.socket as fsocket
+
+def app(environ, start_response):
+    path = environ["PATH_INFO"]
+    if path == "/noresp":
+        return [b""]            # never calls start_response -> 500
+    if path == "/read":
+        # read the body inline, so a malformed or truncated chunk stream is
+        # parsed while the app is running rather than during the drain
+        environ["wsgi.input"].read()
+    # every other path deliberately does NOT read wsgi.input: the server
+    # must drain it before reusing the connection
+    start_response("200 OK", [("Content-Type", "text/plain")])
+    return [b"ok"]
+
+# log=None exercises the "server has no log" branch of log_request().
+srv = WSGIServer(("127.0.0.1", 0), app, log=None)
+srv.start()
+addr = srv.address
+
+def roundtrip(raw, expect=b"ok"):
+    c = fsocket.socket()
+    c.connect(addr)
+    c.sendall(raw)
+    buf = b""
+    while expect not in buf:
+        chunk = c.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    c.close()
+    return buf
+
+# Unread Content-Length body, then a stray CRLF before the next request on
+# the same connection.
+c = fsocket.socket()
+c.connect(addr)
+c.sendall(b"POST / HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 5\\r\\n\\r\\nhello")
+buf = b""
+while b"ok" not in buf:
+    buf += c.recv(4096)
+c.sendall(b"\\r\\nGET / HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+buf = b""
+while b"ok" not in buf:
+    d = c.recv(4096)
+    if not d:
+        break
+    buf += d
+assert b"ok" in buf, buf
+c.close()
+
+# Unread chunked body: the server drains it rather than desyncing.
+out = roundtrip(b"POST / HTTP/1.1\\r\\nHost: x\\r\\n"
+                b"Transfer-Encoding: chunked\\r\\n\\r\\n"
+                b"4\\r\\nabcd\\r\\n0\\r\\n\\r\\n")
+assert b"ok" in out, out
+
+# Malformed chunk size, read by the app: treated as end-of-body, and the
+# app still gets a clean (short) read rather than an exception.
+out = roundtrip(b"POST /read HTTP/1.1\\r\\nHost: x\\r\\n"
+                b"Transfer-Encoding: chunked\\r\\n\\r\\nZZZZ\\r\\n")
+assert b"ok" in out, out
+
+# Truncated chunk: header promises 10 bytes, connection ends after 3.
+c = fsocket.socket()
+c.connect(addr)
+c.sendall(b"POST /read HTTP/1.1\\r\\nHost: x\\r\\n"
+          b"Transfer-Encoding: chunked\\r\\n\\r\\na\\r\\nabc")
+c.shutdown(fsocket.SHUT_WR)
+buf = b""
+while True:
+    d = c.recv(4096)
+    if not d:
+        break
+    buf += d
+c.close()
+assert b"ok" in buf, buf
+
+# App never calls start_response.
+out = roundtrip(b"GET /noresp HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n", expect=b"500")
+assert b"500" in out, out
+
+srv.stop()
 print("OK")
 ''')

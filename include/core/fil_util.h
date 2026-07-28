@@ -315,6 +315,25 @@ static inline uint64_t fil_get_ident(void)
     }
 
     gl = PyGreenlet_GetCurrent();
+    if (gl == NULL)
+    {
+        /*
+         * PyGreenlet_GetCurrent() fails once the interpreter is tearing down:
+         * it returns NULL with RuntimeError("greenlet is being finalized")
+         * set.  This function computes an id and cannot report an error, so
+         * that exception must not survive the call -- any caller left holding
+         * it hands CPython a result with an error set, which becomes
+         * "SystemError: ... returned a result with an exception set" at every
+         * lock touched from a __del__ or a weakref callback at shutdown.
+         *
+         * Nothing of the caller's is lost by clearing: no caller gets here
+         * with an exception pending, and greenlet has already replaced it if
+         * one somehow were.  With no greenlet to fold in, the id degenerates
+         * to the thread id, which is fine -- by then the thread has exactly
+         * one execution context left.
+         */
+        PyErr_Clear();
+    }
     result = ((uint64_t)PyThread_get_thread_ident() << 1) ^ (uint64_t)(uintptr_t)gl;
     Py_XDECREF(gl);
 

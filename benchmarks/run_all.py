@@ -31,6 +31,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKER = os.path.join(HERE, "worker.py")
@@ -203,6 +204,67 @@ def _cell(env, extract):
         return "err"
 
 
+def _host_describe():
+    """CPU model / core count / virtualization, for the Environments table.
+
+    Worth recording: the same 'amd64' label on bare metal and inside a guest
+    on that same machine produced tpool numbers 4x apart, because every
+    cross-thread wakeup is far more expensive when virtualized.
+    """
+    model, threads, pairs = "", 0, set()
+    phys, core = None, None
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith(("model name", "Model")) and not model:
+                    model = line.split(":", 1)[1].strip()
+                elif line.startswith("processor"):
+                    threads += 1
+                elif line.startswith("physical id"):
+                    phys = line.split(":", 1)[1].strip()
+                elif line.startswith("core id"):
+                    core = line.split(":", 1)[1].strip()
+                    if phys is not None:
+                        pairs.add((phys, core))
+    except Exception:
+        pass
+    # "32c/64t" is the useful shape: SMT changes what a core-count means, and
+    # the two OS-thread benchmarks care a lot about which sibling they land on.
+    if pairs and threads:
+        cores = "%dc/%dt" % (len(pairs), threads)
+    elif threads:
+        cores = "%d cpus" % threads
+    else:
+        cores = ""
+    # the model string usually already spells out the core count
+    for suffix in (" %d-Cores" % len(pairs), " %d-Core Processor" % len(pairs)):
+        if model.endswith(suffix):
+            model = model[:-len(suffix)]
+    # Only claim "bare metal" when something actually said so -- an absent
+    # detector is not evidence of one.
+    virt = ""
+    try:
+        out = subprocess.check_output(["systemd-detect-virt"],
+                                      stderr=open(os.devnull, "w"))
+        virt = out.decode("utf-8", "replace").strip()
+        if virt == "none":
+            virt = "bare metal"
+    except Exception:
+        if os.path.exists("/.dockerenv"):
+            virt = "container"
+    parts = [p for p in (model, cores, virt) if p]
+    return ", ".join(parts)
+
+
+def _git_describe():
+    try:
+        out = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                      cwd=HERE, stderr=open(os.devnull, "w"))
+    except Exception:
+        return ""
+    return out.decode("utf-8", "replace").strip()
+
+
 def build_report():
     # Results are partitioned by arch: results/<arch>/<pyver>.json. Fall back to
     # any legacy flat files (tagged "unknown") so old layouts still render.
@@ -263,7 +325,28 @@ def build_report():
     lines.append("- **#137**: monkey-patch everything, then log heavily from "
                  "real OS-thread pool workers while greenthreads spin in the hub. "
                  "Each attempt runs under a hard 30 s subprocess watchdog; a hang "
-                 "is recorded as **deadlock**.")
+                 "is recorded as **deadlock**. Whether gevent/eventlet hang here "
+                 "depends on the machine -- it is a race between the hub and the "
+                 "logging lock, and a faster host with more cores wins it more "
+                 "often -- so a single cell is one roll of the dice, not a "
+                 "property of the library. filament has not lost it on any "
+                 "machine or interpreter.")
+    lines.append("")
+    lines.append("> **OS-thread caveat.** `tpool` and `#137` cross into real "
+                 "OS threads, and on a many-core host their absolute numbers "
+                 "are not reproducible: the amd64 box (32 vCPUs) gives a "
+                 "clean bimodal split ~1.6x apart, switching even between "
+                 "reps inside one process. It is thread placement, and "
+                 "`taskset` proves it -- pinned to a single CPU the same "
+                 "benchmark repeats to ~2% (filament 50-52k, gevent 38-39k "
+                 "calls/s), pinned to two it is faster and mostly steady, "
+                 "and turned loose on all 32 it oscillates. The 1.6x factor "
+                 "hits both runtimes equally, so the *ranking* holds even "
+                 "where the absolute value does not: filament leads gevent by "
+                 "1.3-1.4x in every pinned configuration. The 6-core arm64 "
+                 "box does not show this, having far less placement freedom. "
+                 "Read a single tpool or #137 cell as an order of magnitude; "
+                 "the pure-greenthread rows repeat to within a few percent.")
     lines.append("")
     lines.append("> **Cross-version caveat.** Each Python version's table was "
                  "recorded in its own sequential run on the same box. Interpreter "
@@ -276,14 +359,19 @@ def build_report():
     # environment table
     lines.append("## Environments")
     lines.append("")
-    lines.append("| Arch | Python | greenlet | gevent | eventlet |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| Arch | Python | greenlet | gevent | eventlet | host | measured |")
+    lines.append("|---|---|---|---|---|---|---|")
     for d in data:
         gv = _lib_ver(d, "gevent")
         ev = _lib_ver(d, "eventlet")
         gl = _greenlet_ver(d)
-        lines.append("| %s | %s | %s | %s | %s |" %
-                     (d["_arch"], d["python"], gl, gv, ev))
+        when = d.get("measured_utc") or "—"
+        commit = d.get("commit")
+        if commit:
+            when = "%s (%s)" % (when, commit)
+        lines.append("| %s | %s | %s | %s | %s | %s | %s |" %
+                     (d["_arch"], d["python"], gl, gv, ev,
+                      d.get("host") or "—", when))
     lines.append("")
     lines.append("Availability notes:")
     lines.append("")
@@ -552,13 +640,17 @@ def _headline_section(data, arch=None):
              "latency; eventlet trails both. Persistent edge-triggered "
              "readiness events (no per-block epoll_ctl) plus a GIL-free "
              "io-thread completion path carry the socket hot loop.")
-    L.append("- **#137 logging-in-threadpool — filament's headline win:** filament "
+    L.append("- **#137 logging-in-threadpool:** filament "
              "logs from its real-thread pool while the hub runs greenthreads and "
-             "**just works, no workaround, %s** across the matrix. " % _log137_range(data) +
-             "gevent and eventlet both **deadlock** under a monkey-patched hub, and "
-             "gevent's documented mitigations (hub threadpool + native logging "
-             "locks + `logThreads=False`) **do not** save it — it still deadlocks. "
-             "This is filament's whole reason for existing, and it holds up.")
+             "completes **every time, on every interpreter and both machines, "
+             "no workaround, %s**. " % _log137_range(data) +
+             "For gevent and eventlet this is a race, not a verdict, and the "
+             "machine decides it: on the 6-core box gevent deadlocks outright, "
+             "including with its documented mitigations (hub threadpool + native "
+             "logging locks + `logThreads=False`); on the 64-thread host it "
+             "completed 6 of 6 repeats. eventlet loses the race on both, most "
+             "recently 4 times in 6. Read the per-version tables for what "
+             "actually happened rather than assuming either outcome.")
     L.append("")
     return L
 
@@ -617,6 +709,12 @@ def main():
             merged = json.load(fh)
         merged.setdefault("runs", {}).update(results["runs"])
         results = merged
+    # Stamp when and from what these numbers came.  Tables from different runs
+    # sit side by side in one report, and a stale one is otherwise
+    # indistinguishable from a fresh one.
+    results["measured_utc"] = time.strftime("%Y-%m-%d", time.gmtime())
+    results["commit"] = _git_describe()
+    results["host"] = _host_describe()
     with open(outfile, "w") as fh:
         json.dump(results, fh, indent=2)
     print("\nwrote", outfile)

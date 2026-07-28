@@ -12,6 +12,7 @@ from __future__ import absolute_import
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -204,11 +205,93 @@ def test_select_error_export():
     assert fil_select.error is getattr(std_select, 'error', OSError)
 
 
-def test_poll_raises_notimplemented():
-    with pytest.raises(NotImplementedError):
-        fil_select.poll()
+def test_poll_registration_and_readiness():
+    # poll() is cooperative now: stdlib registration surface, millisecond
+    # timeouts, (fd, eventmask) pairs.  urllib3 uses exactly this to decide
+    # whether a pooled connection is still alive.
+    import socket
+
+    left, right = socket.socketpair()
+    try:
+        poller = fil_select.poll()
+        poller.register(left, fil_select.POLLIN)
+        assert poller.poll(0) == []                  # nothing to read yet
+
+        start = time.time()
+        assert poller.poll(50) == []                 # honours the timeout (ms)
+        assert time.time() - start >= 0.04
+
+        right.send(b'x')
+        assert poller.poll(0) == [(left.fileno(), fil_select.POLLIN)]
+        assert poller.poll() == [(left.fileno(), fil_select.POLLIN)]
+
+        # modify()/unregister() follow the stdlib's error behaviour.
+        poller.modify(left, fil_select.POLLOUT)
+        assert poller.poll(0) == [(left.fileno(), fil_select.POLLOUT)]
+        poller.unregister(left)
+        with pytest.raises(KeyError):
+            poller.unregister(left)
+        with pytest.raises(OSError):
+            poller.modify(left, fil_select.POLLIN)
+    finally:
+        left.close()
+        right.close()
+
+
+def test_select_returns_on_first_ready():
+    # Several descriptors, one ready: select must come back immediately rather
+    # than waiting out the timeout on the others.
+    import socket
+
+    ready_l, ready_r = socket.socketpair()
+    idle_l, idle_r = socket.socketpair()
+    try:
+        ready_r.send(b'x')
+        start = time.time()
+        readable, writable, _ = fil_select.select(
+            [ready_l, idle_l], [], [], 5)
+        assert readable == [ready_l], readable
+        assert time.time() - start < 1
+    finally:
+        for sock in (ready_l, ready_r, idle_l, idle_r):
+            sock.close()
 
 
 def test_stdlib_constants_copied():
     # copy_globals pulls stdlib names we do not override (Linux has POLLIN).
     assert hasattr(fil_select, 'POLLIN')
+
+
+def test_select_with_no_descriptors_sleeps():
+    # select() with nothing to watch degenerates to a sleep, and with no
+    # timeout at all returns immediately rather than blocking forever.
+    t0 = time.time()
+    assert fil_select.select([], [], [], 0.05) == ([], [], [])
+    assert time.time() - t0 >= 0.04
+    assert fil_select.select([], [], []) == ([], [], [])
+
+
+def test_select_single_fd_on_closed_descriptor_reports_not_ready():
+    # The one-descriptor fast path runs in the calling greenthread.  A closed
+    # fd can never become ready; select() reports that by omission rather
+    # than by raising.
+    r, w = os.pipe()
+    _close_all(r, w)
+    rl, wl, xl = fil_select.select([r], [], [], 0.02)
+    assert rl == [], rl
+
+
+def test_poll_register_defaults_to_all_events():
+    r, w = os.pipe()
+    try:
+        p = fil_select.poll()
+        p.register(w)                        # no eventmask -> in|pri|out
+        events = p.poll(0.05)
+        assert events, "the writable pipe end should be reported"
+        fd, mask = events[0]
+        assert fd == w
+        assert mask & fil_select.POLLOUT
+        p.unregister(w)
+        assert p.poll(0) == []
+    finally:
+        _close_all(r, w)

@@ -26,6 +26,7 @@ except ImportError:  # Python 2 / stock-greenlet build
     import greenlet
 
 import filament
+import _filament.io as _fil_io
 from filament.gevent_compat import threadpool as _threadpool
 
 # gevent re-exports these from the hub; keep them available here too.
@@ -135,19 +136,106 @@ class Hub(object):
         return filament.spawn(func, *args, **kwargs)
 
 
+class _IOWatcher(object):
+    """
+    An fd-readiness watcher shaped like gevent's ``loop.io()`` result.
+
+    ``start(callback)`` arms it; the callback then runs every time the
+    descriptor is ready, until ``stop()``.  Backed by a greenthread parked on
+    filament's IO layer rather than a libev watcher, but the contract callers
+    rely on -- level-triggered, repeating, cancellable -- is the same.
+
+    pyzmq's ``zmq.green`` builds its entire gevent integration on this: a read
+    watcher on the ZMQ socket's FD, whose callback republishes the socket's
+    events.  Without it, ``import zmq.green`` falls through to a gevent<1.0
+    path and dies.
+    """
+
+    # gevent's event mask: 1 = read, 2 = write.
+    READ = 1
+    WRITE = 2
+
+    def __init__(self, fd, events, ref=True, priority=None):
+        self.fd = fd
+        self.events = events
+        self.callback = None
+        self.args = ()
+        self._greenthread = None
+        self._stopped = False
+
+    @property
+    def active(self):
+        return self._greenthread is not None
+
+    def start(self, callback, *args, **kwargs):
+        """Arm the watcher.  ``pass_events`` is accepted for gevent parity."""
+        self.stop()
+        self.callback = callback
+        self.args = args
+        self._stopped = False
+        self._greenthread = filament.spawn(self._watch,
+                                           kwargs.get("pass_events", False))
+
+    def _watch(self, pass_events):
+        wait_read = bool(self.events & self.READ)
+        while not self._stopped:
+            try:
+                if wait_read:
+                    _fil_io.fd_wait_read_ready(self.fd)
+                else:
+                    _fil_io.fd_wait_write_ready(self.fd)
+            except filament.GreenletExit:
+                return
+            except Exception:
+                # The descriptor went away (socket closed under us): a libev
+                # watcher would simply stop firing, so do the same.
+                return
+            if self._stopped:
+                return
+            callback = self.callback
+            if callback is None:
+                return
+            if pass_events:
+                callback(self.events, *self.args)
+            else:
+                callback(*self.args)
+            # The callback is expected to consume whatever made the descriptor
+            # ready; yield anyway so a callback that does not cannot monopolise
+            # the scheduler.
+            filament.sleep(0)
+
+    def stop(self):
+        self._stopped = True
+        greenthread, self._greenthread = self._greenthread, None
+        if greenthread is not None:
+            filament.kill(greenthread)
+        self.callback = None
+        self.args = ()
+
+    def close(self):
+        self.stop()
+
+    # gevent<1.0 spelling, still called by some libraries.
+    cancel = stop
+
+
 class _Loop(object):
     """
-    Stub for gevent's libev/libuv ``loop`` object.
+    Stand-in for gevent's libev/libuv ``loop`` object.
 
-    Only the ``run_callback`` scheduling entry point is provided (mapped onto a
-    zero-delay filament spawn).  Timers/watchers are NOT modelled -- deep loop
-    introspection is out of scope for the shim.
+    Provides the two entry points third-party code actually uses: callback
+    scheduling (``run_callback``) and fd watchers (``io``).  Timers and the
+    deeper loop introspection are NOT modelled.
     """
 
     def run_callback(self, func, *args):
         # Fire-and-forget on the next scheduler turn.
         filament.spawn_n(func, *args)
         return None
+
+    def io(self, fd, events, ref=True, priority=None):
+        """Create (but do not start) a readiness watcher for ``fd``."""
+        return _IOWatcher(fd, events, ref=ref, priority=priority)
 
 
 # Process-wide singleton hub (gevent's get_hub is likewise per-thread singleton;

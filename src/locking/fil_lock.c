@@ -66,6 +66,25 @@ static void _lock_dealloc(PyFilLock *self)
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
+/*
+ * We were handed the lock (release() leaves 'locked' set and signals us) but
+ * an exception is unwinding us out of acquire().  Ownership has to go
+ * straight back, or the lock stays held for a greenthread that no longer
+ * exists and every later acquire() waits forever.  This is __lock_release()
+ * minus the error case: 'locked' is necessarily set here.
+ */
+static void __lock_handoff(PyFilLock *lock)
+{
+    if (fil_waiterlist_empty(lock->waiters))
+    {
+        lock->locked = 0;
+    }
+    else
+    {
+        fil_waiterlist_signal_first_keep_exc(lock->waiters);
+    }
+}
+
 static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
 {
     if (!lock->locked && fil_waiterlist_empty(lock->waiters))
@@ -86,6 +105,12 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
     }
 
     assert(lock->locked == 1);
+
+    if (err == FIL_WAITER_SIGNALED_UNWIND)
+    {
+        __lock_handoff(lock);
+        return -1;
+    }
 
     return 0;
 }
@@ -137,12 +162,21 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
     }
 
     int err = fil_waiterlist_wait(lock->lock.waiters, ts, NULL);
-    if (err)
+    if (err < 0)
     {
         return err;
     }
 
     assert(lock->lock.locked == 1);
+
+    if (err == FIL_WAITER_SIGNALED_UNWIND)
+    {
+        /* Hand the lock straight on: 'owner'/'count' were never set, so this
+         * is the base lock's hand-off, not a recursive release. */
+        __lock_handoff(&(lock->lock));
+        return -1;
+    }
+
     lock->owner = owner;
     lock->count = 1;
 

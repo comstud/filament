@@ -1272,6 +1272,13 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
                 if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
                 {
                     Py_DECREF(iothr);
+                    /* A throw (kill/Timeout) can land in the same wakeup that
+                     * made the fd readable -- see the comment at the end of
+                     * this function; the exception wins over the bytes. */
+                    if (PyErr_Occurred())
+                    {
+                        return -1;
+                    }
                     if (outlen < 0)
                     {
                         PyErr_SetFromErrno(_SOCK_ERROR);
@@ -1336,7 +1343,19 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
 
     Py_DECREF(iothr);
 
-    if (outlen < 0 && !PyErr_Occurred())
+    /* A greenthread parked here can be resumed by a THROW (kill() or a
+     * Timeout firing) in the same wakeup that made the fd readable: the
+     * waiter comes back signaled AND with an exception pending, so the recv
+     * above succeeds and we would return a byte count with an error set --
+     * which CPython turns into "SystemError: ... returned a result with an
+     * exception set".  The exception wins; the bytes are dropped, exactly as
+     * they would be if the throw had landed a moment earlier. */
+    if (PyErr_Occurred())
+    {
+        return -1;
+    }
+
+    if (outlen < 0)
     {
         PyErr_SetFromErrno(_SOCK_ERROR);
     }
@@ -1543,6 +1562,12 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
                     if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
                     {
                         Py_DECREF(iothr);
+                        /* Throw-during-wakeup beats a successful send; see
+                         * _sock_recv_common. */
+                        if (PyErr_Occurred())
+                        {
+                            return -1;
+                        }
                         if (outlen < 0)
                         {
                             PyErr_SetFromErrno(_SOCK_ERROR);
@@ -1608,7 +1633,15 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
 
     Py_DECREF(iothr);
 
-    if (outlen < 0 && !PyErr_Occurred())
+    /* See the matching comment in the recv path: a throw landing in the same
+     * wakeup that made the fd writable must not be masked by a successful
+     * send. */
+    if (PyErr_Occurred())
+    {
+        return -1;
+    }
+
+    if (outlen < 0)
     {
         PyErr_SetFromErrno(_SOCK_ERROR);
     }

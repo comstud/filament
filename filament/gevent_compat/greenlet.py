@@ -35,6 +35,9 @@ GreenletExit = filament.GreenletExit
 # Sentinel: no outcome recorded yet (distinguishes a stored ``None`` value).
 _UNSET = object()
 
+# Serial number behind Greenlet.minimal_ident / the default Greenlet.name.
+_ident_counter = 0
+
 
 class Greenlet(object):
     """
@@ -65,6 +68,8 @@ class Greenlet(object):
         self._links = []
         # Internal, synchronous; see _add_done_callback.  Not _links.
         self._done_callbacks = []
+        self._name = None
+        self._minimal_ident = None
 
     # -- construction helpers ------------------------------------------------
 
@@ -80,6 +85,16 @@ class Greenlet(object):
     def _target(self):
         # Runs inside the filament greenthread.  Subclasses may override
         # ``_run``; if ``self._run`` is None we look for that.
+        #
+        # Tag the greenthread with a back-pointer to us.  Under real gevent
+        # the Greenlet *is* the running greenlet, so ``greenlet.getcurrent()``
+        # returns it, and code in the wild branches on that identity to decide
+        # whether it is about to act on itself.  ``rawgreenlet.getcurrent()``
+        # reads this tag.  Dropped again in the finally so we leave no
+        # Greenlet <-> Filament reference cycle behind.
+        current = filament.getcurrent()
+        current._gevent_greenlet = self
+
         run = self._run
         if run is None:
             run = getattr(self, "_run_impl", None) or self.run
@@ -95,9 +110,24 @@ class Greenlet(object):
             self._value = value
         finally:
             self._finished = True
-            self._done.set()
-            self._fire_done_callbacks()
-            self._fire_links()
+            # Links before joiners, and do not "simplify" that.  gevent's
+            # join() *is* a link on the same ordered notification list, so
+            # every link registered before the join -- link_exception's
+            # included -- has run by the time join() returns; waking the
+            # joiner first would let join() return with the link greenthreads
+            # merely queued, which is what a link is meant to rule out.  The
+            # scheduler's immediate queue is FIFO, so scheduling the links
+            # first puts them ahead of the joiner's wakeup.  The finally keeps
+            # a raising callback from stranding the joiners.
+            try:
+                self._fire_done_callbacks()
+                self._fire_links()
+            finally:
+                self._done.set()
+            try:
+                del current._gevent_greenlet
+            except AttributeError:
+                pass
 
     def run(self, *args, **kwargs):  # pragma: no cover - subclass hook
         """Override point for Greenlet subclasses that define behaviour."""
@@ -177,9 +207,12 @@ class Greenlet(object):
             self._exc_info = (type(exception), exception, None)
         self._start_cancelled = True
         self._finished = True
-        self._done.set()
-        self._fire_done_callbacks()
-        self._fire_links()
+        # Links first, joiner wakeup last -- see _target().
+        try:
+            self._fire_done_callbacks()
+            self._fire_links()
+        finally:
+            self._done.set()
 
     def kill(self, exception=GreenletExit, block=True, timeout=None):
         """Kill the greenlet (gevent.Greenlet.kill)."""
@@ -241,6 +274,59 @@ class Greenlet(object):
     def exception(self):
         """The exception instance the greenlet raised, or None."""
         return self._exc_info[1] if self._exc_info else None
+
+    @property
+    def exc_info(self):
+        """
+        ``(type, value, traceback)`` if the greenlet raised, else a triple of
+        ``None`` -- gevent's shape, which callers index into unconditionally
+        (exception handlers do ``exc_info[0] is SomeError`` without checking).
+        """
+        return self._exc_info if self._exc_info else (None, None, None)
+
+    @property
+    def args(self):
+        """
+        The positional arguments the greenlet was spawned with.
+
+        gevent exposes these, and code in the wild reaches through them to
+        get at the object a greenlet is running for, via ``greenlet.args[0]``.
+        """
+        return self._args
+
+    @property
+    def kwargs(self):
+        """The keyword arguments the greenlet was spawned with."""
+        return self._kwargs
+
+    @property
+    def minimal_ident(self):
+        """
+        A small per-process serial number, gevent-style.
+
+        gevent hands these out lazily from a per-hub registry so greenlets get
+        short, readable identifiers; we do the same with a counter.
+        """
+        if self._minimal_ident is None:
+            global _ident_counter
+            _ident_counter += 1
+            self._minimal_ident = _ident_counter
+        return self._minimal_ident
+
+    @property
+    def name(self):
+        """
+        Human-readable name, defaulting to ``Greenlet-<minimal_ident>``.
+
+        Settable, as in gevent, and read by logging in real projects.
+        """
+        if self._name is None:
+            self._name = "Greenlet-%d" % self.minimal_ident
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        self._name = value
 
     # -- links ---------------------------------------------------------------
 

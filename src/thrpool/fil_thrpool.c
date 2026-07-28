@@ -318,6 +318,16 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
     {
         int err = fil_waiter_wait(waiter, NULL, NULL);
 
+        if (err == FIL_WAITER_SIGNALED_UNWIND)
+        {
+            /* The shutdown finished and something threw into us in the same
+             * wakeup.  _thrpool_shutdown_finish() has already signaled us and
+             * owns 'info' -- it frees it as soon as it drops the GIL -- so do
+             * NOT touch it here; just let the exception out. */
+            fil_waiter_decref(waiter);
+            return -1;
+        }
+
         if (err)
         {
             /* most likely a signal that triggered an exception */
@@ -635,6 +645,18 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
 
     err = fil_waiter_wait(waiter, ts, NULL);
     fil_waiter_decref(waiter);
+    if (err == FIL_WAITER_SIGNALED_UNWIND)
+    {
+        /* The job finished -- 'info' and whatever it holds are ours -- and we
+         * were thrown into in the same wakeup.  Setting CANCEL here would
+         * strand 'info': the worker is long done and will never look at it
+         * again.  Drop the result and let the exception out. */
+        Py_XDECREF(info->res_or_exc_type);
+        Py_XDECREF(info->exc_value);
+        Py_XDECREF(info->exc_tb);
+        free(info);
+        return NULL;
+    }
     if (err)
     {
         /*
