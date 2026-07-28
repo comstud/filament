@@ -40,6 +40,9 @@ import time
 
 from filament.gevent_compat.server import StreamServer
 
+# Blank lines tolerated before a request line (see _read_request).
+_MAX_BLANK_LINES = 4
+
 # WSGI wants native str in environ.  On Py3 the wire bytes are decoded latin-1;
 # on Py2 native str *is* bytes so decoding is a no-op passthrough.
 _PY3 = sys.version_info[0] >= 3
@@ -280,12 +283,22 @@ class WSGIHandler(object):
 
     def _read_request(self):
         # Read and parse the request line: e.g. b"GET /path?x=1 HTTP/1.1".
-        request_line = self.rfile.readline()
-        if not request_line:
-            return None  # client closed with nothing
-        request_line = request_line.rstrip(b"\r\n")
-        if not request_line:
-            return None  # stray blank line from a previous request's framing
+        #
+        # RFC 7230 3.5: a server SHOULD ignore at least one empty line before
+        # the request line, because clients do emit a stray CRLF after a
+        # request body.  gevent's pywsgi skips them, so closing the connection
+        # here would end a keep-alive session it would have continued.  Bound
+        # the skipping so a client sending nothing but blank lines cannot pin
+        # the handler forever.
+        for _ in range(_MAX_BLANK_LINES + 1):
+            request_line = self.rfile.readline()
+            if not request_line:
+                return None  # client closed with nothing
+            request_line = request_line.rstrip(b"\r\n")
+            if request_line:
+                break
+        else:
+            return None  # nothing but blank lines; treat as a dead connection
         self.requestline = _to_native(request_line)
         parts = request_line.split(b" ")
         if len(parts) != 3:

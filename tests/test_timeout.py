@@ -351,3 +351,67 @@ def test_untimed_wait_never_reports_a_timeout():
     queue.put('value')
     greenthread.wait()
     assert outcome == [('got', 'value')], outcome
+
+
+def test_timer_heap_grows_backfills_and_shrinks():
+    """
+    Exercise the timer min-heap through its structural transitions.
+
+    Arming several hundred timers walks the array through repeated growth;
+    cancelling them in a shuffled order forces the backfill at every position
+    (so the moved entry sometimes sifts down and sometimes up); draining most
+    of them then crosses the shrink threshold. The invariant we assert is the
+    one that matters: whatever the order, every live timer still fires and
+    the queue empties.
+    """
+    import random
+
+    from filament import Scheduler
+    from filament.timer import Timer
+
+    def body():
+        sched = Scheduler()
+        rng = random.Random(1234)          # deterministic ordering
+        fired = []
+
+        # Deliberately unsorted deadlines so pushes sift up from every depth.
+        timers = []
+        for i in range(400):
+            delay = rng.uniform(5.0, 30.0)
+            timers.append(Timer(delay, lambda i=i: fired.append(i)))
+        assert sched.queue_depth()[1] >= 400
+
+        # Cancel in shuffled order: each removal backfills from the tail into
+        # an arbitrary hole.
+        rng.shuffle(timers)
+        for t in timers:
+            t.cancel()
+
+        # Everything is gone, nothing fired, and the array has been shrunk
+        # back rather than left at its high-water mark.
+        assert sched.queue_depth()[1] == 0, sched.queue_depth()
+        assert fired == []
+
+        # The heap still works afterwards, and still orders by deadline.
+        order = []
+        for i, delay in enumerate((0.05, 0.01, 0.03, 0.02, 0.04)):
+            Timer(delay, lambda i=i: order.append(i))
+        filament.sleep(0.2)
+        assert order == [1, 3, 2, 4, 0], order
+        assert sched.queue_depth()[1] == 0
+
+    filament.spawn(body).wait()
+
+
+def test_timeout_close_is_cancel():
+    # gevent's Timeout grows a close() alongside cancel(); pyzmq calls it on
+    # every send/recv, so it has to exist and actually disarm the timeout.
+    def body():
+        t = Timeout(0.01)
+        t.start()
+        assert t.pending
+        t.close()
+        assert not t.pending
+        filament.sleep(0.05)        # would have fired by now
+        t.close()                   # idempotent
+    filament.spawn(body).wait()

@@ -186,3 +186,91 @@ def test_stale_wakeup_does_not_hit_a_later_wait():
         assert results == ['correct'], results
         left.close()
         right.close()
+
+
+def test_cancelled_wakeup_unlinks_from_the_middle_of_the_run_queue():
+    """
+    Cancelling a queued wakeup that is not at the head of the immediate FIFO.
+
+    Several greenthreads are signaled in one go, so the run queue holds a
+    string of pending switches; killing one that is *not* first makes the
+    scheduler unlink an interior node rather than pop the head. Getting that
+    unlink wrong corrupts the queue for every other greenthread on it, so the
+    assertion is simply that all the survivors still run, in order.
+    """
+    import filament
+    from filament.greenthread import GreenletExit
+    from filament.timer import Timer
+
+    def body():
+        q = filament.Queue()
+        woke = []
+
+        def consumer(i):
+            woke.append(("got", i, q.get()))
+
+        gts = [filament.spawn(consumer, i) for i in range(5)]
+        filament.sleep(0.01)                 # all five parked on the queue
+
+        # One put per consumer, all before the scheduler runs any of them:
+        # five switches now sit in the immediate FIFO.
+        for i in range(5):
+            q.put(i)
+
+        # Kill an interior one without yielding, so its cancellation has to
+        # unlink from the middle of that queue.
+        Timer(0, gts[2].throw, GreenletExit)
+
+        filament.sleep(0.2)
+        return sorted(w[1] for w in woke)
+
+    survivors = filament.spawn(body).wait()
+    # The killed greenthread may or may not have consumed its item first;
+    # every other one must have run.
+    assert set(survivors) >= {0, 1, 3, 4}, survivors
+
+
+def test_kill_beats_ready_data_with_a_socket_timeout():
+    """
+    Same race as test_kill_beats_ready_data, but on a socket that has a
+    timeout set.
+
+    That is a different code path inside the C recv: with no timeout the
+    cheap cached edge-triggered wait is used, with one the classic io-thread
+    wait is. Both have to let a throw win over bytes that arrived in the same
+    wakeup, so both need covering.
+    """
+    import filament
+    from filament import socket as fsocket
+    from filament.greenthread import GreenletExit
+    from filament.timer import Timer
+
+    def body():
+        outcomes = []
+        for _ in range(20):
+            left, right = fsocket.socketpair()
+            left.settimeout(5.0)              # forces the classic path
+            parked = []
+
+            def reader():
+                try:
+                    parked.append(("data", left.recv(16)))
+                except GreenletExit:
+                    parked.append(("killed", None))
+                except Exception as e:        # noqa: B902
+                    parked.append(("error", type(e).__name__))
+
+            g = filament.spawn(reader)
+            filament.sleep(0.01)              # parked in recv
+            Timer(0, g.throw, GreenletExit)   # queue the throw, do not yield
+            right.sendall(b"payload")         # ... and make the fd readable
+            filament.sleep(0.05)
+            outcomes.append(parked[0][0] if parked else "none")
+            left.close()
+            right.close()
+        return outcomes
+
+    outcomes = filament.spawn(body).wait()
+    # Either resolution is legitimate; what must not happen is a SystemError
+    # from handing back bytes with the exception still pending.
+    assert set(outcomes) <= {"data", "killed"}, outcomes

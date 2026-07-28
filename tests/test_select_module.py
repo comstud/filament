@@ -260,3 +260,38 @@ def test_select_returns_on_first_ready():
 def test_stdlib_constants_copied():
     # copy_globals pulls stdlib names we do not override (Linux has POLLIN).
     assert hasattr(fil_select, 'POLLIN')
+
+
+def test_select_with_no_descriptors_sleeps():
+    # select() with nothing to watch degenerates to a sleep, and with no
+    # timeout at all returns immediately rather than blocking forever.
+    t0 = time.time()
+    assert fil_select.select([], [], [], 0.05) == ([], [], [])
+    assert time.time() - t0 >= 0.04
+    assert fil_select.select([], [], []) == ([], [], [])
+
+
+def test_select_single_fd_on_closed_descriptor_reports_not_ready():
+    # The one-descriptor fast path runs in the calling greenthread.  A closed
+    # fd can never become ready; select() reports that by omission rather
+    # than by raising.
+    r, w = os.pipe()
+    _close_all(r, w)
+    rl, wl, xl = fil_select.select([r], [], [], 0.02)
+    assert rl == [], rl
+
+
+def test_poll_register_defaults_to_all_events():
+    r, w = os.pipe()
+    try:
+        p = fil_select.poll()
+        p.register(w)                        # no eventmask -> in|pri|out
+        events = p.poll(0.05)
+        assert events, "the writable pipe end should be reported"
+        fd, mask = events[0]
+        assert fd == w
+        assert mask & fil_select.POLLOUT
+        p.unregister(w)
+        assert p.poll(0) == []
+    finally:
+        _close_all(r, w)

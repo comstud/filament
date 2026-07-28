@@ -38,3 +38,32 @@ class SchedulerTestCase(testtools.TestCase):
         thr2.wait()
 
         self.assertEqual(expected_order, results)
+
+
+def test_queue_depth_counts_pending_immediate_wakeups():
+    """
+    queue_depth() reports (immediate, timers).  The immediate side is the
+    per-switch hot path, so sample it while wakeups are actually queued --
+    counting an empty list proves nothing.
+    """
+    import filament
+
+    def body():
+        sched = filament.Scheduler()
+
+        # Park several greenthreads on a sleep(0), i.e. an immediate wakeup
+        # each, and look at the queue from a greenthread that runs first.
+        seen = []
+
+        def yielder():
+            filament.sleep(0)
+
+        gts = [filament.spawn(yielder) for _ in range(5)]
+        seen.append(sched.queue_depth())
+        filament.joinall(gts)
+        seen.append(sched.queue_depth())
+        return seen
+
+    depths = filament.spawn(body).wait()
+    assert depths[0][0] >= 1, depths          # immediates were pending
+    assert depths[1] == (0, 0), depths        # and drained afterwards

@@ -35,6 +35,11 @@ generator against the shim.
   `SocketKind` enums like the stdlib instead of bare ints. Code does read
   those back -- IPv6 support is commonly detected by looking for
   `Family.AF_INET6` in the repr.
+- `gevent.pywsgi` tolerates a blank line before a request line instead of
+  dropping the connection. RFC 7230 says a server should ignore at least one,
+  gevent's pywsgi does, and clients do emit a stray CRLF after a request
+  body -- so a keep-alive session gevent would have continued was ending
+  early.
 - `install()` now also owns the top-level `greenlet` name, so
   `greenlet.getcurrent()` returns the running `gevent.Greenlet` the way it
   does under real gevent (where `Greenlet` *is* a `greenlet.greenlet`
