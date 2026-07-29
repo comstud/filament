@@ -66,7 +66,6 @@ DEFAULTS = {
     "log_workers": 4,           # threadpool workers
     "log_msgs": 20000,          # log lines per worker
     "log_hub_greenthreads": 8,  # greenthreads spinning sleep(0) in the hub
-    "log_watchdog_s": 20,       # per-attempt deadlock watchdog (seconds)
 }
 
 
@@ -712,9 +711,20 @@ def bench_logging137(framework, p, mode="naive"):
             while not done["stop"]:
                 sleep_fn(0)
 
+        # Heartbeat so the driver can tell "slow" from "wedged".  It is emitted
+        # from inside the logging loop deliberately: that is the thing that
+        # deadlocks under gevent/eventlet, so a wedged run goes silent while a
+        # merely slow one (macOS is ~30-50x slower here than Linux) keeps
+        # reporting and is allowed to finish.  stderr, and prefixed, so it
+        # never collides with the RESULT_JSON line on stdout.
+        beat_every = max(1, n_msgs // 10)
+
         def worker(wid):
             for i in range(n_msgs):
                 logger.debug("worker %d msg %d payload %s", wid, i, "abc" * 3)
+                if (i + 1) % beat_every == 0:
+                    sys.stderr.write("HEARTBEAT %d %d\n" % (wid, i + 1))
+                    sys.stderr.flush()
             return n_msgs
 
         gts = [spawn_gt(hub_spinner) for _ in range(hub_gt)]

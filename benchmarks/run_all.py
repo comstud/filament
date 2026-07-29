@@ -21,16 +21,20 @@ Usage:
                echo,logging137). Default: all.
 --scale        full (default) or small (quick smoke sizes).
 --report-only  skip running; just rebuild RESULTS.md from existing results/*.json.
+--timeout-scale  multiply all per-benchmark timeouts (see TIMEOUTS below); use
+               this to check whether a reported "deadlock" is really a hang.
 """
 from __future__ import print_function
 
 import argparse
+import atexit
 import glob
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,11 +46,28 @@ FRAMEWORKS = ["filament", "gevent", "eventlet"]
 ALL_BENCHMARKS = ["spawn", "ctxswitch", "semaphore", "queue", "queue_mixed",
                   "tpool", "echo", "logging137"]
 
-# per-benchmark subprocess timeout (seconds)
+# Per-benchmark subprocess timeout (seconds).
+#
+# NOTE: exceeding one of these is recorded as status "deadlock", but nothing
+# actually detects a deadlock -- it only means "printed no result in time".  On
+# a new or slow platform a cell can be merely slow and get labelled a hang, so
+# before believing a "deadlock" raise the limit (--timeout-scale) and see
+# whether it completes.  logging137's 45s is the tightest budget in the suite
+# and it runs last, right after echo@1000 -- which on some systems is still
+# tearing down thousands of fiber stacks when the next subprocess starts.
 TIMEOUTS = {
     "spawn": 240, "ctxswitch": 180, "semaphore": 120, "queue": 120,
-    "queue_mixed": 60, "tpool": 120, "echo": 240, "logging137": 30,
+    "queue_mixed": 60, "tpool": 120, "echo": 240, "logging137": 45,
 }
+
+
+def _timeout_for(bench):
+    """Per-benchmark timeout, scaled by --timeout-scale / FIL_BENCH_TIMEOUT_SCALE."""
+    try:
+        scale = float(os.environ.get("FIL_BENCH_TIMEOUT_SCALE", "1") or 1)
+    except ValueError:
+        scale = 1.0
+    return max(1, int(TIMEOUTS[bench] * scale))
 
 SMALL_PARAMS = {
     "spawn_k": 5000, "spawn_reps": 3,
@@ -90,6 +111,51 @@ def detect_arch(python):
         return _norm_arch(platform.machine())
 
 
+# Workers are put in their own session (preexec_fn=os.setsid) so a wedged one
+# can be killpg'd as a group.  The flip side is that they are DETACHED from this
+# process group, so a Ctrl-C / SIGTERM / wrapper timeout aimed at the driver
+# never reaches them -- and a deadlocked gevent or eventlet worker then spins at
+# 100% of a core indefinitely (#137 leaves up to three per interpreter).  Track
+# the live group and tear it down however this process exits.
+_LIVE_PGIDS = set()
+
+
+def _reap_children(*_args):
+    for pgid in list(_LIVE_PGIDS):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except Exception:
+            pass
+    _LIVE_PGIDS.clear()
+
+
+def _install_cleanup():
+    atexit.register(_reap_children)
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            prev = signal.getsignal(signum)
+        except Exception:
+            continue
+
+        def _handler(sn, frame, _prev=prev):
+            _reap_children()
+            # Restore the default action and re-raise so the driver still dies
+            # with the right status instead of swallowing the signal.
+            try:
+                signal.signal(sn, signal.SIG_DFL)
+            except Exception:
+                pass
+            os.kill(os.getpid(), sn)
+
+        try:
+            signal.signal(signum, _handler)
+        except Exception:
+            pass
+
+
+_install_cleanup()
+
+
 def run_worker(python, framework, benchmark, params, timeout, extra=None):
     cmd = [python, WORKER, framework, benchmark, "--params", json.dumps(params)]
     if extra:
@@ -99,24 +165,75 @@ def run_worker(python, framework, benchmark, params, timeout, extra=None):
         kwargs["preexec_fn"] = os.setsid
     p = subprocess.Popen(cmd, **kwargs)
     try:
-        out, err = p.communicate(timeout=timeout)
-        timed_out = False
-    except subprocess.TimeoutExpired:
-        timed_out = True
+        _LIVE_PGIDS.add(os.getpgid(p.pid))
+    except Exception:
+        _LIVE_PGIDS.add(p.pid)
+
+    # The timeout is on IDLENESS, not total runtime.  A deadlocked worker goes
+    # completely silent (that is the whole point of #137 -- gevent/eventlet wedge
+    # between the hub and the logging lock), while a worker that is merely slow
+    # keeps emitting HEARTBEAT lines and is allowed to run to completion.  That
+    # matters on platforms where a benchmark is far slower than on Linux: macOS
+    # runs #137 at roughly 3k msg/s against Linux's ~175k, so the full 80k-message
+    # workload needs ~27s where a fixed 30s budget was a coin flip.  Benchmarks
+    # that emit nothing are unaffected -- for them idle time == total time, which
+    # is exactly the old behaviour.
+    out_buf, err_buf = [], []
+    last_activity = [time.time()]
+
+    def _drain(stream, sink):
         try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            for line in iter(stream.readline, b""):
+                sink.append(line)
+                last_activity[0] = time.time()
         except Exception:
+            pass
+        finally:
             try:
-                p.kill()
+                stream.close()
             except Exception:
                 pass
-        try:
-            out, err = p.communicate(timeout=10)
-        except Exception:
-            out, err = b"", b""
 
-    out = (out or b"").decode("utf-8", "replace")
-    err = (err or b"").decode("utf-8", "replace")
+    readers = [threading.Thread(target=_drain, args=(s, b))
+               for s, b in ((p.stdout, out_buf), (p.stderr, err_buf))]
+    for t in readers:
+        t.daemon = True
+        t.start()
+
+    timed_out = False
+    while True:
+        if p.poll() is not None:
+            break
+        if time.time() - last_activity[0] > timeout:
+            timed_out = True
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+            break
+        time.sleep(0.2)
+
+    for t in readers:
+        t.join(timeout=10)
+    try:
+        p.wait(timeout=10)
+    except Exception:
+        pass
+    # Whatever happened, this group is no longer ours to reap.
+    try:
+        _LIVE_PGIDS.discard(os.getpgid(p.pid))
+    except Exception:
+        _LIVE_PGIDS.discard(p.pid)
+
+    out = b"".join(out_buf).decode("utf-8", "replace")
+    err = b"".join(err_buf).decode("utf-8", "replace")
+    # Heartbeats are progress signalling, not diagnostics; keep them out of the
+    # stderr tail that gets reported on failure.
+    err = "\n".join(l for l in err.splitlines()
+                    if not l.startswith("HEARTBEAT "))
 
     envelope = None
     for line in out.splitlines():
@@ -145,18 +262,18 @@ def run_matrix(python, benchmarks, params, pyver):
         for fw in FRAMEWORKS:
             if b == "logging137":
                 # naive attempt for all three
-                env = run_worker(python, fw, b, params, TIMEOUTS[b],
+                env = run_worker(python, fw, b, params, _timeout_for(b),
                                  extra=["--log-mode", "naive"])
                 results["runs"][b][fw] = env
                 _log_line(fw, b + " (naive)", env)
                 # extra: gevent "documented workaround" attempt
                 if fw == "gevent":
-                    wa = run_worker(python, fw, b, params, TIMEOUTS[b],
+                    wa = run_worker(python, fw, b, params, _timeout_for(b),
                                     extra=["--log-mode", "workaround"])
                     results["runs"][b][fw + ":workaround"] = wa
                     _log_line(fw, b + " (workaround)", wa)
             else:
-                env = run_worker(python, fw, b, params, TIMEOUTS[b])
+                env = run_worker(python, fw, b, params, _timeout_for(b))
                 results["runs"][b][fw] = env
                 _log_line(fw, b, env)
     return results
@@ -213,6 +330,30 @@ def _host_describe():
     """
     model, threads, pairs = "", 0, set()
     phys, core = None, None
+
+    # macOS has no /proc; everything below comes from sysctl instead.  Without
+    # this the whole field comes back empty on Darwin.
+    if sys.platform == "darwin":
+        def _sysctl(key):
+            try:
+                out = subprocess.check_output(["sysctl", "-n", key],
+                                              stderr=open(os.devnull, "w"))
+                return out.decode("utf-8", "replace").strip()
+            except Exception:
+                return ""
+        model = _sysctl("machdep.cpu.brand_string")
+        phys_n = _sysctl("hw.physicalcpu")
+        log_n = _sysctl("hw.logicalcpu")
+        if phys_n and log_n and phys_n != log_n:
+            cores = "%sc/%st" % (phys_n, log_n)
+        elif phys_n:
+            cores = "%sc" % phys_n
+        else:
+            cores = ""
+        # kern.hv_vmm_present is 1 inside a VM, 0/absent on bare metal.
+        virt = "VM" if _sysctl("kern.hv_vmm_present") == "1" else "bare metal"
+        return ", ".join(p for p in (model, cores, virt) if p)
+
     try:
         with open("/proc/cpuinfo") as fh:
             for line in fh:
@@ -324,8 +465,11 @@ def build_report():
                  "them and runs under the deadlock watchdog.")
     lines.append("- **#137**: monkey-patch everything, then log heavily from "
                  "real OS-thread pool workers while greenthreads spin in the hub. "
-                 "Each attempt runs under a hard 30 s subprocess watchdog; a hang "
-                 "is recorded as **deadlock**. Whether gevent/eventlet hang here "
+                 "Each attempt runs under a 45 s **idle** watchdog: the worker "
+                 "reports progress as it logs, so a run that keeps making "
+                 "progress is allowed to finish however slow the host, while one "
+                 "that goes silent is killed and recorded as **deadlock**. "
+                 "Whether gevent/eventlet hang here "
                  "depends on the machine -- it is a race between the hub and the "
                  "logging lock, and a faster host with more cores wins it more "
                  "often -- so a single cell is one roll of the dice, not a "
@@ -334,7 +478,7 @@ def build_report():
     lines.append("")
     lines.append("> **OS-thread caveat.** `tpool` and `#137` cross into real "
                  "OS threads, and on a many-core host their absolute numbers "
-                 "are not reproducible: the amd64 box (32 vCPUs) gives a "
+                 "are not reproducible: the amd64 box (32c/64t) gives a "
                  "clean bimodal split ~1.6x apart, switching even between "
                  "reps inside one process. It is thread placement, and "
                  "`taskset` proves it -- pinned to a single CPU the same "
@@ -343,13 +487,19 @@ def build_report():
                  "and turned loose on all 32 it oscillates. The 1.6x factor "
                  "hits both runtimes equally, so the *ranking* holds even "
                  "where the absolute value does not: filament leads gevent by "
-                 "1.3-1.4x in every pinned configuration. The 6-core arm64 "
-                 "box does not show this, having far less placement freedom. "
+                 "1.3-1.4x in every pinned configuration. The current numbers "
+                 "still show it: amd64 gevent tpool ranges 40k-91k calls/s "
+                 "across interpreters while the arm64 host repeats to within a "
+                 "few percent (89-92k) over the same set -- same code, same "
+                 "commit, different scheduling freedom. "
                  "Read a single tpool or #137 cell as an order of magnitude; "
                  "the pure-greenthread rows repeat to within a few percent.")
     lines.append("")
     lines.append("> **Cross-version caveat.** Each Python version's table was "
-                 "recorded in its own sequential run on the same box. Interpreter "
+                 "recorded in its own sequential run on the box named for it in "
+                 "the Environments table -- note that the arm64 2.7 row comes "
+                 "from a Linux container while every other arm64 row is the "
+                 "Apple host, so 2.7 is not comparable to them. Interpreter "
                  "speed differs across versions, so absolute numbers are **not** "
                  "comparable across Python versions. The reliable signal is the "
                  "**ratio between frameworks within one version**: all three "
@@ -387,9 +537,6 @@ def build_report():
                  "21.12.0 completed the same benchmark (~23.6k calls/s), so this "
                  "is a gevent regression in its final py2.7 release, not a "
                  "harness artifact.")
-    lines.append("- **gevent/eventlet on Python 3.8**: latest releases have no "
-                 "3.8/aarch64 wheels, so pip resolved to gevent **22.10.2** and "
-                 "eventlet **0.39.1** (still current enough for a fair comparison).")
     lines.append("- **filament** builds and runs every benchmark "
                  "(including `#137`) on every interpreter in the "
                  "matrix, 2.7 through 3.15, with a version-tagged "
@@ -673,10 +820,18 @@ def main():
     ap.add_argument("--benchmarks", default="")
     ap.add_argument("--scale", default="full", choices=["full", "small"])
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--timeout-scale", type=float, default=None,
+                    help="multiply every per-benchmark timeout by this factor. "
+                         "A 'deadlock' only means the worker printed no result "
+                         "in time -- raise this to tell a genuine hang from a "
+                         "cell that is merely slow on a new/loaded platform.")
     ap.add_argument("--arch", default="",
                     help="override the results arch subdir (default: auto-detect "
                          "the target interpreter's machine, e.g. amd64/arm64)")
     args = ap.parse_args()
+
+    if args.timeout_scale:
+        os.environ["FIL_BENCH_TIMEOUT_SCALE"] = str(args.timeout_scale)
 
     if not os.path.isdir(RESULTS_DIR):
         os.makedirs(RESULTS_DIR)
