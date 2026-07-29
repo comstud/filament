@@ -759,12 +759,19 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
  * all -- an event_add and an event_del, i.e. two epoll_ctl syscalls plus
  * event_base locking and (often) a notify write to wake the io thread.
  *
- * For the overwhelmingly common case (a socket blocking with no timeout), we
- * instead keep ONE persistent edge-triggered libevent event per (socket,
- * direction), owned by the socket object and registered on first use for the
- * lifetime of the fd.  Blocked operations then cost only: park the greenlet,
- * let the io thread's epoll report the edge, signal the waiter (GIL-free).
- * No epoll_ctl, no allocations beyond the waiter itself.
+ * For a blocking socket -- with or without a timeout set -- we instead keep ONE
+ * persistent edge-triggered libevent event per (socket, direction), owned by
+ * the socket object and registered on first use for the lifetime of the fd.
+ * Blocked operations then cost only: park the greenlet, let the io thread's
+ * epoll report the edge, signal the waiter (GIL-free).  No epoll_ctl, no
+ * allocations beyond the waiter itself.
+ *
+ * A timeout does not push an operation off this path: the deadline is enforced
+ * by the parked greenthread's own scheduler timer, never by libevent, so the
+ * event here stays a pure untimed readiness signal (see wait_cached below).
+ * Real HTTP clients set socket timeouts on every pooled connection, so keeping
+ * them on this path rather than the classic one is worth a large fraction of
+ * throughput on client workloads.
  *
  * Why edge-triggered is safe here: callers ALWAYS attempt the (non-blocking)
  * syscall first and only wait after EAGAIN, i.e. they have drained the fd to
@@ -856,15 +863,28 @@ static void _iothread_fdwait_free(FilIOFDWait *fdw)
  * only with a 'seq' snapshot (fil_iothread_fdwait_seq) taken BEFORE that
  * syscall.
  *
+ * 'timeout' is an ABSOLUTE deadline (NULL for none).  It never reaches the io
+ * thread: the persistent event stays a pure untimed readiness signal and the
+ * deadline is enforced by the waiting greenthread's own scheduler, on its own
+ * thread, via the scheduler's timer min-heap (fil_waiter_wait arms it).  That
+ * is what lets a socket with settimeout() set keep using this cheap path
+ * instead of falling back to the classic one, which pays two epoll_ctl
+ * syscalls, an event_new/event_free and two mutex/cond init+destroy pairs for
+ * every single blocked operation.
+ *
+ * Because the deadline is resolved on the scheduler thread under the GIL, the
+ * io thread's wakeup remains the GIL-free fil_waiter_signal_nogil() it always
+ * was -- no Python API call is added to the io side.
+ *
  * Returns:
  *   0  -- an edge has fired since 'seq' was snapshotted (possibly while we
  *         checked); retry the syscall
  *   1  -- cached path unavailable (no ET support / another waiter already
  *         parked on this direction); caller must fall back to the classic
  *         fil_iothread_*_ready path
- *   -1 -- error (Python exception set)
+ *   -1 -- error, timeout included (Python exception set)
  */
-int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq)
+int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc)
 {
     FilIOFDWait *fdw = *cachep;
     FilWaiter *waiter;
@@ -940,7 +960,7 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
     fdw->busy = 1;
     pthread_mutex_unlock(&(fdw->lock));
 
-    err = fil_waiter_wait(waiter, NULL, NULL);
+    err = fil_waiter_wait(waiter, timeout, timeout_exc);
 
     pthread_mutex_lock(&(fdw->lock));
     if (err && fdw->waiter == waiter)

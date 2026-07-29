@@ -24,7 +24,7 @@ PyFilIOThread *fil_iothread_get(void);
 int fil_iothread_read_ready(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
 int fil_iothread_write_ready(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
 
-int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq);
+int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc);
 unsigned int fil_iothread_fdwait_seq(FilIOFDWait *cache);
 void fil_iothread_fdwait_destroy(FilIOFDWait *cache);
 
@@ -46,7 +46,7 @@ static PyFilIOThread *(*fil_iothread_get)(void);
 static int (*fil_iothread_read_ready)(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
 static int (*fil_iothread_write_ready)(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
 
-static int (*fil_iothread_wait_cached)(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq);
+static int (*fil_iothread_wait_cached)(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc);
 static unsigned int (*fil_iothread_fdwait_seq)(FilIOFDWait *cache);
 static void (*fil_iothread_fdwait_destroy)(FilIOFDWait *cache);
 

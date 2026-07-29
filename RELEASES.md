@@ -1,5 +1,51 @@
 # Release notes
 
+## Unreleased
+
+**Performance**
+
+- A socket with `settimeout()` set now uses the same cheap cached
+  edge-triggered wait as one without. It used to be pushed onto the classic io
+  path, which pays -- for *every* blocked operation -- two `epoll_ctl`
+  syscalls, an `event_new`/`event_free`, two mutex/cond init+destroy pairs and
+  a malloc, and has the io thread perform the `recv`/`send` itself under a
+  lock. Since connection pools set a timeout on every pooled connection
+  (`urllib3` and `geventhttpclient` both do), client-side workloads were
+  paying that on essentially every request: measured across 50 to 4000
+  connections, setting a timeout alone took filament from ~1.6x *faster* than
+  gevent to ~0.98x on an otherwise identical workload.
+
+  The deadline never goes near the io thread. The persistent event stays a
+  pure untimed readiness signal and the deadline is armed on the waiting
+  greenthread's own scheduler timer, so the io thread's wakeup remains the
+  GIL-free one it always was. `epoll_ctl` per blocked operation drops from
+  ~4.6 to ~0.002; a `geventhttpclient` load-generation benchmark goes from 8%
+  behind gevent to 21% ahead at 100 connections and 26% ahead at 1000, with
+  roughly half the p95 latency. Workloads that never set a timeout are
+  unaffected.
+
+  Worth recording what this is *not*: the io thread was never the bottleneck.
+  Across the same sweep it never exceeded 0.47 of one core, and without a
+  timeout its cost per request *falls* as connection count rises. Neither
+  additional io threads nor handing the read/write syscalls to a worker pool
+  would have helped.
+
+**Bug fixes**
+
+- Fixed `sendall()` blocking forever on a socket with `settimeout()` set. The
+  deadline was computed lazily and shared across the call's segments by
+  passing a null buffer to mean "already computed" -- but a first segment that
+  *partially* succeeded returned before computing one, so every later segment
+  ran with no deadline at all and the call could never time out. The
+  "computed" state is now tracked explicitly rather than encoded in a pointer,
+  which also lets every segment take the fast path instead of only the first.
+
+- The internal wakeup contract no longer claims that a caller without the GIL
+  may only wake an *untimed* waiter. That was true when timed waiters were
+  resumed through a path that touched a refcount; they are not any more, and
+  the restriction it documented had already stopped existing. Nothing depended
+  on it, but the timeout work above would have looked unsafe against it.
+
 ## 0.9.3 (2026-07-28)
 
 Most of this came out of swapping `gevent_compat` in for gevent under a
