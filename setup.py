@@ -10,12 +10,13 @@
 #   2. materializing the fiber-core config header from FIL_FIBER_CORE, and
 #   3. tuning the OPT / debug compiler flags.
 #
-# On Python 3.8+ setuptools reads ext_modules from here as part of a PEP 517
+# On Python 3.9+ setuptools reads ext_modules from here as part of a PEP 517
 # build. On Python 2.7 (test-only; no wheels published) pyproject.toml is
 # ignored and this file is driven directly with
 # `python setup.py build_ext --inplace`, which only needs ext_modules.
 
 import os
+import subprocess
 import sys
 
 import setuptools
@@ -165,14 +166,80 @@ else:
 # C/C++ extension modules. Translated 1:1 from the pbr-era setup.cfg
 # [extension=*] blocks. The greenlet include dir (vendored on Py3) is injected
 # globally via CFLAGS above; each extension adds its own local include roots.
-def _ext(name, sources, include_dirs=None, libraries=None, language='c'):
+def _ext(name, sources, include_dirs=None, libraries=None, language='c',
+         library_dirs=None):
     return Extension(
         name,
         sources=sources,
         include_dirs=include_dirs or [],
         libraries=libraries or [],
+        library_dirs=library_dirs or [],
         language=language,
     )
+
+
+def _run(cmd):
+    """Run a helper command, returning stripped stdout or None if unusable."""
+    try:
+        devnull = open(os.devnull, 'w')
+        try:
+            out = subprocess.check_output(cmd, stderr=devnull)
+        finally:
+            devnull.close()
+    except Exception:
+        return None
+    out = out.decode('utf-8', 'replace').strip()
+    return out or None
+
+
+def _libevent_dirs():
+    """Locate libevent's headers and libraries.
+
+    On Linux the distro package lands in the compiler's default search path and
+    this returns empty lists -- nothing to add.  Homebrew on macOS installs
+    outside that path (``/opt/homebrew`` on Apple Silicon, ``/usr/local`` on
+    Intel), so ``event2/event.h`` is not found without help.
+
+    Resolution order, first hit wins:
+      1. ``LIBEVENT_PREFIX`` -- explicit override, for unusual installs.
+      2. ``pkg-config libevent`` -- authoritative when present, and correct for
+         Homebrew, MacPorts and most Linux distros alike.
+      3. ``brew --prefix libevent`` -- Homebrew without pkg-config.
+      4. The two standard Homebrew prefixes, probed for the header directly.
+
+    Never raises: if nothing is found we return empty lists and let the
+    compiler produce its own (clearer) "file not found" error.
+    """
+    prefix = os.environ.get('LIBEVENT_PREFIX')
+    if prefix:
+        return ([os.path.join(prefix, 'include')],
+                [os.path.join(prefix, 'lib')])
+
+    inc = _run(['pkg-config', '--cflags-only-I', 'libevent'])
+    lib = _run(['pkg-config', '--libs-only-L', 'libevent'])
+    if inc or lib:
+        # pkg-config emits "-I/a -I/b" / "-L/a"; strip the flag prefixes.
+        incs = [p[2:] for p in (inc or '').split() if p.startswith('-I')]
+        libs = [p[2:] for p in (lib or '').split() if p.startswith('-L')]
+        if incs or libs:
+            return incs, libs
+
+    prefix = _run(['brew', '--prefix', 'libevent'])
+    if prefix and os.path.exists(os.path.join(prefix, 'include', 'event2',
+                                              'event.h')):
+        return ([os.path.join(prefix, 'include')],
+                [os.path.join(prefix, 'lib')])
+
+    for prefix in ('/opt/homebrew', '/usr/local'):
+        if os.path.exists(os.path.join(prefix, 'include', 'event2',
+                                       'event.h')):
+            return ([os.path.join(prefix, 'include')],
+                    [os.path.join(prefix, 'lib')])
+
+    return [], []
+
+
+_LIBEVENT_INCLUDE, _LIBEVENT_LIB = _libevent_dirs()
 
 
 ext_modules = [
@@ -229,7 +296,8 @@ ext_modules = [
             'src/io/fil_io.c',
             'src/io/fil_iothread.c',
         ],
-        include_dirs=['./include'],
+        include_dirs=['./include'] + _LIBEVENT_INCLUDE,
+        library_dirs=_LIBEVENT_LIB,
         libraries=['pthread', 'event_pthreads', 'event_core'],
     ),
     _ext(

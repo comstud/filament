@@ -324,7 +324,12 @@ static char *_RESOLVER_METHOD_NAMES[] = {
     "getnameinfo",
     NULL,
 };
-#define _NUM_RESOLVER_METHODS ((sizeof(_RESOLVER_METHOD_NAMES) / sizeof(char *)) - 1)
+/* Cast to int: this is compared against signed loop counters and against a
+ * 'long' index below, and a bare sizeof expression is size_t -- which makes
+ * every one of those comparisons signed/unsigned and warns under
+ * -Wsign-compare.  It stays an integer constant expression, so it is still
+ * valid as an array dimension. */
+#define _NUM_RESOLVER_METHODS ((int)((sizeof(_RESOLVER_METHOD_NAMES) / sizeof(char *)) - 1))
 static PyObject *_RESOLVER_METHODS[_NUM_RESOLVER_METHODS];
 
 static inline int _copy_resolver_methods(PyObject *resolver)

@@ -65,6 +65,9 @@ green_new(PyTypeObject* type, PyObject* UNUSED(args), PyObject* UNUSED(kwds))
         // Constructing the C++ object assigns it to the pimpl pointer
         // of the Python object (o); we'll need that later.
         assert(c == o->pimpl);
+        // ...which is the only thing `c` is for, and NDEBUG builds compile
+        // that assert away.
+        (void)c;
     }
     return o;
 }
