@@ -514,7 +514,7 @@ static PyObject *_fil_sleep(PyObject *_self, PyObject *timeout)
      * timeout at all.
      *
      * It also keeps the scheduler's handle on the heap.  On the
-     * classic-greenlet builds (2.7, 3.8) a parked greenlet's C stack is copied
+     * classic-greenlet builds (2.7, 3.9) a parked greenlet's C stack is copied
      * away and restored on resume, so anything the scheduler writes to an
      * address inside that stack is undone -- a cancellation handle held in a
      * local variable silently stops working there.

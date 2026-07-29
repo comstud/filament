@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+**Packaging**
+
+- Dropped Python 3.8 (end-of-life October 2024); the floor is now 3.9, and 3.9
+  and 3.15 are both in the tested matrix for the first time. This is what makes
+  the license metadata modern: `project.license` is now a PEP 639 SPDX string
+  with `project.license-files` alongside it, which needs `setuptools>=77` --
+  unreachable on 3.8, where setuptools stops at 75.x and rejects the string form
+  outright rather than warning. Both `SetuptoolsDeprecationWarning`s at build
+  time are gone.
+- `setup.py` finds libevent on macOS, where Homebrew installs outside the
+  compiler's default search path: `LIBEVENT_PREFIX`, then `pkg-config`, then
+  `brew --prefix`, then the standard Homebrew prefixes. Linux is unaffected --
+  the distro package is already on the search path, so nothing is added.
+- The vendored greenlet's fiber-switch assembly assembles on Mach-O. It used
+  ELF-only directives (`.hidden`, `.type`, `.size`) that Apple's assembler
+  rejects, and Mach-O also prefixes C symbols with an underscore -- so the
+  symbol would not have linked even once the directives were accepted.
+
 **Performance**
 
 - A socket with `settimeout()` set now uses the same cheap cached
