@@ -3,7 +3,7 @@
 [![CI](https://github.com/comstud/filament/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/comstud/filament/actions/workflows/ci.yml)
 [![Python coverage](https://img.shields.io/codecov/c/github/comstud/filament/master?flag=python&label=python%20coverage)](https://app.codecov.io/gh/comstud/filament)
 [![C coverage](https://img.shields.io/codecov/c/github/comstud/filament/master?flag=c&label=C%20coverage)](https://app.codecov.io/gh/comstud/filament)
-![Python](https://img.shields.io/badge/python-2.7%20%7C%203.8--3.15-blue)
+![Python](https://img.shields.io/badge/python-2.7%20%7C%203.9--3.15-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Filament is a greenlet-based cooperative concurrency library for Python — an
@@ -15,7 +15,7 @@ replacements for the standard library (`socket`, `ssl`, `select`, `time`,
 `os`, `subprocess`, `threading`, `queue`) and near drop-in compatibility shims
 for both `gevent` and `eventlet`.
 
-It runs on **CPython 2.7 and 3.8–3.15** (the same source, one set of C
+It runs on **CPython 2.7 and 3.9–3.15** (the same source, one set of C
 extensions), and it does **not** have the cross-thread greenlet-switch bug
 that still bites gevent and eventlet today (see below).
 
@@ -63,12 +63,12 @@ undefined behavior on gevent and eventlet.
 
 Requirements:
 
-- Python 2.7 or 3.8–3.15
+- Python 2.7 or 3.9–3.15
 - [greenlet](https://pypi.org/project/greenlet/) (use the 1.1.x line for
   Python 2.7, 3.x otherwise). On Python 3.10+ filament builds and prefers its
   own vendored, performance-tuned greenlet fork (`_fil_greenlet`) — the
   installed greenlet is still used for headers at build time and as a runtime
-  fallback on 2.7/3.8/3.9.
+  fallback on 2.7/3.9.
 - A C compiler (C++ for the vendored greenlet) and `libevent` development
   headers (Debian/Ubuntu: `sudo apt-get install libevent-dev`).
   `libbluetooth-dev` is optional (Bluetooth socket support; compiled in only
@@ -226,9 +226,8 @@ auto-arms) restores fully eager frame exposure, at a small per-switch cost.
 ## Python version support
 
 The same source builds and passes the full test suite on **CPython 2.7.18,
-3.8, 3.10, 3.11, 3.12, 3.13, 3.14, and 3.15 (beta)** — 220 tests on 3.12/3.13,
-214 (+6 lazy-debug-only skips) elsewhere. Python 3.9 is expected to work via
-the classic-greenlet fallback but is not in the tested matrix. Python 2 vs 3
+3.9, 3.10, 3.11, 3.12, 3.13, 3.14, and 3.15** — 505 tests on 3.12/3.13,
+499 (+6 lazy-debug-only skips) elsewhere. Python 2 vs 3
 differences are centralized in `include/core/pyversion.h` (string/int APIs,
 module init, greenlet parent-reference ownership) rather than scattered
 through the C.

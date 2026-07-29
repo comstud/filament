@@ -75,9 +75,11 @@ typedef struct
 } FilSchedTimerHeap;
 
 /* Cap on the per-scheduler freelist of FilSchedEvent structs (see
- * _scheduler_add_event / _sched_main). 256 * ~64B is negligible memory and
- * covers any realistic ready-batch size. */
-#define FIL_SCHED_EVENT_FREELIST_MAX 256
+ * _scheduler_add_event / _sched_main).  Sized so even high-concurrency
+ * workloads (~1000 greenlets with an event in flight each) never touch malloc
+ * in steady state, while keeping the worst-case cached memory small
+ * (2048 * sizeof(FilSchedEvent) ~= 112KB). */
+#define FIL_SCHED_EVENT_FREELIST_MAX 2048
 
 typedef struct _pyfil_scheduler
 {

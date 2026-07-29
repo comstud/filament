@@ -5,12 +5,12 @@
 # flag tuning) live in setup.py -- setuptools reads ext_modules from there
 # while all *metadata* is declared here.
 #
-# Python 3.8+ builds through this file (pip / build / cibuildwheel). Python 2.7
+# Python 3.9+ builds through this file (pip / build / cibuildwheel). Python 2.7
 # is test-only: it never reads pyproject.toml and is built with the legacy
 # `python setup.py build_ext --inplace` path, which only needs ext_modules.
 
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -18,13 +18,13 @@ name = "filament"
 version = "0.9.3"
 description = "Filament: Microthreads for Python"
 readme = "README.md"
-requires-python = ">=3.8"
-# Classic PEP 621 table form (not the PEP 639 SPDX string): the SPDX string
-# needs setuptools>=77, which cannot install on Python 3.8. The table form is
-# accepted across the whole supported setuptools range so `setup.py build_ext`
-# works on 3.8 too. license-files lives under [tool.setuptools] for the same
-# reason (the [project].license-files key is also PEP 639 / setuptools>=77).
-license = { text = "MIT" }
+requires-python = ">=3.9"
+# PEP 639 SPDX string + [project].license-files, which need setuptools>=77.
+# That floor is only reachable because 3.8 was dropped: setuptools stops at
+# 75.x on 3.8, and there the string form is a hard ValueError, not a warning.
+# 3.9 is fine (setuptools 82 installs and parses this cleanly).
+license = "MIT"
+license-files = ["LICENSE", "LICENSE.PSF"]
 authors = [{ name = "Chris Behrens", email = "cbehrens@codestud.com" }]
 keywords = ["greenlet", "coroutine", "microthread", "concurrency", "gevent", "eventlet"]
 dependencies = ["greenlet>=0.4.0"]
@@ -36,13 +36,13 @@ classifiers = [
     "Programming Language :: Python :: 2",
     "Programming Language :: Python :: 2.7",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Operating System :: POSIX",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -67,8 +67,9 @@ compat-test = ["gevent"]
 
 [tool.setuptools]
 # Extensions and custom build logic are defined in setup.py.
-license-files = ["LICENSE", "LICENSE.PSF"]
-packages = ["filament", "filament.gevent_compat", "filament.eventlet_compat", "_filament"]
+# license-files moved to [project] (PEP 639); the [tool.setuptools] spelling is
+# deprecated and warns on setuptools>=77.
+packages =["filament", "filament.gevent_compat", "filament.eventlet_compat", "_filament"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

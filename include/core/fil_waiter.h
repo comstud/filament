@@ -530,20 +530,28 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
  *     signalers: the locking / queue / message primitives, thread-pool
  *     workers, socket teardown).
  *   - fil_waiter_signal_nogil() -- caller does NOT hold the GIL (the io
- *     thread's event callbacks). Such callers may only ever signal UNTIMED
- *     waiters (io waits never pass a ts), which keeps this path free of any
- *     Python API calls.
+ *     thread's event callbacks).
+ *
+ * Either kind of caller may signal a TIMED waiter. That was not always true:
+ * timed waiters used to be resumed through fil_scheduler_gl_switch(), which
+ * touches a refcount and therefore demanded the GIL, so off-GIL signalers were
+ * restricted to untimed waits. The wakeup now goes through
+ * _fil_waiter_queue_switch() in every case, carrying the waiter and the
+ * reservation the parked greenthread took for it (see the wakeup contract), so
+ * no path here performs a Python API call or touches a refcount. The io thread
+ * relies on this: a socket with settimeout() set parks on the cached
+ * edge-triggered path with a deadline, and the io thread signals it off-GIL
+ * exactly as it does an untimed one. The deadline itself is never the io
+ * thread's business -- it is armed on, and fires from, the parked
+ * greenthread's own scheduler timer (see fil_waiter_wait).
  *
  * Wakeup mechanics:
- *   - For UNTIMED greenlet waiters the wakeup switch is enqueued with a
- *     BORROWED greenlet reference; see _fil_waiter_switch_event_cb for why
- *     that is safe: an untimed parked greenlet can only be resumed by the
- *     event we enqueue here, so waiter->gl keeps it alive until then.
- *   - For TIMED waiters the concurrent timeout event can resume (and
- *     potentially finish) the greenlet before our enqueued switch runs, so
- *     we take a real reference via fil_scheduler_gl_switch (GIL required --
- *     guaranteed because timed waiters are only ever signaled by GIL-holding
- *     callers).
+ *   - The wakeup switch is enqueued with a BORROWED greenlet reference; see
+ *     _fil_waiter_switch_event_cb for why that is safe. For a TIMED waiter the
+ *     timeout event can resume the greenlet concurrently, which is settled
+ *     under waiter_lock in fil_waiter_wait: whichever side resumes first
+ *     clears WAITING and gl there, and the loser observes !waiting here and
+ *     returns without queueing anything.
  *   - For OS-thread waiters (sched == NULL) a GIL-holding caller drops the
  *     GIL around the condvar signal: the woken thread almost always needs
  *     the GIL next, and this voluntary release is a scheduling point that

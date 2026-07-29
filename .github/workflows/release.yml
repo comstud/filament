@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Build manylinux wheels for cp38-cp314 on amd64 and native arm64 runners.
+  # Build manylinux wheels for cp39-cp314 on amd64 and native arm64 runners.
   # 3.15 is intentionally excluded from published wheels while it is a beta; the
   # CI workflow still tests it. To add it once it ships, set
   # CIBW_ENABLE=cpython-prerelease and extend CIBW_BUILD.
@@ -31,7 +31,7 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.21
         env:
-          CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
           # Native 64-bit only. Without this an x86_64 runner also builds
           # i686, whose only image is manylinux2014 (CentOS 7) — no dnf, and

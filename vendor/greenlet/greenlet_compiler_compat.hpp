@@ -70,11 +70,16 @@
 #    define GREENLET_NOINLINE(name) __attribute__((noinline)) name
 #    define GREENLET_NOINLINE_P(rtype, name) rtype __attribute__((noinline)) name
 #    define UNUSED(x) UNUSED_ ## x __attribute__((__unused__))
+/* For a function that a build configuration may legitimately never call.
+   Unlike UNUSED() this keeps the name, so callers that *do* exist still
+   compile. */
+#    define GREENLET_MAYBE_UNUSED(name) __attribute__((__unused__)) name
 #elif defined(_MSC_VER)
 /* We used to check for  && (_MSC_VER >= 1300) but that's also out of date. */
 #    define GREENLET_NOINLINE(name) __declspec(noinline) name
 #    define GREENLET_NOINLINE_P(rtype, name) __declspec(noinline) rtype name
 #    define UNUSED(x) UNUSED_ ## x
+#    define GREENLET_MAYBE_UNUSED(name) name
 #endif
 
 #if defined(_MSC_VER)

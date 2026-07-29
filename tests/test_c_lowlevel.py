@@ -355,7 +355,7 @@ assert gl is not None
 try:
     import _fil_greenlet as _gl      # vendored runtime (py3)
 except ImportError:
-    import greenlet as _gl           # classic-greenlet build (py2.7/py3.8)
+    import greenlet as _gl           # classic-greenlet build (py2.7)
 me = _gl.getcurrent()
 sched.fil_switch(me)
 sched.switch()

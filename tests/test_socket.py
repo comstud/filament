@@ -235,10 +235,10 @@ def test_kill_beats_ready_data_with_a_socket_timeout():
     Same race as test_kill_beats_ready_data, but on a socket that has a
     timeout set.
 
-    That is a different code path inside the C recv: with no timeout the
-    cheap cached edge-triggered wait is used, with one the classic io-thread
-    wait is. Both have to let a throw win over bytes that arrived in the same
-    wakeup, so both need covering.
+    A socket with a timeout takes the same cached edge-triggered wait as one
+    without, but parks with a deadline armed on the scheduler's timer heap, so
+    there is a second way to be resumed. The throw still has to win over bytes
+    that arrived in the same wakeup, so both shapes need covering.
     """
     import filament
     from filament import socket as fsocket
@@ -261,7 +261,7 @@ def test_kill_beats_ready_data_with_a_socket_timeout():
                     parked.append(("error", type(e).__name__))
 
             g = filament.spawn(reader)
-            filament.sleep(0.01)              # parked in recv
+            filament.sleep(0.01)              # parked in recv, deadline armed
             Timer(0, g.throw, GreenletExit)   # queue the throw, do not yield
             right.sendall(b"payload")         # ... and make the fd readable
             filament.sleep(0.05)
@@ -274,3 +274,194 @@ def test_kill_beats_ready_data_with_a_socket_timeout():
     # Either resolution is legitimate; what must not happen is a SystemError
     # from handing back bytes with the exception still pending.
     assert set(outcomes) <= {"data", "killed"}, outcomes
+
+
+# ---------------------------------------------------------------------------
+# Timeouts on the cached edge-triggered io path.
+#
+# A socket with settimeout() set used to be pushed onto the classic io path,
+# which costs two epoll_ctl syscalls, an event_new/event_free and two
+# mutex/cond init+destroy pairs for every blocked operation -- real HTTP
+# clients set a timeout on every pooled connection, so that was most of the io
+# work in a client workload. Such a socket now stays on the cheap cached path
+# and the deadline is armed on the scheduler's own timer heap instead of on
+# libevent. These cover that the deadline still behaves like a deadline.
+# ---------------------------------------------------------------------------
+
+
+def _elapsed(fn):
+    import time
+
+    t0 = time.time()
+    result = fn()
+    return result, time.time() - t0
+
+
+def test_recv_timeout_fires_on_the_cached_path():
+    """A timeout still fires, and at roughly the requested time."""
+    from filament import socket as fsocket
+
+    def body():
+        left, right = fsocket.socketpair()
+        try:
+            left.settimeout(0.2)
+
+            def recv_it():
+                try:
+                    left.recv(16)
+                    return "data"
+                except fsocket.timeout:
+                    return "timeout"
+
+            return _elapsed(recv_it)
+        finally:
+            left.close()
+            right.close()
+
+    outcome, elapsed = filament.spawn(body).wait()
+    assert outcome == "timeout", outcome
+    # Lower bound: it must actually wait rather than fire immediately.
+    # Upper bound is loose because a loaded box delays the timer.
+    assert 0.15 <= elapsed < 3.0, elapsed
+
+
+def test_recv_timeout_does_not_fire_when_data_arrives_in_time():
+    """The armed deadline must not pre-empt a normal wakeup."""
+    from filament import socket as fsocket
+
+    def body():
+        left, right = fsocket.socketpair()
+        try:
+            left.settimeout(5.0)
+            filament.spawn_later(0.05, right.sendall, b"payload")
+            return left.recv(16)
+        finally:
+            left.close()
+            right.close()
+
+    assert filament.spawn(body).wait() == b"payload"
+
+
+def test_socket_survives_its_own_timeout():
+    """
+    After a timeout the cached fd-waiter is reused, so a mis-detached waiter
+    would show up as the *next* operation hanging or losing its wakeup.
+    """
+    from filament import socket as fsocket
+
+    def body():
+        left, right = fsocket.socketpair()
+        try:
+            left.settimeout(0.1)
+            for _ in range(3):
+                try:
+                    left.recv(16)
+                    return "unexpected data"
+                except fsocket.timeout:
+                    pass
+            # ... and the socket is still perfectly usable afterwards.
+            right.sendall(b"still here")
+            return left.recv(16)
+        finally:
+            left.close()
+            right.close()
+
+    assert filament.spawn(body).wait() == b"still here"
+
+
+def test_repeated_timeouts_do_not_accumulate():
+    """
+    Each call gets its own deadline: three 0.1s timeouts take ~0.3s total, not
+    0.1s total (a deadline left armed from the previous call) and not longer.
+    """
+    from filament import socket as fsocket
+
+    def body():
+        left, right = fsocket.socketpair()
+        try:
+            left.settimeout(0.1)
+
+            def three():
+                n = 0
+                for _ in range(3):
+                    try:
+                        left.recv(16)
+                    except fsocket.timeout:
+                        n += 1
+                return n
+
+            return _elapsed(three)
+        finally:
+            left.close()
+            right.close()
+
+    fired, elapsed = filament.spawn(body).wait()
+    assert fired == 3, fired
+    assert 0.25 <= elapsed < 4.0, elapsed
+
+
+def test_sendall_timeout_deadline_is_absolute():
+    """
+    The regression guard for the one genuinely new bug this change could
+    introduce: the deadline must be computed ONCE per call, not re-derived
+    after each wakeup.
+
+    sendall into a peer that never reads blocks, wakes on a writability edge,
+    writes a little more, and blocks again -- many wakeups inside one logical
+    operation. With a per-wakeup deadline each edge would push the timeout out
+    again and this would never return.
+    """
+    from filament import socket as fsocket
+
+    def body():
+        left, right = fsocket.socketpair()
+        try:
+            # Small buffers so the send side fills quickly and has to park
+            # repeatedly rather than swallowing the payload in one go.
+            left.setsockopt(fsocket.SOL_SOCKET, fsocket.SO_SNDBUF, 4096)
+            right.setsockopt(fsocket.SOL_SOCKET, fsocket.SO_RCVBUF, 4096)
+            left.settimeout(0.3)
+
+            def send_it():
+                try:
+                    # 'right' is never read, so this cannot complete.
+                    left.sendall(b"x" * (8 * 1024 * 1024))
+                    return "sent"
+                except fsocket.timeout:
+                    return "timeout"
+
+            return _elapsed(send_it)
+        finally:
+            left.close()
+            right.close()
+
+    outcome, elapsed = filament.spawn(body).wait()
+    assert outcome == "timeout", outcome
+    assert 0.25 <= elapsed < 5.0, elapsed
+
+
+def test_accept_timeout_fires():
+    """The same widened guard covers accept() via the FIL_CPROXY_POLL macro."""
+    from filament import socket as fsocket
+
+    def body():
+        srv = fsocket.socket()
+        try:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            srv.settimeout(0.2)
+
+            def accept_it():
+                try:
+                    srv.accept()
+                    return "accepted"
+                except fsocket.timeout:
+                    return "timeout"
+
+            return _elapsed(accept_it)
+        finally:
+            srv.close()
+
+    outcome, elapsed = filament.spawn(body).wait()
+    assert outcome == "timeout", outcome
+    assert 0.15 <= elapsed < 3.0, elapsed

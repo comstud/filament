@@ -72,6 +72,36 @@ void fil_fiber_asm_switch(void** save_sp, void* restore_sp);
 void fil_fiber_entry(void);
 }
 
+/*
+ * Assembler portability: the switch routine below is emitted as a top-level
+ * __asm__ block, so it has to spell out symbol declarations itself -- and those
+ * differ between ELF and Mach-O:
+ *
+ *   - Mach-O prefixes C symbols with an underscore; ELF does not.  The C
+ *     declaration of fil_fiber_asm_switch() above compiles to a reference to
+ *     _fil_fiber_asm_switch on Apple, so the definition has to match or it
+ *     links against nothing.
+ *   - '.hidden' is ELF; the Mach-O spelling is '.private_extern'.
+ *   - '.type' and '.size' are ELF-only and Apple's assembler rejects them
+ *     outright ("unknown directive"), so they are omitted there.  They are
+ *     debug/ABI metadata, not codegen, so dropping them costs nothing.
+ *   - '.previous' is likewise skipped on Mach-O: we only ever entered .text,
+ *     so there is no section to pop back to.
+ */
+#if defined(__APPLE__)
+#  define FIL_ASM_SYM        "_fil_fiber_asm_switch"
+#  define FIL_ASM_HIDDEN     ".private_extern " FIL_ASM_SYM "\n"
+#  define FIL_ASM_TYPE(kind) ""
+#  define FIL_ASM_SIZE       ""
+#  define FIL_ASM_PREVIOUS   ""
+#else
+#  define FIL_ASM_SYM        "fil_fiber_asm_switch"
+#  define FIL_ASM_HIDDEN     ".hidden " FIL_ASM_SYM "\n"
+#  define FIL_ASM_TYPE(kind) ".type " FIL_ASM_SYM ", " kind "\n"
+#  define FIL_ASM_SIZE       ".size " FIL_ASM_SYM ", .-" FIL_ASM_SYM "\n"
+#  define FIL_ASM_PREVIOUS   ".previous\n"
+#endif
+
 #if defined(__aarch64__)
 /*
  * AAPCS64 callee-saved set: x19-x28, x29 (fp), x30 (lr), and the low 64
@@ -85,10 +115,10 @@ void fil_fiber_entry(void);
 __asm__(
 ".text\n"
 ".align 4\n"
-".globl fil_fiber_asm_switch\n"
-".hidden fil_fiber_asm_switch\n"
-".type fil_fiber_asm_switch, %function\n"
-"fil_fiber_asm_switch:\n"
+".globl " FIL_ASM_SYM "\n"
+FIL_ASM_HIDDEN
+FIL_ASM_TYPE("%function")
+FIL_ASM_SYM ":\n"
 "    stp x29, x30, [sp, #-160]!\n"
 "    stp x19, x20, [sp, #16]\n"
 "    stp x21, x22, [sp, #32]\n"
@@ -113,8 +143,8 @@ __asm__(
 "    ldp d14, d15, [sp, #144]\n"
 "    ldp x29, x30, [sp], #160\n"
 "    ret\n"
-".size fil_fiber_asm_switch, .-fil_fiber_asm_switch\n"
-".previous\n"
+FIL_ASM_SIZE
+FIL_ASM_PREVIOUS
 );
 
 namespace filfiber {
@@ -143,10 +173,10 @@ inline void* seed_context(char* stack_top) noexcept
 __asm__(
 ".text\n"
 ".align 16\n"
-".globl fil_fiber_asm_switch\n"
-".hidden fil_fiber_asm_switch\n"
-".type fil_fiber_asm_switch, @function\n"
-"fil_fiber_asm_switch:\n"
+".globl " FIL_ASM_SYM "\n"
+FIL_ASM_HIDDEN
+FIL_ASM_TYPE("@function")
+FIL_ASM_SYM ":\n"
 "    pushq %rbp\n"
 "    pushq %rbx\n"
 "    pushq %r12\n"
@@ -162,8 +192,8 @@ __asm__(
 "    popq %rbx\n"
 "    popq %rbp\n"
 "    ret\n"
-".size fil_fiber_asm_switch, .-fil_fiber_asm_switch\n"
-".previous\n"
+FIL_ASM_SIZE
+FIL_ASM_PREVIOUS
 );
 
 namespace filfiber {

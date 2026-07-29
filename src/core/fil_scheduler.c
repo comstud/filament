@@ -28,11 +28,9 @@
 
 /****************/
 
-/* Max number of recycled FilSchedEvent nodes kept per scheduler.  Sized so
- * even high-concurrency workloads (~1000 greenlets with an event in flight
- * each) never touch malloc in steady state, while keeping the worst-case
- * cached memory small (2048 * sizeof(FilSchedEvent) ~= 112KB). */
-#define FIL_SCHED_EVENT_FREELIST_MAX 2048
+/* FIL_SCHED_EVENT_FREELIST_MAX lives in core/fil_scheduler.h -- it used to be
+ * redefined here with a different value, which meant this file and every other
+ * translation unit disagreed about the cap. */
 
 #define _scheduler_get() \
     (PyFilScheduler *)pthread_getspecific(_scheduler_key)

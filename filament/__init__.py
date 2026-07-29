@@ -105,13 +105,13 @@ except ImportError:  # pragma: no cover
 # The FILAMENT_DEBUG environment variable (any value other than empty/"0")
 # turns debug mode on at interpreter start.
 #
-# On classic-greenlet builds (Python 2.7 / 3.8) greenlet is always fully
+# On classic-greenlet builds (Python 2.7) greenlet is always fully
 # eager, so these functions only track the flag and have no behavioral
 # effect.
 # ---------------------------------------------------------------------------
 try:  # vendored greenlet build (Python 3)
     import _fil_greenlet as _fil_greenlet  # noqa: N813
-except ImportError:  # pragma: no cover - classic greenlet build (py2.7/py3.8)
+except ImportError:  # pragma: no cover - classic greenlet build (py2.7)
     _fil_greenlet = None
 
 if _fil_greenlet is not None and hasattr(_fil_greenlet, "set_debug"):

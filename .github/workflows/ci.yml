@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Modern interpreters (3.8-3.15) on both amd64 and native arm64 runners.
+  # Modern interpreters (3.9-3.15) on both amd64 and native arm64 runners.
   # Python is provisioned with uv, which is the only reliable source of the
   # 3.14/3.15 pre-releases and matches the project's local dev setup.
   test:
@@ -20,10 +20,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Full cartesian product: 8 Pythons x 2 arches = 16 jobs. The `include`
+        # Full cartesian product: 7 Pythons x 2 arches = 14 jobs. The `include`
         # rows only attach the human-readable `arch` label to each `os` (they
         # match existing combinations rather than adding new ones).
-        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
         os: ["ubuntu-24.04", "ubuntu-24.04-arm"]
         include:
           - os: ubuntu-24.04

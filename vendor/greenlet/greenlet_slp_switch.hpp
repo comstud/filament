@@ -2,6 +2,7 @@
 #define GREENLET_SLP_SWITCH_HPP
 
 #include "greenlet_compiler_compat.hpp"
+#include "greenlet_cpython_compat.hpp"  // VGL_FIBER
 #include "greenlet_refs.hpp"
 
 /*
@@ -64,7 +65,16 @@ do {                                                    \
 
 #define SLP_EVAL
 extern "C" {
+#if VGL_FIBER
+/* filament: under the private-stack fiber core nothing calls slp_switch()
+ * -- Greenlet::g_switchstack() swaps SPs with fil_fiber_asm_switch()
+ * instead.  The platform header still has to be included, because it is
+ * also what defines STACK_MAGIC and the register-save macros checked
+ * for below, so the definition stays and is simply marked unused. */
+#define slp_switch GREENLET_MAYBE_UNUSED(GREENLET_NOINLINE(slp_switch))
+#else
 #define slp_switch GREENLET_NOINLINE(slp_switch)
+#endif
 #include "slp_platformselect.h"
 }
 #undef slp_switch

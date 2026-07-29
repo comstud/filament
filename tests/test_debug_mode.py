@@ -9,7 +9,7 @@ greenthread's ``gr_frame`` is read.  ``filament.set_debug(True)`` restores
 the classic fully-eager behavior (and sweeps already-parked greenthreads);
 a per-thread trace/profile function auto-arms it per switch.
 
-On classic-greenlet builds (py2.7/py3.8) ``set_debug``/``get_debug`` exist
+On classic-greenlet builds (py2.7) ``set_debug``/``get_debug`` exist
 but are behaviorally inert (classic greenlet is always eager); the tests
 that inspect materialization state are skipped there.
 
@@ -43,7 +43,7 @@ from tests._helpers import run_py
 try:
     import _fil_greenlet
     VENDORED = True
-except ImportError:  # py2.7 / py3.8 classic-greenlet builds
+except ImportError:  # py2.7 classic-greenlet builds
     _fil_greenlet = None
     VENDORED = False
 

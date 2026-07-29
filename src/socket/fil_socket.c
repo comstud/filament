@@ -163,8 +163,9 @@ static PyObject *_sock_ ## NAME SIG                                         \
     PyObject *attr;                                                         \
     PyObject *res = NULL;                                                   \
     PyFilIOThread *iothr;                                                   \
-    struct timespec ts_buf, *ts;                                            \
+    struct timespec ts_buf, *ts = NULL;                                     \
     unsigned int fdw_seq = 0;                                               \
+    int ts_valid = 0;                                                       \
     int err;                                                                \
     if ((attr = self->_sock_ ## NAME) == NULL)                              \
     {                                                                       \
@@ -179,7 +180,7 @@ static PyObject *_sock_ ## NAME SIG                                         \
     if (self->timeout == 0.0 ||                                             \
             self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)              \
     {                                                                       \
-        if (self->timeout < 0.0)                                            \
+        if (self->timeout != 0.0)                                           \
         {                                                                   \
             fdw_seq = fil_iothread_fdwait_seq(                              \
                     *_FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self));             \
@@ -190,10 +191,18 @@ static PyObject *_sock_ ## NAME SIG                                         \
             goto out;                                                       \
         }                                                                   \
         self->first_misses++;                                               \
-        /* Blocking with no timeout: use the cheap cached-edge wait (the    \
-         * optimistic call above just EAGAINed, so ET semantics are safe).  \
-         * Falls through to the classic path if unavailable. */             \
-        if (self->timeout < 0.0 && (iothr = fil_iothread_get()) != NULL)    \
+        /* One ABSOLUTE deadline for the whole call, computed once here and \
+         * reused by every retry below and by the classic fallback; moving  \
+         * it inside the loop would let each spurious edge extend it. */    \
+        if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts)) \
+        {                                                                   \
+            goto out;                                                       \
+        }                                                                   \
+        ts_valid = 1;                                                       \
+        /* Blocking, with or without a timeout: use the cheap cached-edge   \
+         * wait (the optimistic call above just EAGAINed, so ET semantics   \
+         * are safe).  Falls through to the classic path if unavailable. */ \
+        if ((iothr = fil_iothread_get()) != NULL)                           \
         {                                                                   \
             for (;;)                                                        \
             {                                                               \
@@ -201,7 +210,7 @@ static PyObject *_sock_ ## NAME SIG                                         \
                         _FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self),           \
                         self->_sock_fd,                                     \
                         _FIL_FDWAIT_ISWR_ ## READ_OR_WRITE,                 \
-                        fdw_seq);                                           \
+                        fdw_seq, ts, _SOCK_TIMEOUT);                        \
                 if (err != 0)                                               \
                 {                                                           \
                     break;                                                  \
@@ -222,7 +231,8 @@ static PyObject *_sock_ ## NAME SIG                                         \
             }                                                               \
         }                                                                   \
     }                                                                       \
-    if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))     \
+    if (!ts_valid &&                                                        \
+            fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts)) \
     {                                                                       \
         goto out;                                                           \
     }                                                                       \
@@ -314,7 +324,12 @@ static char *_RESOLVER_METHOD_NAMES[] = {
     "getnameinfo",
     NULL,
 };
-#define _NUM_RESOLVER_METHODS ((sizeof(_RESOLVER_METHOD_NAMES) / sizeof(char *)) - 1)
+/* Cast to int: this is compared against signed loop counters and against a
+ * 'long' index below, and a bare sizeof expression is size_t -- which makes
+ * every one of those comparisons signed/unsigned and warns under
+ * -Wsign-compare.  It stays an integer constant expression, so it is still
+ * valid as an array dimension. */
+#define _NUM_RESOLVER_METHODS ((int)((sizeof(_RESOLVER_METHOD_NAMES) / sizeof(char *)) - 1))
 static PyObject *_RESOLVER_METHODS[_NUM_RESOLVER_METHODS];
 
 static inline int _copy_resolver_methods(PyObject *resolver)
@@ -1218,12 +1233,13 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
-    struct timespec ts_buf, *ts;
+    struct timespec ts_buf, *ts = NULL;
+    int ts_valid = 0;
     unsigned int fdw_seq = 0;
 
     if (self->timeout == 0.0 || self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)
     {
-        if (self->timeout < 0.0)
+        if (self->timeout != 0.0)
         {
             fdw_seq = fil_iothread_fdwait_seq(self->fdwait_read);
         }
@@ -1245,17 +1261,30 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
 
         self->first_misses++;
 
-        /* Blocking with no timeout: use the cheap cached-edge wait (the
-         * optimistic recv above just EAGAINed, so ET semantics are safe).
+        /* One ABSOLUTE deadline for the whole call, computed once here and
+         * reused by every retry below AND by the classic fallback further
+         * down.  It must not be recomputed inside the retry loop: each
+         * spurious readiness edge would push the deadline out again and
+         * settimeout(1.0) would never fire.  (Past the early return above,
+         * timeout != 0.0, so this is NULL only for a socket with no timeout.) */
+        if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))
+        {
+            return -1;
+        }
+        ts_valid = 1;
+
+        /* Blocking, with or without a timeout: use the cheap cached-edge wait
+         * (the optimistic recv above just EAGAINed, so ET semantics are safe).
          * Falls through to the classic path if unavailable. */
-        if (self->timeout < 0.0 && (iothr = fil_iothread_get()) != NULL)
+        if ((iothr = fil_iothread_get()) != NULL)
         {
             int werr;
 
             for (;;)
             {
                 werr = fil_iothread_wait_cached(iothr, &self->fdwait_read,
-                                                self->_sock_fd, 0, fdw_seq);
+                                                self->_sock_fd, 0, fdw_seq,
+                                                ts, _SOCK_TIMEOUT);
                 if (werr != 0)
                 {
                     break;
@@ -1296,7 +1325,7 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
         }
     }
 
-    if (fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))
+    if (!ts_valid && fil_timespec_from_double_interval(self->timeout, &ts_buf, &ts))
     {
         return -1;
     }
@@ -1504,91 +1533,119 @@ FIL_CPROXY_POLL(
         read
 )
 
-static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, int flags, struct timespec *ts_buf, struct timespec **tsptr)
+/*
+ * '*ts_valid' tracks whether '*tsptr' already holds this operation's absolute
+ * deadline.  sendall() shares one flag (and one deadline) across every segment
+ * it sends, which is the whole point: the deadline is for the sendall() call,
+ * not for each individual send(2) it happens to need.
+ *
+ * This used to be encoded as "ts_buf == NULL means the caller already computed
+ * it".  That conflated two things and left a hole: a first segment that
+ * partially succeeded returned before computing any deadline, so every later
+ * segment ran with *tsptr == NULL, i.e. no timeout at all, and a sendall() on a
+ * socket with settimeout() set could block forever.  Keeping the flag explicit
+ * closes that and lets every segment use the fast path, not just the first.
+ */
+static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, int flags, struct timespec *ts_buf, struct timespec **tsptr, int *ts_valid)
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
     unsigned int fdw_seq = 0;
 
-    if (ts_buf != NULL)
+    if (self->timeout == 0.0 || self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)
     {
-        if (self->timeout == 0.0 || self->flags & PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL)
+        if (self->timeout != 0.0)
         {
-            if (self->timeout < 0.0)
-            {
-                fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
-            }
-
-            Py_BEGIN_ALLOW_THREADS
-
-            outlen = send(self->_sock_fd, buf, len, flags);
-
-            Py_END_ALLOW_THREADS
-
-            if ((outlen >= 0) || self->timeout == 0.0 || !FIL_IS_EAGAIN(errno))
-            {
-                if (outlen < 0)
-                {
-                    PyErr_SetFromErrno(_SOCK_ERROR);
-                }
-                return outlen;
-            }
-
-            self->first_misses++;
-
-            /* Blocking with no timeout: cached-edge wait; see
-             * _sock_recv_common. */
-            if (self->timeout < 0.0 && (iothr = fil_iothread_get()) != NULL)
-            {
-                int werr;
-
-                for (;;)
-                {
-                    werr = fil_iothread_wait_cached(iothr, &self->fdwait_write,
-                                                    self->_sock_fd, 1, fdw_seq);
-                    if (werr != 0)
-                    {
-                        break;
-                    }
-
-                    fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
-
-                    Py_BEGIN_ALLOW_THREADS
-
-                    outlen = send(self->_sock_fd, buf, len, flags);
-
-                    Py_END_ALLOW_THREADS
-
-                    if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
-                    {
-                        Py_DECREF(iothr);
-                        /* Throw-during-wakeup beats a successful send; see
-                         * _sock_recv_common. */
-                        if (PyErr_Occurred())
-                        {
-                            return -1;
-                        }
-                        if (outlen < 0)
-                        {
-                            PyErr_SetFromErrno(_SOCK_ERROR);
-                        }
-                        return outlen;
-                    }
-                }
-
-                Py_DECREF(iothr);
-
-                if (werr < 0)
-                {
-                    return -1;
-                }
-            }
+            fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
         }
 
+        Py_BEGIN_ALLOW_THREADS
+
+        outlen = send(self->_sock_fd, buf, len, flags);
+
+        Py_END_ALLOW_THREADS
+
+        if ((outlen >= 0) || self->timeout == 0.0 || !FIL_IS_EAGAIN(errno))
+        {
+            if (outlen < 0)
+            {
+                PyErr_SetFromErrno(_SOCK_ERROR);
+            }
+            return outlen;
+        }
+
+        self->first_misses++;
+
+        /* One ABSOLUTE deadline, computed at the first point we actually have
+         * to block and reused by every retry, by the classic fallback, and by
+         * every later sendall() segment; see _sock_recv_common for why it must
+         * not move inside the loop. */
+        if (!*ts_valid)
+        {
+            if (fil_timespec_from_double_interval(self->timeout, ts_buf, tsptr))
+            {
+                return -1;
+            }
+            *ts_valid = 1;
+        }
+
+        /* Blocking, with or without a timeout: cached-edge wait; see
+         * _sock_recv_common. */
+        if ((iothr = fil_iothread_get()) != NULL)
+        {
+            int werr;
+
+            for (;;)
+            {
+                werr = fil_iothread_wait_cached(iothr, &self->fdwait_write,
+                                                self->_sock_fd, 1, fdw_seq,
+                                                *tsptr, _SOCK_TIMEOUT);
+                if (werr != 0)
+                {
+                    break;
+                }
+
+                fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
+
+                Py_BEGIN_ALLOW_THREADS
+
+                outlen = send(self->_sock_fd, buf, len, flags);
+
+                Py_END_ALLOW_THREADS
+
+                if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
+                {
+                    Py_DECREF(iothr);
+                    /* Throw-during-wakeup beats a successful send; see
+                     * _sock_recv_common. */
+                    if (PyErr_Occurred())
+                    {
+                        return -1;
+                    }
+                    if (outlen < 0)
+                    {
+                        PyErr_SetFromErrno(_SOCK_ERROR);
+                    }
+                    return outlen;
+                }
+            }
+
+            Py_DECREF(iothr);
+
+            if (werr < 0)
+            {
+                return -1;
+            }
+        }
+    }
+
+    if (!*ts_valid)
+    {
         if (fil_timespec_from_double_interval(self->timeout, ts_buf, tsptr))
         {
             return -1;
         }
+        *ts_valid = 1;
     }
 
     iothr = fil_iothread_get();
@@ -1661,13 +1718,15 @@ static PyObject *_sock_send(PyFilSocket *self, PyObject *args)
     Py_buffer pbuf;
     ssize_t outlen;
     struct timespec ts_buf, *ts = NULL;
+    int ts_valid = 0;
 
     if (!PyArg_ParseTuple(args, "s*|i:send", &pbuf, &flags))
     {
         return NULL;
     }
 
-    outlen = _sock_send_common(self, pbuf.buf, pbuf.len, flags, &ts_buf, &ts);
+    outlen = _sock_send_common(self, pbuf.buf, pbuf.len, flags, &ts_buf, &ts,
+                               &ts_valid);
 
     PyBuffer_Release(&pbuf);
 
@@ -1694,6 +1753,7 @@ static PyObject *_sock_sendall(PyFilSocket *self, PyObject *args)
     int len;
     char *buf;
     struct timespec ts_buf, *ts = NULL;
+    int ts_valid = 0;
     ssize_t outlen;
 
     if (!PyArg_ParseTuple(args, "s*|i:sendall", &pbuf, &flags))
@@ -1704,13 +1764,15 @@ static PyObject *_sock_sendall(PyFilSocket *self, PyObject *args)
     buf = pbuf.buf;
     len = pbuf.len;
 
-    outlen = _sock_send_common(self, buf, len, flags, &ts_buf, &ts);
+    outlen = _sock_send_common(self, buf, len, flags, &ts_buf, &ts, &ts_valid);
     if (outlen >= 0 && outlen < len)
     {
         buf += outlen;
         len -= outlen;
         do {
-            outlen = _sock_send_common(self, buf, len, flags, NULL, &ts);
+            /* Same ts_valid/ts: one deadline covers the whole sendall(). */
+            outlen = _sock_send_common(self, buf, len, flags, &ts_buf, &ts,
+                                       &ts_valid);
             if (outlen < 0)
             {
                 break;
