@@ -26,6 +26,41 @@
 #define __FIL_BUILDING_CORE__
 #include "core/filament.h"
 
+/*
+ * Mutual exclusion for the message's state.
+ *
+ * None on a normal build, and none needed: send() and wait() both run with the
+ * GIL held and neither releases it between testing 'result_or_exc_type' and
+ * acting on that test.
+ *
+ * On a FREE-THREADING build (PEP 703) that is exactly the hole.  A Message is
+ * how a REAL OS THREAD hands a result back to a parked greenthread -- it is
+ * what filament.tpool is built on -- so the two sides genuinely run at once,
+ * and the sequence
+ *
+ *   waiter:  test result == NULL          (not ready, so I will wait)
+ *   sender:                               set result; signal_all()
+ *   waiter:  add myself to the list; park
+ *
+ * loses the wakeup completely: the signal swept an empty list and the waiter
+ * parks forever with the result already sitting there.  That is the
+ * test_cross_thread_137 deadlock.  The lock makes test-and-add atomic against
+ * set-and-signal; it is dropped for the park itself, inside
+ * fil_waiterlist_wait_locked().
+ *
+ * Lock order is msg_lock -> waiter_lock -> sched_lock, the same direction the
+ * io layer and the queue use.
+ */
+#ifdef Py_GIL_DISABLED
+#  define FIL_MSG_LOCK(__m)    pthread_mutex_lock(&((__m)->lock))
+#  define FIL_MSG_UNLOCK(__m)  pthread_mutex_unlock(&((__m)->lock))
+#  define FIL_MSG_LOCKP(__m)   (&((__m)->lock))
+#else
+#  define FIL_MSG_LOCK(__m)    ((void)0)
+#  define FIL_MSG_UNLOCK(__m)  ((void)0)
+#  define FIL_MSG_LOCKP(__m)   NULL
+#endif
+
 typedef struct _pyfil_message {
     PyObject_HEAD
 
@@ -35,6 +70,9 @@ typedef struct _pyfil_message {
     int is_exc;
     PyObject *exc_value; /* non NULL indicates exception */
     PyObject *exc_tb;
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_t lock;
+#endif
 } PyFilMessage;
 
 
@@ -44,6 +82,9 @@ static PyFilMessage *_message_new(PyTypeObject *type, PyObject *args, PyObject *
 
     if (self != NULL) {
         fil_waiterlist_init(self->waiters);
+#ifdef Py_GIL_DISABLED
+        pthread_mutex_init(&(self->lock), NULL);
+#endif
     }
 
     return self;
@@ -97,6 +138,9 @@ static void _message_dealloc(PyFilMessage *self)
     Py_CLEAR(self->exc_value);
     Py_CLEAR(self->exc_tb);
     assert(fil_waiterlist_empty(self->waiters));
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_destroy(&(self->lock));
+#endif
 
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
@@ -119,6 +163,9 @@ static PyObject *_message_result(PyFilMessage *self)
     return self->result_or_exc_type;
 }
 
+#ifndef Py_GIL_DISABLED
+
+/* Stock build: verbatim.  The GIL is the mutual exclusion. */
 static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
 {
     int err;
@@ -137,10 +184,44 @@ static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
     return _message_result(self);
 }
 
-static int __message_send(PyFilMessage *self, PyObject *message)
+#else  /* Py_GIL_DISABLED */
+
+static PyObject *__message_wait(PyFilMessage *self, struct timespec *ts)
 {
+    PyObject *res;
+    int err;
+
+    FIL_MSG_LOCK(self);
+
     if (self->result_or_exc_type != NULL)
     {
+        res = _message_result(self);
+        FIL_MSG_UNLOCK(self);
+        return res;
+    }
+
+    err = fil_waiterlist_wait_locked(self->waiters, ts, NULL,
+                                     FIL_MSG_LOCKP(self));
+    if (err)
+    {
+        FIL_MSG_UNLOCK(self);
+        return NULL;
+    }
+
+    res = _message_result(self);
+    FIL_MSG_UNLOCK(self);
+    return res;
+}
+
+#endif /* Py_GIL_DISABLED */
+
+static int __message_send(PyFilMessage *self, PyObject *message)
+{
+    FIL_MSG_LOCK(self);
+
+    if (self->result_or_exc_type != NULL)
+    {
+        FIL_MSG_UNLOCK(self);
         PyErr_SetString(PyExc_RuntimeError, "Can only send once");
         return -1;
     }
@@ -149,6 +230,7 @@ static int __message_send(PyFilMessage *self, PyObject *message)
     self->result_or_exc_type = message;
 
     fil_waiterlist_signal_all(self->waiters);
+    FIL_MSG_UNLOCK(self);
 
     return 0;
 }
@@ -156,8 +238,11 @@ static int __message_send(PyFilMessage *self, PyObject *message)
 static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
                                     PyObject *exc_value, PyObject *exc_tb)
 {
+    FIL_MSG_LOCK(self);
+
     if (self->result_or_exc_type != NULL)
     {
+        FIL_MSG_UNLOCK(self);
         PyErr_SetString(PyExc_RuntimeError, "Can only send once");
         return -1;
     }
@@ -172,6 +257,7 @@ static int __message_send_exception(PyFilMessage *self, PyObject *exc_type,
     self->exc_tb = exc_tb;
 
     fil_waiterlist_signal_all(self->waiters);
+    FIL_MSG_UNLOCK(self);
 
     return 0;
 }
