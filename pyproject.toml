@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "filament"
-version = "0.9.3"
+version = "0.9.4"
 description = "Filament: Microthreads for Python"
 readme = "README.md"
 requires-python = ">=3.9"

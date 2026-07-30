@@ -1,3 +1,30 @@
+filament (0.9.4) unstable; urgency=medium
+
+  * A socket with settimeout() set now uses the same cheap cached
+    edge-triggered wait as one without, instead of being pushed onto the
+    classic io path and paying two epoll_ctl syscalls, an event_new/free, two
+    mutex/cond init+destroy pairs and a malloc per blocked operation. Since
+    connection pools set a timeout on every pooled connection, client
+    workloads paid that on essentially every request. epoll_ctl per blocked
+    operation drops from ~4.6 to ~0.002; a geventhttpclient load benchmark
+    goes from 8% behind gevent to 21% ahead at 100 connections and 26% ahead
+    at 1000, at roughly half the p95 latency.
+  * Fix sendall() blocking forever on a socket with settimeout() set: a first
+    segment that partially succeeded returned before computing the deadline,
+    so every later segment ran with none at all.
+  * Drop Python 3.8 (end-of-life October 2024); the floor is now 3.9, and 3.9
+    and 3.15 are both in the tested matrix for the first time. This is what
+    allows the PEP 639 license metadata, which needs setuptools >= 77 -- so
+    the packaging build-dependency rises from 64 to 77.
+  * Build on macOS: setup.py discovers a Homebrew libevent, and the vendored
+    greenlet's fiber-switch assembly assembles on Mach-O.
+  * src/ and the vendored greenlet compile warning-free under -Wall
+    -Wsign-compare with both gcc and clang.
+  * Fix FIL_SCHED_EVENT_FREELIST_MAX being defined twice with different
+    values (256 in the header, 2048 in fil_scheduler.c).
+
+ -- Chris Behrens <cbehrens@codestud.com>  Thu, 30 Jul 2026 12:00:00 +0000
+
 filament (0.9.3) unstable; urgency=medium
 
   * gevent compat: install() now also owns the top-level greenlet name, so

@@ -13,16 +13,19 @@
 # Needs: rpm-build, pyproject-rpm-macros, python3-devel, gcc, gcc-c++,
 # libevent-devel (dnf builddep can pull these from this spec).
 #
-# EL note: the build needs setuptools >= 64 (see pyproject.toml). EL9's
-# default python3.9 stack ships setuptools 53, so build there against an
-# alternate stack, e.g.:
+# EL note: the build needs setuptools >= 77 (see pyproject.toml -- that is the
+# floor for the PEP 639 license metadata, raised from 64). EL9's default
+# python3.9 stack ships setuptools 53, so build there against an alternate
+# stack, e.g.:
 #     rpmbuild --define 'python3_pkgversion 3.12' -ta dist/filament-<ver>.tar.gz
-# Fedora and EL10+ default stacks are new enough as-is.
+# Check the chosen stack's setuptools against the floor: distro Pythons older
+# than the 77 cutoff fail in %%generate_buildrequires with a `project.license`
+# ValueError rather than anything that names setuptools.
 
 %global srcname filament
 
 Name:           python-%{srcname}
-Version:        0.9.3
+Version:        0.9.4
 Release:        1%{?dist}
 Summary:        Microthreads for Python
 
@@ -80,6 +83,29 @@ Summary:        %{summary}
 %doc README.md RELEASES.md THIRD_PARTY_NOTICES.md AUTHORS
 
 %changelog
+* Thu Jul 30 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.4-1
+- A socket with settimeout() set now uses the same cheap cached edge-triggered
+  wait as one without, instead of being pushed onto the classic io path and
+  paying two epoll_ctl syscalls, an event_new/free, two mutex/cond init+destroy
+  pairs and a malloc per blocked operation. Since connection pools set a
+  timeout on every pooled connection, client workloads paid that on essentially
+  every request. epoll_ctl per blocked operation drops from ~4.6 to ~0.002; a
+  geventhttpclient load benchmark goes from 8% behind gevent to 21% ahead at
+  100 connections and 26% ahead at 1000, at roughly half the p95 latency.
+- Fix sendall() blocking forever on a socket with settimeout() set: a first
+  segment that partially succeeded returned before computing the deadline, so
+  every later segment ran with none at all.
+- Drop Python 3.8 (end-of-life October 2024); the floor is now 3.9, and 3.9 and
+  3.15 are both in the tested matrix for the first time. This is what allows the
+  PEP 639 license metadata, which needs setuptools >= 77 -- so the build
+  requirement rises from 64 to 77.
+- Build on macOS: setup.py discovers a Homebrew libevent, and the vendored
+  greenlet's fiber-switch assembly assembles on Mach-O.
+- src/ and the vendored greenlet compile warning-free under -Wall
+  -Wsign-compare with both gcc and clang.
+- Fix FIL_SCHED_EVENT_FREELIST_MAX being defined twice with different values
+  (256 in the header, 2048 in fil_scheduler.c).
+
 * Tue Jul 28 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.3-1
 - gevent compat: install() now also owns the top-level greenlet name, so
   greenlet.getcurrent() returns the running gevent Greenlet as it does under

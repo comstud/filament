@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.9.4 (2026-07-30)
 
 **Packaging**
 
@@ -19,6 +19,16 @@
   ELF-only directives (`.hidden`, `.type`, `.size`) that Apple's assembler
   rejects, and Mach-O also prefixes C symbols with an underscore -- so the
   symbol would not have linked even once the directives were accepted.
+- The Debian and RPM packaging now ask for `setuptools >= 77` rather than 64,
+  matching the floor the license metadata above needs. Below it the build fails
+  in a way that never mentions setuptools -- a `project.license` `ValueError`
+  out of `pyproject.toml` parsing.
+- `src/` and the vendored greenlet compile warning-free under `-Wall
+  -Wsign-compare`, with gcc and with clang, under either switching core. Four
+  warnings went: a `size_t` resolver-method count compared against signed
+  indices, and -- surfaced by clang on macOS -- an assert-only variable and the
+  classic `slp_switch()`, which the private-stack fiber core defines but never
+  calls.
 
 **Performance**
 
@@ -63,6 +73,28 @@
   resumed through a path that touched a refcount; they are not any more, and
   the restriction it documented had already stopped existing. Nothing depended
   on it, but the timeout work above would have looked unsafe against it.
+
+**Internals**
+
+- `FIL_SCHED_EVENT_FREELIST_MAX` was defined twice with *different* values --
+  256 in `include/core/fil_scheduler.h`, 2048 in `src/core/fil_scheduler.c`.
+  The scheduler saw 2048 because its own definition came after the include, so
+  behaviour was right, but any other translation unit including the header got
+  256. Consolidated on the documented 2048.
+
+**Testing & benchmarks**
+
+- The benchmark matrix was re-measured end to end on both architectures, on
+  bare metal this time rather than in a VM. Python 3.9 is included and the 3.8
+  rows are gone.
+- The benchmark harness can tell a slow host from a hung one. It used to cap
+  each case with a fixed wall-clock timeout, which killed legitimately slow
+  runs on a loaded or slower machine; it now times out on *idle* output
+  instead, and long cases emit progress while they work.
+- The harness no longer leaks workers. A case that timed out left its worker
+  process group running -- a spinning gevent worker survived at a full core
+  and skewed everything measured afterwards. Process groups are now tracked
+  and reaped on exit, including on Ctrl-C or SIGTERM.
 
 ## 0.9.3 (2026-07-28)
 

@@ -8,7 +8,7 @@ Build-Depends: debhelper-compat (= 13),
                libevent-dev,
                pybuild-plugin-pyproject,
                python3-dev,
-               python3-setuptools (>= 64),
+               python3-setuptools (>= 77),
                python3-wheel,
 Standards-Version: 4.7.0
 Homepage: https://github.com/comstud/filament
