@@ -28,9 +28,39 @@
 #include "locking/fil_cond.h"
 #include "locking/fil_lock.h"
 
+/*
+ * Mutual exclusion for the condition's waiter list.
+ *
+ * None on a stock build.  On a FREE-THREADING build, wait() has the classic
+ * condition-variable hole: it releases the caller's lock and only then adds
+ * itself to the waiter list, so a notify() in that window signals an empty list
+ * and the waiter sleeps through its own notification.  The GIL closed that
+ * window by making the release-and-add indivisible; without it we have to.
+ *
+ * The lock is held across lock.release() and the add, then dropped for the
+ * park.  Holding it across the Python-level release()/acquire() calls is safe:
+ * those take the target lock's own mutex and never call back into a Condition,
+ * so the order is cond_lock -> lock_mutex -> waiter_lock -> sched_lock and
+ * nothing runs it backwards.
+ */
+#ifdef Py_GIL_DISABLED
+#  define FIL_COND_LOCK(__c)    pthread_mutex_lock(&((__c)->mutex))
+#  define FIL_COND_UNLOCK(__c)  pthread_mutex_unlock(&((__c)->mutex))
+#  define FIL_COND_WAIT(__c, __list, __ts, __exc) \
+       fil_waiterlist_wait_locked(__list, __ts, __exc, &((__c)->mutex))
+#else
+#  define FIL_COND_LOCK(__c)    ((void)0)
+#  define FIL_COND_UNLOCK(__c)  ((void)0)
+#  define FIL_COND_WAIT(__c, __list, __ts, __exc) \
+       fil_waiterlist_wait(__list, __ts, __exc)
+#endif
+
 typedef struct _pyfil_cond {
     PyObject_HEAD
     PyObject *lock;
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_t mutex;
+#endif
     PyObject *verbose;
     FilWaiterList waiters;
 } PyFilCond;
@@ -43,6 +73,9 @@ static PyFilCond *_cond_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     if (self != NULL)
     {
         fil_waiterlist_init(self->waiters);
+#ifdef Py_GIL_DISABLED
+        pthread_mutex_init(&(self->mutex), NULL);
+#endif
     }
 
     return self;
@@ -86,6 +119,9 @@ static int _cond_init(PyFilCond *self, PyObject *args, PyObject *kwargs)
 static void _cond_dealloc(PyFilCond *self)
 {
     assert(fil_waiterlist_empty(self->waiters));
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_destroy(&(self->mutex));
+#endif
     Py_CLEAR(self->lock);
     Py_CLEAR(self->verbose);
 
@@ -99,14 +135,17 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
     PyObject *result;
     int err;
 
+    FIL_COND_LOCK(cond);
+
     result = PyObject_CallMethod(cond->lock, "release", NULL);
     Py_XDECREF(result);
     if (result == NULL)
     {
+        FIL_COND_UNLOCK(cond);
         return -1;
     }
 
-    err = fil_waiterlist_wait(cond->waiters, ts, NULL);
+    err = FIL_COND_WAIT(cond, cond->waiters, ts, NULL);
     if (err)
     {
         PyObject *exc_type, *exc_value, *exc_tb;
@@ -121,11 +160,14 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
             fil_waiterlist_signal_first(cond->waiters);
         }
 
+        FIL_COND_UNLOCK(cond);
         result = PyObject_CallMethod(cond->lock, "acquire", NULL);
         Py_XDECREF(result);
         PyErr_Restore(exc_type, exc_value, exc_tb);
         return -1;
     }
+
+    FIL_COND_UNLOCK(cond);
 
     result = PyObject_CallMethod(cond->lock, "acquire", NULL);
     Py_XDECREF(result);
@@ -137,14 +179,17 @@ static int __cond_notify(PyFilCond *cond, int num)
 {
     int count = 0;
 
+    FIL_COND_LOCK(cond);
     for(;(num < 0) || (count < num);count++)
     {
         if (fil_waiterlist_empty(cond->waiters))
         {
+            FIL_COND_UNLOCK(cond);
             return 0;
         }
         fil_waiterlist_signal_first(cond->waiters);
     }
+    FIL_COND_UNLOCK(cond);
 
     return 0;
 }

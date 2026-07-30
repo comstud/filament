@@ -266,14 +266,22 @@ Raises a ValueError if called more times than there were items\n\
 placed in the queue.\n");
 static PyObject *_queue_task_done(PyFilQueue *self)
 {
+    /* Shares the queue's own lock: unfinished_tasks and task_done_waiters
+     * belong to the same object as the fifo, and join()/task_done() never nest
+     * inside put()/get(), so one lock covers both without an ordering
+     * question.  A no-op on stock builds. */
+    FIL_WFIFOQ_LOCK(&(self->queue));
+
     if (self->unfinished_tasks == 0)
     {
+        FIL_WFIFOQ_UNLOCK(&(self->queue));
         PyErr_SetString(PyExc_ValueError, "task_done() called too many times");
         return NULL;
     }
 
     self->unfinished_tasks--;
     fil_waiterlist_signal_all(self->task_done_waiters);
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
 
     Py_RETURN_NONE;
 }
@@ -312,14 +320,19 @@ static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    FIL_WFIFOQ_LOCK(&(self->queue));
+
     while (self->unfinished_tasks)
     {
         /* We use full error just to distinguish a timeout from
          * a different type of exception.
          */
-        if (fil_waiterlist_wait(self->task_done_waiters, ts, _FIL_QUEUE_FULL_ERROR))
+        if (FIL_WFIFOQ_WAIT(&(self->queue), self->task_done_waiters, ts,
+                            _FIL_QUEUE_FULL_ERROR))
         {
             PyObject *exc_type, *exc_value, *exc_tb;
+
+            FIL_WFIFOQ_UNLOCK(&(self->queue));
 
             PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
             if (!PyErr_GivenExceptionMatches(exc_type, _FIL_QUEUE_FULL_ERROR))
@@ -335,6 +348,8 @@ static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
             Py_RETURN_FALSE;
         }
     }
+
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
     Py_RETURN_TRUE;
 }
 
