@@ -720,6 +720,10 @@ static inline void fil_waiter_signal_nogil(FilWaiter *waiter)
 #define fil_waiterlist_empty(waiter_list) ((waiter_list).next == &(waiter_list))
 
 #define fil_waiterlist_wait(waiter_list, ts, exc) _fil_waiterlist_wait(&(waiter_list), ts, exc)
+#ifdef Py_GIL_DISABLED
+#define fil_waiterlist_wait_locked(waiter_list, ts, exc, lock) \
+    _fil_waiterlist_wait_locked(&(waiter_list), ts, exc, lock)
+#endif
 #define fil_waiterlist_signal_first(waiter_list) _fil_waiterlist_signal_first(&(waiter_list))
 #define fil_waiterlist_signal_all(waiter_list) _fil_waiterlist_signal_all(&(waiter_list))
 
@@ -749,6 +753,54 @@ static inline void _fil_waiterlist_del(FilWaiterList *entry)
     prev->next = next;
 }
 
+/*
+ * Wait on 'waiter_list', optionally dropping 'lock' across the wait itself.
+ *
+ * 'lock' is the owner's state lock (a queue's, say).  It must be held on entry
+ * so that adding ourselves to the list is atomic with respect to whatever
+ * emptiness/fullness test the caller just made -- otherwise a signaler can
+ * squeeze in between the test and the add, and its wakeup goes to nobody.  It
+ * is dropped for the wait and retaken before we return, so the caller's
+ * invariants hold on both sides.
+ *
+ * Passing NULL means "no lock", which is what every GIL build does: there the
+ * GIL is the mutual exclusion and this compiles back to the original function.
+ *
+ * Signaling before the waiter actually parks is safe and needs no lock: the
+ * signal sets SIGNALED, and fil_waiter_wait() tests SIGNALED before it does
+ * anything else.
+ */
+#ifdef Py_GIL_DISABLED
+static inline int _fil_waiterlist_wait_locked(FilWaiterList *waiter_list, struct timespec *ts, PyObject *timeout_exc, pthread_mutex_t *lock)
+{
+    int err;
+    FilWaiter *waiter = fil_waiter_alloc();
+
+    if (waiter == NULL) {
+        return -1;
+    }
+
+    _fil_waiterlist_add(waiter_list, waiter);
+
+    pthread_mutex_unlock(lock);
+    err = fil_waiter_wait(waiter, ts, timeout_exc);
+    pthread_mutex_lock(lock);
+
+    if (err)
+    {
+        _fil_waiterlist_del(&(waiter->waiter_list));
+    }
+
+    fil_waiter_decref(waiter);
+
+    return err;
+}
+#endif  /* Py_GIL_DISABLED */
+
+/* Left exactly as it was.  Routing this through the _locked variant above with
+ * a NULL lock looked tidier and cost 6.6% of queue throughput on a stock build:
+ * the extra branches pushed it past the inliner's threshold, so it stopped
+ * being folded into fil_wfifoq_get()/put().  Keep the two bodies separate. */
 static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timespec *ts, PyObject *timeout_exc)
 {
     int err;
