@@ -20,7 +20,10 @@
   The syscall count does not change -- *which thread pays* does. On the calling
   thread every `recv` is bracketed by a GIL drop and reacquire, and that thread
   is the saturated one. Echo gains **+9.7% to +88%** depending on payload and
-  concurrency, with p99 7-47% better. Eager `send` is a wash on loopback --
+  concurrency, with p99 7-47% better. That is the ceiling, not the expectation:
+  the win scales with how thin the Python layer above the socket is, so a locust
+  `FastPingUser` @1000 users sees **+11.6%** (1.18x -> 1.32x gevent) and a bottle
+  WSGI handler sees nothing measurable. Eager `send` is a wash on loopback --
   the kernel autotunes `SO_SNDBUF` to megabytes there, so it never arms -- and
   worth **+33%** on bulk transfer (8 GB in 4 MB blocks, 9.4 -> 12.5 GB/s, main
   thread CPU per MB -25%).
