@@ -67,20 +67,95 @@ struct _fil_waiter {
  * init/destroy cycle each time.  Recycle them instead: pooled waiters keep
  * their mutex/cond initialized, so a warm wait skips all four.
  *
- * Locking: NONE, deliberately.  fil_waiter_alloc() and fil_waiter_decref()
- * are only ever called with the GIL held (see the 'refcnt' comment above:
- * refcnt is likewise GIL-protected, and alloc/decref happen on the Python
- * side of every path; off-GIL signalers never alloc or decref).  The GIL
- * therefore serializes all freelist access.  NOTE: these statics are
- * per-translation-unit (this is a header), which is fine -- each pool is
- * just a cache of interchangeable malloc'd blocks; a block allocated via one
- * TU's pool may be released into another's without harm.
+ * Locking: NONE on a normal build, where the GIL serializes alloc/decref --
+ * both only ever run with the GIL held, on the thread that owns the waiter's
+ * scheduler (see the 'refcnt' comment above), and off-GIL signalers never
+ * touch either.  NOTE: these statics are per-translation-unit (this is a
+ * header), which is fine -- each pool is just a cache of interchangeable
+ * malloc'd blocks; a block allocated via one TU's pool may be released into
+ * another's without harm.
+ *
+ * On a FREE-THREADING build (PEP 703) that reasoning evaporates: there is no
+ * GIL to serialize anything, so two schedulers on two OS threads pop the same
+ * block concurrently and a waiter ends up bound to one scheduler while another
+ * believes it owns it.  Observed as "greenlet.error: Cannot switch to a
+ * different thread", a lost wakeup, or a segfault once the block is reused --
+ * six out of six parallel-io runs failed one of those three ways.  There, the
+ * pool is per thread instead, which removes the sharing rather than locking
+ * it, so neither build pays for a mutex.
+ *
+ * Why not just make it per-thread everywhere: __thread in a -fPIC shared
+ * library uses the global-dynamic TLS model, so each access is a
+ * __tls_get_addr() call, and these are the hottest lines in the scheduler --
+ * measured ~5% of throughput on a park-heavy echo workload.  Not worth paying
+ * on builds that cannot benefit.  (initial-exec would avoid the call but can
+ * fail to load a dlopen'd extension once static TLS is exhausted, which is
+ * exactly what an extension module is.)
+ *
+ * The per-thread pool is drained by a pthread_key destructor at thread exit;
+ * without it a process that churns threads would leak both the blocks and
+ * their mutex/cond pairs.  The list head itself lives in TLS rather than
+ * behind the key, so the hot path is a TLS read and not a
+ * pthread_getspecific(); the key exists only to get the destructor called.
  */
 #ifndef FIL_WAITER_FREELIST_MAX
 #define FIL_WAITER_FREELIST_MAX 1024
 #endif
+
+#ifdef Py_GIL_DISABLED
+
+#if defined(_MSC_VER)
+#  define FIL_WAITER_TLS __declspec(thread)
+#else
+#  define FIL_WAITER_TLS __thread
+#endif
+
+static FIL_WAITER_TLS FilWaiter *_fil_waiter_freelist = NULL;
+static FIL_WAITER_TLS int _fil_waiter_freelist_len = 0;
+/* Set once per thread, to a non-NULL sentinel, purely so the key's destructor
+ * runs at thread exit; the pool itself is the TLS pair above. */
+static FIL_WAITER_TLS int _fil_waiter_pool_registered = 0;
+static pthread_key_t _fil_waiter_pool_key;
+static pthread_once_t _fil_waiter_pool_once = PTHREAD_ONCE_INIT;
+
+/* Runs on the exiting thread, so it sees that thread's TLS pool. */
+static void _fil_waiter_pool_cleanup(void *unused)
+{
+    FilWaiter *waiter;
+
+    (void)unused;
+    while ((waiter = _fil_waiter_freelist) != NULL) {
+        _fil_waiter_freelist = (FilWaiter *)(void *)waiter->waiter_list.next;
+        pthread_mutex_destroy(&(waiter->waiter_lock));
+        pthread_cond_destroy(&(waiter->waiter_cond));
+        free(waiter);
+    }
+    _fil_waiter_freelist_len = 0;
+}
+
+static void _fil_waiter_pool_key_init(void)
+{
+    pthread_key_create(&_fil_waiter_pool_key, _fil_waiter_pool_cleanup);
+}
+
+static inline void _fil_waiter_pool_register(void)
+{
+    if (!_fil_waiter_pool_registered) {
+        _fil_waiter_pool_registered = 1;
+        pthread_once(&_fil_waiter_pool_once, _fil_waiter_pool_key_init);
+        /* Any non-NULL value; the destructor reads TLS, not this pointer. */
+        pthread_setspecific(_fil_waiter_pool_key, (void *)&_fil_waiter_pool_registered);
+    }
+}
+
+#else  /* !Py_GIL_DISABLED -- GIL build: process-wide pool, no TLS, no register */
+
 static FilWaiter *_fil_waiter_freelist = NULL;
 static int _fil_waiter_freelist_len = 0;
+
+#define _fil_waiter_pool_register() ((void)0)
+
+#endif  /* Py_GIL_DISABLED */
 
 static inline FilWaiter *fil_waiter_alloc(void)
 {
@@ -122,6 +197,8 @@ static inline void fil_waiter_decref(FilWaiter *waiter)
         Py_CLEAR(waiter->sched);
         Py_CLEAR(waiter->gl);
         if (_fil_waiter_freelist_len < FIL_WAITER_FREELIST_MAX) {
+            /* First block cached on this thread arms the exit destructor. */
+            _fil_waiter_pool_register();
             waiter->waiter_list.next = (FilWaiterList *)(void *)_fil_waiter_freelist;
             _fil_waiter_freelist = waiter;
             _fil_waiter_freelist_len++;
