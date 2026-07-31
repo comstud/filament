@@ -1,5 +1,43 @@
 # Release notes
 
+## Unreleased
+
+**Performance**
+
+- The io thread performs a blocked socket `recv()` into the waiting
+  greenthread's own buffer before waking it, and issues a blocked `send()` from
+  the caller's buffer the same way. The wakeup hands back data rather than mere
+  readiness, and the woken side does not re-enter the kernel at all.
+
+  This restores something the original design had and the edge-triggered work
+  quietly dropped: the kernel-to-user copy used to happen on the io thread with
+  the GIL released, while Python carried on running whatever greenthreads were
+  already scheduled. When the cached edge-triggered path went in it went in as a
+  *readiness* signal and the syscall moved back onto the calling thread as a
+  side effect. The cached path keeps its cheap persistent event; it just
+  delivers bytes again.
+
+  The syscall count does not change -- *which thread pays* does. On the calling
+  thread every `recv` is bracketed by a GIL drop and reacquire, and that thread
+  is the saturated one. Echo gains **+9.7% to +88%** depending on payload and
+  concurrency, with p99 7-47% better. Eager `send` is a wash on loopback --
+  the kernel autotunes `SO_SNDBUF` to megabytes there, so it never arms -- and
+  worth **+33%** on bulk transfer (8 GB in 4 MB blocks, 9.4 -> 12.5 GB/s, main
+  thread CPU per MB -25%).
+
+  Nothing is speculatively read and nothing is buffered. The io thread issues
+  exactly the call the parked greenthread asked for, with its length and flags,
+  into its buffer -- so `recv_into` keeps its single copy, `MSG_PEEK` still does
+  not consume, and TCP backpressure stays in the kernel. If the io thread cannot
+  complete the call it reports nothing and the caller retries as before.
+  `accept`, `recvfrom` and all TLS are untouched.
+
+  This corrects the last paragraph of the 0.9.4 note below: handing the syscall
+  to the io thread is not a handoff, because it already has the edge and already
+  does the wakeup. The earlier comparison only looked otherwise because the one
+  configuration that then read on the io thread was the classic path, which also
+  pays ~3 us of per-operation registration churn.
+
 ## 0.9.4 (2026-07-30)
 
 **Packaging**

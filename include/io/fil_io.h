@@ -17,7 +17,7 @@ typedef struct _pyfilio_capi
     int (*fil_iothread_read_ready)(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
     int (*fil_iothread_write_ready)(PyFilIOThread *iothr, int fd, struct timespec *timeout, PyObject *timeout_exc);
 
-    int (*fil_iothread_wait_cached)(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc);
+    int (*fil_iothread_wait_cached)(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc, FilIOEagerIO *eager);
     unsigned int (*fil_iothread_fdwait_seq)(FilIOFDWait *cache);
     void (*fil_iothread_fdwait_destroy)(FilIOFDWait *cache);
 

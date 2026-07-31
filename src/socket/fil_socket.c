@@ -210,7 +210,7 @@ static PyObject *_sock_ ## NAME SIG                                         \
                         _FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self),           \
                         self->_sock_fd,                                     \
                         _FIL_FDWAIT_ISWR_ ## READ_OR_WRITE,                 \
-                        fdw_seq, ts, _SOCK_TIMEOUT);                        \
+                        fdw_seq, ts, _SOCK_TIMEOUT, NULL);                  \
                 if (err != 0)                                               \
                 {                                                           \
                     break;                                                  \
@@ -262,6 +262,11 @@ typedef struct _pyfil_socket {
     int type;
     int proto;
     int first_misses;
+    /* How many blocked recvs/sends were satisfied by the io thread doing the
+     * syscall itself (eager io) rather than by this thread retrying after a
+     * readiness wakeup.  Diagnostic only. */
+    int eager_reads;
+    int eager_writes;
 
 #define PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL 0x00000001
 #define PYFIL_SOCKET_FLAGS_DO_IN_BACKGROUND 0x00000002
@@ -1279,12 +1284,28 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
         if ((iothr = fil_iothread_get()) != NULL)
         {
             int werr;
+            /* Ask the io thread to perform the recv itself, into this same
+             * buffer, before it wakes us: it holds no GIL, so it pays the bare
+             * syscall where we would additionally pay a GIL drop + reacquire
+             * around it.  'buf' stays valid throughout because we are parked --
+             * the PyBytes (or the caller's Py_buffer) cannot be released until
+             * this call returns.  If the io thread does not manage it, 'done'
+             * stays 0 and we retry the syscall ourselves exactly as before. */
+            FilIOEagerIO eager;
+
+            eager.buffer = buf;
+            eager.buf_sz = (size_t)len;
+            eager.flags = flags;
+            eager.is_send = 0;
+            eager.done = 0;
+            eager.result = -1;
+            eager.errn = 0;
 
             for (;;)
             {
                 werr = fil_iothread_wait_cached(iothr, &self->fdwait_read,
                                                 self->_sock_fd, 0, fdw_seq,
-                                                ts, _SOCK_TIMEOUT);
+                                                ts, _SOCK_TIMEOUT, &eager);
                 if (werr != 0)
                 {
                     break;
@@ -1292,11 +1313,20 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
 
                 fdw_seq = fil_iothread_fdwait_seq(self->fdwait_read);
 
-                Py_BEGIN_ALLOW_THREADS
+                if (eager.done)
+                {
+                    self->eager_reads++;
+                    outlen = eager.result;
+                    errno = eager.errn;
+                }
+                else
+                {
+                    Py_BEGIN_ALLOW_THREADS
 
-                outlen = recv(self->_sock_fd, buf, len, flags);
+                    outlen = recv(self->_sock_fd, buf, len, flags);
 
-                Py_END_ALLOW_THREADS
+                    Py_END_ALLOW_THREADS
+                }
 
                 if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
                 {
@@ -1594,12 +1624,28 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
         if ((iothr = fil_iothread_get()) != NULL)
         {
             int werr;
+            /* Same deal as the recv side: let the io thread issue the send
+             * itself, from this same buffer, before it wakes us.  Nothing is
+             * copied and nothing is buffered -- we stay parked until the call
+             * has been made, so 'buf' (the caller's Py_buffer) is alive
+             * throughout and send() still reports synchronously how many bytes
+             * reached the kernel, which is what sendall() and settimeout()
+             * both depend on. */
+            FilIOEagerIO eager;
+
+            eager.buffer = buf;
+            eager.buf_sz = (size_t)len;
+            eager.flags = flags;
+            eager.is_send = 1;
+            eager.done = 0;
+            eager.result = -1;
+            eager.errn = 0;
 
             for (;;)
             {
                 werr = fil_iothread_wait_cached(iothr, &self->fdwait_write,
                                                 self->_sock_fd, 1, fdw_seq,
-                                                *tsptr, _SOCK_TIMEOUT);
+                                                *tsptr, _SOCK_TIMEOUT, &eager);
                 if (werr != 0)
                 {
                     break;
@@ -1607,11 +1653,20 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
 
                 fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
 
-                Py_BEGIN_ALLOW_THREADS
+                if (eager.done)
+                {
+                    self->eager_writes++;
+                    outlen = eager.result;
+                    errno = eager.errn;
+                }
+                else
+                {
+                    Py_BEGIN_ALLOW_THREADS
 
-                outlen = send(self->_sock_fd, buf, len, flags);
+                    outlen = send(self->_sock_fd, buf, len, flags);
 
-                Py_END_ALLOW_THREADS
+                    Py_END_ALLOW_THREADS
+                }
 
                 if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
                 {
@@ -1938,6 +1993,8 @@ static PyMemberDef _sock_memberlist[] = {
     { "proto", T_INT, offsetof(PyFilSocket, proto), READONLY, "the socket protocol" },
     { "_sock", T_OBJECT, offsetof(PyFilSocket, _sock), READONLY, "the real _socket.socket that filament has wrapped" },
     { "fil_first_misses", T_INT, offsetof(PyFilSocket, first_misses), READONLY, "how many misses on try before poll" },
+    { "fil_eager_reads", T_INT, offsetof(PyFilSocket, eager_reads), READONLY, "blocked recvs completed by the io thread" },
+    { "fil_eager_writes", T_INT, offsetof(PyFilSocket, eager_writes), READONLY, "blocked sends completed by the io thread" },
     { NULL, },
 };
 
