@@ -41,6 +41,18 @@
   configuration that then read on the io thread was the classic path, which also
   pays ~3 us of per-operation registration churn.
 
+**Bug fixes**
+
+- `Queue.task_done()` could raise `ValueError: task_done() called too many
+  times` for a task that really had been queued, and `Queue.join()` could then
+  wait forever. Two faults, both older than 0.9.4: `put(item, block=False)` went
+  straight to the non-blocking put and never counted the task, and
+  `unfinished_tasks` was incremented *after* the item was already visible to a
+  waiting getter -- so a native consumer could take it and call `task_done()`
+  before the producer's increment ran. About one run in four with native
+  producer and consumer threads. The task is now counted before the item can be
+  seen, and rolled back if the put fails.
+
 ## 0.9.4 (2026-07-30)
 
 **Packaging**

@@ -174,13 +174,41 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 }
 #endif
 
+/*
+ * unfinished_tasks is counted BEFORE the item can be seen, and rolled back if
+ * it never went in.
+ *
+ * Counting afterwards looks equivalent and is not: fil_wfifoq_put*() publishes
+ * the item AND signals a waiting getter, and for a native (non-greenthread)
+ * waiter that signal releases the GIL around pthread_cond_signal.  The woken
+ * consumer therefore runs before the increment does -- it takes the item and
+ * calls task_done(), which decrements a count that was never incremented.
+ * unfinished_tasks underflows into "task_done() called too many times", the
+ * consumer dies on that ValueError, whatever it had left to consume is
+ * stranded, and join() waits for a count that can no longer reach zero.
+ *
+ * A NULL return means the item was not enqueued -- both put paths enqueue and
+ * signal only on success -- so the rollback cannot race a task_done().
+ *
+ * Written out at each call site rather than shared: a helper taking a
+ * "nowait" flag cost 2.7% of queue throughput and 4KB of text, because the
+ * branch keeps both put variants live in every caller.
+ */
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
 static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
 {
-    PyObject *res = fil_wfifoq_put_nowait(&(self->queue), item);
-    if (res != NULL)
+    PyObject *res;
+
+    FIL_WFIFOQ_LOCK(&(self->queue));
+    self->unfinished_tasks++;
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
+
+    res = fil_wfifoq_put_nowait(&(self->queue), item);
+    if (res == NULL)
     {
-        self->unfinished_tasks++;
+        FIL_WFIFOQ_LOCK(&(self->queue));
+        self->unfinished_tasks--;
+        FIL_WFIFOQ_UNLOCK(&(self->queue));
     }
     return res;
 }
@@ -202,7 +230,22 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
 
     if (timeout_dbl == 0)
     {
-        return fil_wfifoq_put_nowait(&(self->queue), item);
+        /* put(item, block=False) went straight to the non-blocking put and
+         * never counted the task at all, so a later task_done() for it raised
+         * "called too many times" -- while put_nowait(item), which lands in
+         * the same place, counted it correctly. */
+        FIL_WFIFOQ_LOCK(&(self->queue));
+        self->unfinished_tasks++;
+        FIL_WFIFOQ_UNLOCK(&(self->queue));
+
+        res = fil_wfifoq_put_nowait(&(self->queue), item);
+        if (res == NULL)
+        {
+            FIL_WFIFOQ_LOCK(&(self->queue));
+            self->unfinished_tasks--;
+            FIL_WFIFOQ_UNLOCK(&(self->queue));
+        }
+        return res;
     }
 
     if (fil_timespec_from_double_interval(timeout_dbl, &tsbuf, &ts))
@@ -210,10 +253,16 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
         return NULL;
     }
 
+    FIL_WFIFOQ_LOCK(&(self->queue));
+    self->unfinished_tasks++;
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
+
     res = fil_wfifoq_put(&(self->queue), item, ts);
-    if (res != NULL)
+    if (res == NULL)
     {
-        self->unfinished_tasks++;
+        FIL_WFIFOQ_LOCK(&(self->queue));
+        self->unfinished_tasks--;
+        FIL_WFIFOQ_UNLOCK(&(self->queue));
     }
     return res;
 }
