@@ -53,6 +53,17 @@
   producer and consumer threads. The task is now counted before the item can be
   seen, and rolled back if the put fails.
 
+- A blocked read or write on a descriptor with more than one waiter could hang
+  forever, ignoring `settimeout()` entirely. The io thread's per-operation event
+  is not `EV_PERSIST`, so libevent has already deactivated it by the time the
+  callback runs; where the callback retried and found nothing -- another waiter
+  having taken the bytes first -- it returned as though the event were still
+  armed, leaving the waiter on an event that could never fire and a deadline
+  that could never expire. It is now re-armed against its original absolute
+  deadline. It takes two waiters at once, so with N blocked on one descriptor,
+  N-2 hung. The path is used by all TLS io, `os.read`/`os.write` on non-regular
+  descriptors, `connect()`, and any second-and-later waiter on one descriptor.
+
 **Free-threading (PEP 703)**
 
 - filament builds and runs on free-threaded CPython with the GIL genuinely

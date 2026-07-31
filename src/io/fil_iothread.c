@@ -101,6 +101,13 @@ struct _event_cb_info
     uint32_t flags;
     event_processor_t processor;
     void *processor_arg;
+    /* Absolute deadline for this operation, and whether there is one.  The
+     * retry-on-EAGAIN path below has to re-arm the event, and re-arming with
+     * the ORIGINAL relative timeout each time would push the deadline out on
+     * every spurious wake; keeping it absolute means the remaining time is
+     * recomputed instead. */
+    struct timespec deadline;
+    int has_deadline;
 
     union
     {
@@ -196,6 +203,39 @@ static int _send_processor(evutil_socket_t fd, struct _send_info *ri)
 }
 
 /*
+ * Absolute deadline -> the relative timeval libevent wants.  Returns 1 if the
+ * deadline has already passed (caller should treat it as an immediate
+ * timeout), 0 otherwise.
+ */
+static int _iothread_reltime(const struct timespec *deadline, struct timeval *tv)
+{
+    struct timeval now;
+    int usec = deadline->tv_nsec / 1000;
+
+    gettimeofday(&now, NULL);
+
+    if (usec < now.tv_usec)
+    {
+        tv->tv_usec = 1000000 + usec - now.tv_usec;
+        now.tv_sec += 1;
+    }
+    else
+    {
+        tv->tv_usec = usec - now.tv_usec;
+    }
+
+    if (deadline->tv_sec < now.tv_sec)
+    {
+        tv->tv_sec = 0;
+        tv->tv_usec = 0;
+        return 1;
+    }
+
+    tv->tv_sec = deadline->tv_sec - now.tv_sec;
+    return 0;
+}
+
+/*
  * SYNCHRONIZATION INVARIANT for the io-thread <-> waiting-greenthread handoff.
  * This is the crux of the whole io layer's thread-safety; keep it intact.
  *
@@ -279,9 +319,38 @@ static void _iothread_event_cb(evutil_socket_t fd, short what, void *arg)
     if ((ecbi->processor != NULL) &&
         (ecbi->processor(fd, ecbi->processor_arg) != 0))
     {
-        /* continue to poll */
-        pthread_mutex_unlock(&(ecbi->ecbi_lock));
-        return;
+        /* EAGAIN: somebody else got the bytes.  Wait for the next readiness.
+         *
+         * The event MUST be re-added here.  It is not EV_PERSIST (see
+         * _iothread_process), so libevent has already deactivated it by the
+         * time this callback runs -- simply returning left the waiter parked
+         * on an event that would never fire again AND with its timeout gone,
+         * i.e. blocked forever regardless of settimeout().  It only bites when
+         * two or more classic waiters share one fd, because a lone waiter's
+         * processor always wins the race and never lands here; that is why it
+         * needed three concurrent readers on one socket to show up.
+         *
+         * Re-arm against the ORIGINAL absolute deadline rather than the
+         * original relative one, or every spurious wake would extend it. */
+        struct timeval tv_retry;
+        struct timeval *tvp = NULL;
+        int expired = 0;
+
+        if (ecbi->has_deadline)
+        {
+            expired = _iothread_reltime(&(ecbi->deadline), &tv_retry);
+            tvp = &tv_retry;
+        }
+
+        if (!expired && event_add(ecbi->event, tvp) == 0)
+        {
+            pthread_mutex_unlock(&(ecbi->ecbi_lock));
+            return;
+        }
+
+        /* Deadline already gone, or we cannot re-arm: report it as a timeout
+         * rather than leaving the caller parked forever. */
+        ecbi->flags |= IOTHR_ECBI_FLAGS_TIMEOUT;
     }
 
     ecbi->flags |= IOTHR_ECBI_FLAGS_DONE;
@@ -621,35 +690,12 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
 
     ecbi->iothr = iothr;
 
+    ecbi->has_deadline = (timeout != NULL);
     if (timeout != NULL)
     {
-        struct timeval now;
-        int usec = timeout->tv_nsec / 1000;
-
-        /* Need to convert absolute time to relative time */
-
-        gettimeofday(&now, NULL);
+        ecbi->deadline = *timeout;
         tv = &tv_buf;
-
-        if (usec < now.tv_usec)
-        {
-            tv->tv_usec = 1000000 + usec - now.tv_usec;
-            now.tv_sec += 1;
-        }
-        else
-        {
-            tv->tv_usec = usec - now.tv_usec;
-        }
-
-        if (timeout->tv_sec < now.tv_sec)
-        {
-            tv->tv_sec = 0;
-            tv->tv_usec = 0;
-        }
-        else
-        {
-            tv->tv_sec = timeout->tv_sec - now.tv_sec;
-        }
+        (void)_iothread_reltime(timeout, tv);
     }
 
     ev = event_new(iothr->event_base, fd, event, _iothread_event_cb, ecbi);
