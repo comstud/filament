@@ -53,6 +53,38 @@
   producer and consumer threads. The task is now counted before the item can be
   seen, and rolled back if the put fails.
 
+**Free-threading (PEP 703)**
+
+- filament builds and runs on free-threaded CPython with the GIL genuinely
+  disabled, out of the box: every extension module declares
+  `Py_mod_gil = Py_MOD_GIL_NOT_USED`, so importing filament no longer switches
+  the GIL back on for the whole process. On 3.14.6t the suite passes with no
+  environment variable set, and N greenthread schedulers on N OS threads execute
+  Python genuinely in parallel -- **5.93x on six cores** for CPU-bound work,
+  against 1.01x for the same binary with the GIL enabled.
+
+  That needed removing the places that had been using the GIL as a mutex. The
+  waiter freelist is per-thread rather than one unlocked process-wide list; the
+  fifo queue, `Message`, `Lock`/`RLock`, `Semaphore`, `Condition` and
+  `Queue.join()` each hold their own lock across the state test *and* the
+  decision to wait, dropping it only for the wait itself. Stock builds are
+  unaffected, and that is verified rather than assumed: with all of it reverted
+  a stock build is byte-identical, same `.text` size and instruction count in
+  every module, because each locked type keeps its original body under
+  `#ifndef Py_GIL_DISABLED`.
+
+  What it costs on one thread, measured on one host with the GIL on against off:
+  spawn and the semaphores land within a few percent, context switching runs at
+  0.67x, echo about 3%. The one real drop is the mixed green+native queue at
+  **0.39x** -- native threads and greenthreads genuinely run at once there and
+  contend for the queue's own mutex where the GIL used to serialise them for
+  free. One thing improves sharply, and only on macOS: `#137` goes from 1.4-1.8k
+  to 142-153k msgs/s (**~90x**), because what it was measuring on that host was
+  GIL handoff between real OS threads. Linux is 1.05x; it never had the problem.
+
+  Caveat: only the primitives listed above have been audited. A filament object
+  outside that set, used concurrently from two OS threads, has not been.
+
 ## 0.9.4 (2026-07-30)
 
 **Packaging**
