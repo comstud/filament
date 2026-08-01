@@ -190,7 +190,6 @@ static PyObject *_sock_ ## NAME SIG                                         \
         {                                                                   \
             goto out;                                                       \
         }                                                                   \
-        self->first_misses++;                                               \
         /* One ABSOLUTE deadline for the whole call, computed once here and \
          * reused by every retry below and by the classic fallback; moving  \
          * it inside the loop would let each spurious edge extend it. */    \
@@ -261,12 +260,6 @@ typedef struct _pyfil_socket {
     int family;
     int type;
     int proto;
-    int first_misses;
-    /* How many blocked recvs/sends were satisfied by the io thread doing the
-     * syscall itself (eager io) rather than by this thread retrying after a
-     * readiness wakeup.  Diagnostic only. */
-    int eager_reads;
-    int eager_writes;
 
 #define PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL 0x00000001
 #define PYFIL_SOCKET_FLAGS_DO_IN_BACKGROUND 0x00000002
@@ -1264,8 +1257,6 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
             return outlen;
         }
 
-        self->first_misses++;
-
         /* One ABSOLUTE deadline for the whole call, computed once here and
          * reused by every retry below AND by the classic fallback further
          * down.  It must not be recomputed inside the retry loop: each
@@ -1315,7 +1306,6 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
 
                 if (eager.done)
                 {
-                    self->eager_reads++;
                     outlen = eager.result;
                     errno = eager.errn;
                 }
@@ -1604,8 +1594,6 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
             return outlen;
         }
 
-        self->first_misses++;
-
         /* One ABSOLUTE deadline, computed at the first point we actually have
          * to block and reused by every retry, by the classic fallback, and by
          * every later sendall() segment; see _sock_recv_common for why it must
@@ -1655,7 +1643,6 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
 
                 if (eager.done)
                 {
-                    self->eager_writes++;
                     outlen = eager.result;
                     errno = eager.errn;
                 }
@@ -1992,9 +1979,6 @@ static PyMemberDef _sock_memberlist[] = {
     { "type", T_INT, offsetof(PyFilSocket, type), READONLY, "the socket type" },
     { "proto", T_INT, offsetof(PyFilSocket, proto), READONLY, "the socket protocol" },
     { "_sock", T_OBJECT, offsetof(PyFilSocket, _sock), READONLY, "the real _socket.socket that filament has wrapped" },
-    { "fil_first_misses", T_INT, offsetof(PyFilSocket, first_misses), READONLY, "how many misses on try before poll" },
-    { "fil_eager_reads", T_INT, offsetof(PyFilSocket, eager_reads), READONLY, "blocked recvs completed by the io thread" },
-    { "fil_eager_writes", T_INT, offsetof(PyFilSocket, eager_writes), READONLY, "blocked sends completed by the io thread" },
     { NULL, },
 };
 

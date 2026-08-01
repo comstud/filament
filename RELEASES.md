@@ -96,6 +96,11 @@
   Caveat: only the primitives listed above have been audited. A filament object
   outside that set, used concurrently from two OS threads, has not been.
 
+- Removed the socket attribute `fil_first_misses`. It was reporting-only, and a
+  plain `int` on the io hot path can lose increments once two threads share a
+  socket with no GIL. `iobench/apply_counters.py` measures the same thing, and
+  more, when it is actually wanted.
+
 ## 0.9.4 (2026-07-30)
 
 **Packaging**
