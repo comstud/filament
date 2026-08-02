@@ -37,7 +37,29 @@ typedef struct _pyfil_thr_pool {
     FilThrPool *tpool;
     struct _pyfil_thr_pool *registry_prev;
     struct _pyfil_thr_pool *registry_next;
+#ifdef Py_GIL_DISABLED
+    /* Guards {is_shutdown, tpool} as a unit.  On a stock build the GIL makes
+     * every check-then-act on them atomic (run() never releases it between
+     * testing is_shutdown and enqueueing; shutdown never releases it between
+     * testing and setting).  On a FREE-THREADING build those interleave: a
+     * run() could pass the test while a shutdown's helper thread was already
+     * freeing the FilThrPool, and then lock a destroyed mutex.  Ordering is
+     * obj_lock -> tpool->lock, never the reverse. */
+    pthread_mutex_t obj_lock;
+#endif
 } PyFilThrPool;
+
+#ifdef Py_GIL_DISABLED
+#  define FIL_TPOBJ_INIT(__s)    pthread_mutex_init(&((__s)->obj_lock), NULL)
+#  define FIL_TPOBJ_DESTROY(__s) pthread_mutex_destroy(&((__s)->obj_lock))
+#  define FIL_TPOBJ_LOCK(__s)    pthread_mutex_lock(&((__s)->obj_lock))
+#  define FIL_TPOBJ_UNLOCK(__s)  pthread_mutex_unlock(&((__s)->obj_lock))
+#else
+#  define FIL_TPOBJ_INIT(__s)    ((void)0)
+#  define FIL_TPOBJ_DESTROY(__s) ((void)0)
+#  define FIL_TPOBJ_LOCK(__s)    ((void)0)
+#  define FIL_TPOBJ_UNLOCK(__s)  ((void)0)
+#endif
 
 /*
  * Registry of every live, not-yet-shut-down pool.
@@ -69,10 +91,47 @@ typedef struct _pyfil_thr_pool {
  */
 static PyFilThrPool *_thrpool_registry;
 
+/*
+ * On a stock build the GIL serializes every registry mutation (new, shutdown,
+ * dealloc, the atexit sweep).  On a FREE-THREADING build two constructors can
+ * interleave their head-pointer updates (dropping a pool from the sweep) or a
+ * dealloc's unlink can thread stale prev/next pointers through a concurrent
+ * add -- so the list gets its own mutex.  It is a leaf lock: nothing is
+ * called while it is held except Py_INCREF/PyUnstable_TryIncRef.
+ *
+ * The sweep additionally needs "read head + take a reference + unlink" to be
+ * one atomic step, and on free-threading the reference must be a TryIncRef:
+ * a pool whose refcount just hit zero is inside _thrpool_dealloc on another
+ * thread, and a plain Py_INCREF from the sweep would resurrect it mid-dealloc
+ * (double shutdown, then double free).  TryIncRef fails on such an object and
+ * the sweep just unlinks it -- its dealloc performs the shutdown itself.
+ */
+#ifdef Py_GIL_DISABLED
+static pthread_mutex_t _thrpool_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+#  define FIL_TPREG_LOCK()   pthread_mutex_lock(&_thrpool_registry_lock)
+#  define FIL_TPREG_UNLOCK() pthread_mutex_unlock(&_thrpool_registry_lock)
+#  if PY_VERSION_HEX >= 0x030E0000
+#    define _FIL_TPOOL_TRY_INCREF(__p)    PyUnstable_TryIncRef((PyObject *)(__p))
+#    define _FIL_TPOOL_ENABLE_TRY_INCREF(__p) PyUnstable_EnableTryIncRef((PyObject *)(__p))
+#  else
+     /* 3.13t has no TryIncRef; keep the plain incref (the sweep-vs-dealloc
+      * window is unchanged from what it always was there). */
+#    define _FIL_TPOOL_TRY_INCREF(__p)    (Py_INCREF((PyObject *)(__p)), 1)
+#    define _FIL_TPOOL_ENABLE_TRY_INCREF(__p) ((void)0)
+#  endif
+#else
+#  define FIL_TPREG_LOCK()   ((void)0)
+#  define FIL_TPREG_UNLOCK() ((void)0)
+#  define _FIL_TPOOL_TRY_INCREF(__p)    (Py_INCREF((PyObject *)(__p)), 1)
+#  define _FIL_TPOOL_ENABLE_TRY_INCREF(__p) ((void)0)
+#endif
+
 static void _thrpool_registry_add(PyFilThrPool *self)
 {
+    FIL_TPREG_LOCK();
     if (self->in_registry)
     {
+        FIL_TPREG_UNLOCK();
         return;
     }
     self->registry_prev = NULL;
@@ -83,10 +142,11 @@ static void _thrpool_registry_add(PyFilThrPool *self)
     }
     _thrpool_registry = self;
     self->in_registry = 1;
+    FIL_TPREG_UNLOCK();
 }
 
-/* Idempotent: safe to call on a pool that was never added or already removed. */
-static void _thrpool_registry_remove(PyFilThrPool *self)
+/* Caller holds the registry lock (where there is one). */
+static void __thrpool_registry_remove_locked(PyFilThrPool *self)
 {
     if (!self->in_registry)
     {
@@ -107,6 +167,14 @@ static void _thrpool_registry_remove(PyFilThrPool *self)
     self->registry_prev = NULL;
     self->registry_next = NULL;
     self->in_registry = 0;
+}
+
+/* Idempotent: safe to call on a pool that was never added or already removed. */
+static void _thrpool_registry_remove(PyFilThrPool *self)
+{
+    FIL_TPREG_LOCK();
+    __thrpool_registry_remove_locked(self);
+    FIL_TPREG_UNLOCK();
 }
 
 typedef struct _pyfil_thrinit_info
@@ -157,6 +225,10 @@ static PyFilThrPool *_thrpool_new(PyTypeObject *type, PyObject *args, PyObject *
     if (self != NULL)
     {
         static char *keywords[] = {"min_threads", "max_threads", "stack_size", NULL};
+
+        /* Before any error path can Py_DECREF(self): dealloc destroys it. */
+        FIL_TPOBJ_INIT(self);
+        _FIL_TPOOL_ENABLE_TRY_INCREF(self);
         int min_threads = FIL_THRPOOL_DEFAULT_MIN_THREADS, max_threads = FIL_THRPOOL_DEFAULT_MAX_THREADS;
         int stack_size = FIL_THRPOOL_DEFAULT_STACK_SIZE;
         FilThrPoolOpt tpool_opt;
@@ -267,9 +339,12 @@ static void _thrpool_shutdown_finish(PyFilThrState *thr_state, PyFilThrPoolShutd
         fil_waiter_signal(info->waiter);
     }
 
+    FIL_TPOBJ_LOCK(info->self);
     info->self->tpool = NULL;
+    FIL_TPOBJ_UNLOCK(info->self);
     if (info->do_free)
     {
+        FIL_TPOBJ_DESTROY(info->self);
         Py_TYPE(info->self)->tp_free((PyObject *)info->self);
     }
     else
@@ -323,11 +398,34 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
     info->waiter = waiter;
     info->do_free = do_free;
 
-    self->is_shutdown = 1;
-
-    if ((err = fil_thrpool_shutdown_async(self->tpool, now, (FilThrPoolShutdownCallback)_thrpool_shutdown_finish, info)) != 0)
+    /* Test-and-set under the object lock: on a free-threading build two
+     * concurrent shutdown() calls could otherwise both pass their advisory
+     * is_shutdown checks and each spawn a helper -- and the second helper
+     * would free an already-freed FilThrPool. */
+    FIL_TPOBJ_LOCK(self);
+    if (self->is_shutdown || self->tpool == NULL)
     {
-        if (err == -ENOMEM)
+        FIL_TPOBJ_UNLOCK(self);
+        err = -EALREADY;
+    }
+    else
+    {
+        self->is_shutdown = 1;
+        err = fil_thrpool_shutdown_async(self->tpool, now, (FilThrPoolShutdownCallback)_thrpool_shutdown_finish, info);
+        if (err)
+        {
+            self->is_shutdown = 0;
+        }
+        FIL_TPOBJ_UNLOCK(self);
+    }
+
+    if (err != 0)
+    {
+        if (err == -EALREADY)
+        {
+            PyErr_SetString(PyExc_RuntimeError, "shutdown() has already been called");
+        }
+        else if (err == -ENOMEM)
         {
             PyErr_SetString(PyExc_MemoryError, "out of memory");
         }
@@ -335,7 +433,6 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
         {
             PyErr_Format(PyExc_RuntimeError, "couldn't shut down thread pool: %d", err);
         }
-        self->is_shutdown = 0;
         if (waiter != NULL)
         {
             fil_waiter_decref(waiter);
@@ -443,6 +540,7 @@ static void _thrpool_dealloc(PyFilThrPool *self)
 
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
+    FIL_TPOBJ_DESTROY(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -460,8 +558,47 @@ typedef struct _pyfil_thrpool_run_info
 #define PYFIL_THRPOOL_RUN_INFO_FLAGS_CANCEL     0x00000002
 #define PYFIL_THRPOOL_RUN_INFO_FLAGS_EXC        0x00000004
 #define PYFIL_THRPOOL_RUN_INFO_FLAGS_TIMED      0x00000008
+/* Set by the worker, under the info lock, when it takes the signal branch:
+ * it has (or is about to have) signaled the waiter and will never touch
+ * 'info' again.  Lets an exception-resumed waiter tell "the worker will free
+ * this" (CANCEL won) from "this is mine to free" (DONE won). */
+#define PYFIL_THRPOOL_RUN_INFO_FLAGS_DONE       0x00000010
     uint32_t flags;
+#ifdef Py_GIL_DISABLED
+    /* Arbitrates the worker's [check CANCEL -> signal waiter] against the
+     * waiting side's [give up -> mark CANCEL -> drop waiter].  On a stock
+     * build both sequences run under the GIL with no release inside (see the
+     * NOTE in _thrpool_run_async), so no lock exists or is needed there. */
+    pthread_mutex_t lock;
+#endif
 } PyFilThrPoolRunInfo;
+
+#ifdef Py_GIL_DISABLED
+#  define FIL_RUNINFO_INIT(__i)    pthread_mutex_init(&((__i)->lock), NULL)
+#  define FIL_RUNINFO_LOCK(__i)    pthread_mutex_lock(&((__i)->lock))
+#  define FIL_RUNINFO_UNLOCK(__i)  pthread_mutex_unlock(&((__i)->lock))
+#else
+#  define FIL_RUNINFO_INIT(__i)    ((void)0)
+#  define FIL_RUNINFO_LOCK(__i)    ((void)0)
+#  define FIL_RUNINFO_UNLOCK(__i)  ((void)0)
+#endif
+
+/*
+ * Free a run-info whose handshake has settled.  The acquire+release pair is
+ * the point: the other side's very last touch of 'info' is its unlock, and
+ * destroying a mutex another thread is still inside is undefined -- cycling
+ * the lock orders that unlock strictly before the destroy.  Compiles to a
+ * plain free() on a stock build.
+ */
+static void _thrpool_runinfo_free(PyFilThrPoolRunInfo *info)
+{
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_lock(&(info->lock));
+    pthread_mutex_unlock(&(info->lock));
+    pthread_mutex_destroy(&(info->lock));
+#endif
+    free(info);
+}
 
 static void _thrpool_run_async(PyFilThrState *thr_state, PyFilThrPoolRunInfo *info, uint32_t flags)
 {
@@ -523,21 +660,28 @@ static void _thrpool_run_async(PyFilThrState *thr_state, PyFilThrPoolRunInfo *in
     Py_CLEAR(info->args);
     Py_CLEAR(info->kwargs);
 
+    FIL_RUNINFO_LOCK(info);
     if (!(info->flags & PYFIL_THRPOOL_RUN_INFO_FLAGS_CANCEL) && info->waiter != NULL)
     {
         /* NOTE: the CANCEL check above, this signal, and the waiting side's
-         * error path (which sets CANCEL and then fil_waiter_decref()s the
-         * waiter) are serialized BY THE GIL: we must not release the GIL
-         * between the check and the signal, or an exception-resumed waiter
-         * could free the waiter out from under us. */
+         * error path (which sets CANCEL and only then drops the waiter) are
+         * serialized BY THE GIL on a stock build: we must not release the
+         * GIL between the check and the signal, or an exception-resumed
+         * waiter could free the waiter out from under us.  On a
+         * free-threading build the info lock provides the same guarantee:
+         * the waiting side's give-up handshake runs under it, so it cannot
+         * drop the waiter while we are in here. */
+        info->flags |= PYFIL_THRPOOL_RUN_INFO_FLAGS_DONE;
         fil_waiter_signal(info->waiter);
+        FIL_RUNINFO_UNLOCK(info);
     }
     else
     {
+        FIL_RUNINFO_UNLOCK(info);
         Py_XDECREF(info->res_or_exc_type);
         Py_XDECREF(info->exc_value);
         Py_XDECREF(info->exc_tb);
-        free(info);
+        _thrpool_runinfo_free(info);
     }
 
     if (gstate_ptr)
@@ -651,6 +795,8 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
         return NULL;
     }
 
+    FIL_RUNINFO_INIT(info);
+
     Py_INCREF(method);
     Py_XINCREF(mkwargs);
 
@@ -665,7 +811,19 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
         info->flags |= PYFIL_THRPOOL_RUN_INFO_FLAGS_TIMED;
     }
 
-    err = fil_thrpool_run(self->tpool, (FilThrPoolCallback)_thrpool_run_async, info);
+    /* Check-and-enqueue under the object lock: on a free-threading build a
+     * shutdown's helper thread can otherwise free the FilThrPool between our
+     * is_shutdown test above (advisory there) and this call. */
+    FIL_TPOBJ_LOCK(self);
+    if (self->is_shutdown || self->tpool == NULL)
+    {
+        err = -2;
+    }
+    else
+    {
+        err = fil_thrpool_run(self->tpool, (FilThrPoolCallback)_thrpool_run_async, info);
+    }
+    FIL_TPOBJ_UNLOCK(self);
     if (err)
     {
         Py_DECREF(method);
@@ -675,8 +833,15 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
         {
             fil_waiter_decref(waiter);
         }
-        free(info);
-        PyErr_SetString(PyExc_MemoryError, "out of memory creating ThreadPool entry");
+        _thrpool_runinfo_free(info);
+        if (err == -2)
+        {
+            PyErr_SetString(PyExc_RuntimeError, "ThreadPool is (or is being) shutdown and cannot run anything.");
+        }
+        else
+        {
+            PyErr_SetString(PyExc_MemoryError, "out of memory creating ThreadPool entry");
+        }
         return NULL;
     }
 
@@ -686,47 +851,69 @@ static PyObject *_thrpool_run(PyFilThrPool *self, PyObject *args, PyObject *kwar
     }
 
     err = fil_waiter_wait(waiter, ts, NULL);
-    fil_waiter_decref(waiter);
     if (err == FIL_WAITER_SIGNALED_UNWIND)
     {
         /* The job finished -- 'info' and whatever it holds are ours -- and we
          * were thrown into in the same wakeup.  Setting CANCEL here would
          * strand 'info': the worker is long done and will never look at it
          * again.  Drop the result and let the exception out. */
+        fil_waiter_decref(waiter);
         Py_XDECREF(info->res_or_exc_type);
         Py_XDECREF(info->exc_value);
         Py_XDECREF(info->exc_tb);
-        free(info);
+        _thrpool_runinfo_free(info);
         return NULL;
     }
     if (err)
     {
-        /*
-         * not signaled, so nothing has run into background yet.
-         * let it free 'info' and not access 'waiter'
-         */
-        info->flags |= PYFIL_THRPOOL_RUN_INFO_FLAGS_CANCEL;
+        /* Not signaled: give up on the job.  Settle who owns 'info' under
+         * the handshake lock -- the worker may be at its own check right
+         * now.  If it has not signaled yet (no DONE), our CANCEL tells it
+         * to free 'info' and never touch the waiter; if it has (DONE), its
+         * signal was spent on the wait we already abandoned and 'info' is
+         * ours.  Either way the waiter reference is dropped only AFTER the
+         * handshake: until then the worker can still be inside
+         * fil_waiter_signal() on it. */
+        int worker_done;
+
+        FIL_RUNINFO_LOCK(info);
+        worker_done = info->flags & PYFIL_THRPOOL_RUN_INFO_FLAGS_DONE;
+        if (!worker_done)
+        {
+            info->flags |= PYFIL_THRPOOL_RUN_INFO_FLAGS_CANCEL;
+        }
+        FIL_RUNINFO_UNLOCK(info);
+        fil_waiter_decref(waiter);
+        if (worker_done)
+        {
+            Py_XDECREF(info->res_or_exc_type);
+            Py_XDECREF(info->exc_value);
+            Py_XDECREF(info->exc_tb);
+            _thrpool_runinfo_free(info);
+        }
         return NULL;
     }
+
+    fil_waiter_decref(waiter);
 
     if (info->flags & PYFIL_THRPOOL_RUN_INFO_FLAGS_FAILURE)
     {
         /* no results set to decrement */
         PyErr_SetString(PyExc_MemoryError, "out of memory initializing ThreadPool thread");
-        free(info);
+        _thrpool_runinfo_free(info);
         return NULL;
     }
 
     if (info->flags & PYFIL_THRPOOL_RUN_INFO_FLAGS_EXC)
     {
         PyErr_Restore(info->res_or_exc_type, info->exc_value, info->exc_tb);
-        free(info);
+        _thrpool_runinfo_free(info);
         return NULL;
     }
 
     res = info->res_or_exc_type;
 
-    free(info);
+    _thrpool_runinfo_free(info);
 
     return res;
 }
@@ -849,21 +1036,43 @@ static PyObject *_thrpool_atexit(PyObject *self, PyObject *ignored)
     (void)self;
     (void)ignored;
 
-    while (_thrpool_registry != NULL)
+    for (;;)
     {
-        PyFilThrPool *pool = _thrpool_registry;
+        PyFilThrPool *pool;
+        int have_ref;
 
-        Py_INCREF(pool);
-        _thrpool_registry_remove(pool);
+        /* Pop atomically: read the head, take a reference, unlink -- all
+         * under the registry lock, so a concurrent constructor or dealloc
+         * cannot thread stale pointers through us.  The reference is a
+         * TryIncRef on free-threading builds: a pool whose refcount just hit
+         * zero is inside _thrpool_dealloc on another thread, and reviving it
+         * here would shut it down twice.  If the try fails we only unlink;
+         * its own dealloc performs the shutdown. */
+        FIL_TPREG_LOCK();
+        pool = _thrpool_registry;
+        if (pool == NULL)
+        {
+            FIL_TPREG_UNLOCK();
+            break;
+        }
+        have_ref = _FIL_TPOOL_TRY_INCREF(pool);
+        __thrpool_registry_remove_locked(pool);
+        FIL_TPREG_UNLOCK();
+
+        if (!have_ref)
+        {
+            continue;
+        }
 
         if (pool->tpool != NULL && !pool->is_shutdown)
         {
             if (_thrpool_shutdown_async(pool, 1, 1, 0) != 0)
             {
-                /* Out of memory, or an exception (a signal) interrupted the
-                 * wait.  Nothing useful to do at exit time: report nothing
-                 * and move on, rather than letting an exception escape an
-                 * atexit callback and print a traceback. */
+                /* Out of memory, a lost shutdown race, or an exception (a
+                 * signal) interrupted the wait.  Nothing useful to do at
+                 * exit time: report nothing and move on, rather than letting
+                 * an exception escape an atexit callback and print a
+                 * traceback. */
                 PyErr_Clear();
             }
         }

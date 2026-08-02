@@ -52,3 +52,125 @@ def test_filament_imports():
     # Guards the two above: if the import at module scope ever fails, the
     # skipif would hide it and this file would silently test nothing.
     assert filament is not None
+
+
+# ---------------------------------------------------------------------------
+# Concurrency stress for the pieces whose thread-safety used to be "the GIL":
+# the thread pool's registry / shutdown / run-info handshake and the timer's
+# cancel path.  On a stock build these are exercised but cannot race; on a
+# free-threaded build they hammer the new locking.  Kept small enough to add
+# only a few seconds to the suite.
+# ---------------------------------------------------------------------------
+
+import threading
+
+
+def test_thrpool_run_races_shutdown():
+    from _filament.thrpool import ThreadPool
+
+    for _ in range(5):
+        tp = ThreadPool(2, 4)
+        stop = threading.Event()
+        errors = []
+
+        def job(*args, **kwargs):
+            # Accepts the shutdown=True kwarg a now=True shutdown delivers.
+            return 42
+
+        def hammer():
+            while not stop.is_set():
+                try:
+                    tp.run(job, timeout=None)
+                except RuntimeError:
+                    # pool is (or is being) shut down: the expected loser
+                    return
+                except Exception as e:  # pragma: no cover - failure detail
+                    errors.append(e)
+                    return
+
+        threads = [threading.Thread(target=hammer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        try:
+            tp.shutdown(now=True, wait=True)
+        except RuntimeError:
+            pass
+        stop.set()
+        for t in threads:
+            t.join()
+        assert not errors, errors
+
+
+def test_thrpool_double_shutdown_single_winner():
+    from _filament.thrpool import ThreadPool
+
+    for _ in range(10):
+        tp = ThreadPool(1, 2)
+        outcomes = []
+
+        def shut():
+            try:
+                tp.shutdown(now=True, wait=True)
+                outcomes.append("ok")
+            except RuntimeError:
+                outcomes.append("already")
+
+        threads = [threading.Thread(target=shut) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # Exactly one shutdown may win; the rest must see "already called".
+        assert outcomes.count("ok") == 1, outcomes
+
+
+def test_thrpool_create_destroy_registry_churn():
+    from _filament.thrpool import ThreadPool
+
+    def churn():
+        for _ in range(10):
+            tp = ThreadPool(1, 2)
+            tp.run(int, timeout=None)
+            tp.shutdown(now=True, wait=True)
+
+    threads = [threading.Thread(target=churn) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def test_thrpool_run_timeout_cancel_handshake():
+    # timeout=tiny makes the waiter give up while the worker may be at any
+    # stage of the job: exercises the CANCEL/DONE ownership handshake.
+    from _filament.thrpool import ThreadPool
+    import time as _time
+
+    import filament.exc
+
+    def job(*args, **kwargs):
+        _time.sleep(0.0005)
+
+    tp = ThreadPool(2, 2)
+    try:
+        for i in range(200):
+            try:
+                tp.run(job, timeout=0.0002)
+            except filament.exc.Timeout:
+                pass
+    finally:
+        tp.shutdown(now=True, wait=True)
+
+
+def test_timer_concurrent_cancel():
+    from _filament.timer import Timer
+
+    fired = []
+    for _ in range(50):
+        timer = Timer(60.0, fired.append, None)
+        threads = [threading.Thread(target=timer.cancel) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert not fired
