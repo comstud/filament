@@ -64,6 +64,57 @@
   N-2 hung. The path is used by all TLS io, `os.read`/`os.write` on non-regular
   descriptors, `connect()`, and any second-and-later waiter on one descriptor.
 
+- A memory-safety audit of the whole C codebase -- every subsystem, stock and
+  free-threaded builds -- found and fixed eighteen bugs, and a follow-up pass
+  closed out everything it left open. The ones a user could plausibly meet:
+
+  - Passing an exception *instance* as `timeout_exc` walked its refcount down
+    by one on every timeout that was raised and caught -- a use-after-free once
+    it reached zero with live holders. Passing something that is neither an
+    exception nor a callable crashed the interpreter outright; it raises
+    `TypeError` now.
+  - On the cached io path, two greenthreads taking turns on one socket could
+    leave `close()` freeing the per-descriptor wait state under the one still
+    parked on it (use-after-free, then double free): the "busy" marker was a
+    flag where it had to be a count. No free-threading required.
+  - An eager transfer that completed just as the deadline expired was thrown
+    away: received bytes silently vanished from the stream, sent bytes were
+    invisibly on the wire and a retry duplicated them. A completed transfer
+    now wins the race and hands its data back; only a kill still discards.
+  - `Queue` and `SimpleQueue` leaked every item still enqueued when the queue
+    was deallocated, and reference cycles through queued items (the ubiquitous
+    "task carries its reply queue") or through a `Condition`'s lock were
+    invisible to the garbage collector and therefore immortal. All three are
+    GC types now, the ring traversed in place.
+  - `accept()` and `dup()` leaked the wrapped `_socket.socket` -- and with it
+    the file descriptor, for the life of the process, if the application
+    relied on refcounting rather than an explicit `close()`. `socketpair()`
+    leaked both inner sockets the same way.
+  - `sendall()` of a buffer over 4 GiB sent the truncated remainder and
+    reported success; buffer lengths were `int` in several places and are
+    `Py_ssize_t` end to end now.
+  - `ThreadPool`: the background shutdown helper read pool state after the
+    pool was freed, on every shutdown; a worker-spawn failure during
+    construction deadlocked holding the GIL that the half-started workers
+    were blocked waiting for; and several error paths leaked or
+    over-released.
+  - Killing a greenthread blocked in `put()` on a full queue could leave
+    `join()` waiting forever on a count that had already reached zero; the
+    rollback now wakes the joiners it used to strand.
+  - `Condition.wait()` joins the waiter list *before* calling the lock's
+    `release()`, so a Python-level lock whose release can switch greenthreads
+    no longer opens a window where `notify()` finds an empty list and the
+    waiter sleeps through its own notification.
+  - A `Timer` callback that raises is reported through the unraisable hook,
+    as `threading.Timer` does, instead of leaving its exception pending for
+    whatever the scheduler happened to run next; and `Timeout` no longer
+    throws into a greenlet that has already finished, which only ever
+    bounced the exception straight back as noise.
+  - A cross-thread `abort()` waiter could consume the wakeup meant for a
+    sleeping scheduler, delaying a newly armed earliest deadline by up to the
+    scheduler's 250 ms nap -- the old FIXME about the shared condvar; it
+    broadcasts now, and everyone re-checks its own predicate.
+
 **Free-threading (PEP 703)**
 
 - filament builds and runs on free-threaded CPython with the GIL genuinely
@@ -93,8 +144,36 @@
   to 142-153k msgs/s (**~90x**), because what it was measuring on that host was
   GIL handoff between real OS threads. Linux is 1.05x; it never had the problem.
 
-  Caveat: only the primitives listed above have been audited. A filament object
-  outside that set, used concurrently from two OS threads, has not been.
+- `ThreadPool` and `Timer` joined the locked set. Both are inherently
+  cross-thread objects and both had still been using the GIL as their mutex:
+  the pool registry, the shutdown state and the worker-to-waiter result
+  handshake each get their own lock -- two concurrent `shutdown()` calls now
+  produce one winner and one `RuntimeError` instead of two helper threads
+  freeing the pool twice -- and the atexit sweep takes its reference with
+  `TryIncRef` on 3.14+, so it cannot revive a pool that is mid-deallocation
+  on another thread. A `Timer` can be cancelled from two threads at once; the
+  loser no longer dereferences a scheduler the winner already released.
+
+- A timed wait that raced its own wakeup could swallow it. A waiter giving up
+  on a timeout (or unwinding from a kill) can be popped and signaled by a
+  concurrent notifier before it retakes the owner's lock; the signal died with
+  it -- a queue item nobody was woken for, a `Lock` left locked forever with
+  its waiter gone, a lost `Semaphore` permit. The race is now settled the way
+  the wait itself settles it: a timeout concedes to a signal that already
+  picked the waiter (the wait simply succeeds), and a kill passes the signal
+  on to the next waiter. Under the GIL the window does not exist; nothing
+  changes on a stock build.
+
+- The queue ring's chunk freelists -- shared *between* queues, per
+  translation unit -- sit behind their own mutex rather than racing (a chunk
+  changes hands once per 8192 queue operations, far too cold for the lock to
+  matter), and the io thread singleton and the per-socket cached-wait slot
+  can no longer be doubly created by two threads' first blocking io.
+
+  Caveat, revised from the first alpha: the audited set is now every filament
+  primitive -- the locking and queue types, `Message`, `ThreadPool`, `Timer`,
+  the io layer and the scheduler handoffs. The advisory accessors (`qsize()`,
+  `locked()` and friends) remain deliberately unlocked snapshot reads.
 
 - Removed the socket attribute `fil_first_misses`. It was reporting-only, and a
   plain `int` on the io hot path can lose increments once two threads share a
@@ -103,6 +182,13 @@
 
 **Testing & benchmarks**
 
+- The suite grew adversarial coverage for the audit work: concurrency stress
+  tests that hammer `ThreadPool` run-vs-shutdown, double shutdown, registry
+  churn, the timeout/cancel handshake, concurrent `Timer.cancel()` and
+  multi-thread queue chunk churn (racy only on free-threaded builds, but run
+  everywhere), and cycle-collection regression tests that pin each
+  queue/condition cycle shape with a weakref and demand the collector
+  actually reclaims it.
 - `benchmarks/RESULTS.md` was re-measured end to end on both architectures, and
   both now run the same interpreter set (amd64 3.14.4 -> 3.14.6, aarch64 3.9.6 ->
   3.9.25). Every row carries the commit it was measured at. It is tables only

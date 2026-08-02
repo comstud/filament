@@ -99,6 +99,29 @@ Summary:        %{summary}
   Queue.join() then waiting forever.
 - Fix a blocked read/write with more than one waiter hanging forever, ignoring
   settimeout().
+- A whole-codebase memory-safety audit: fix a use-after-free freeing a
+  socket's cached wait state under a second parked waiter; a refcount
+  underflow (then use-after-free) raising a custom timeout_exc instance, and
+  a crash on a non-exception timeout_exc; eager-io data loss when a transfer
+  completed as its deadline expired; queues leaking every item still enqueued
+  at deallocation; fd leaks in accept()/dup()/socketpair(); sendall()
+  silently truncating buffers over 4 GiB; a ThreadPool shutdown
+  use-after-free and a construction deadlock under thread exhaustion; and
+  Queue.join() waiting forever after a blocked putter was killed.
+- Queue, SimpleQueue and Condition support cyclic garbage collection:
+  reference cycles through queued items or a condition's lock used to be
+  invisible to the collector and leaked permanently.
+- Condition.wait() joins the waiter list before releasing the lock, so a
+  Python-level lock whose release() switches greenthreads can no longer miss
+  its own notification.
+- Timer callbacks that raise are reported via the unraisable hook instead of
+  poisoning the next scheduler event; Timeout no longer throws into a
+  greenlet that already finished.
+- Free-threading: ThreadPool and Timer get their own locks (both had still
+  been relying on the GIL; concurrent shutdown() calls could free the pool
+  twice); a timed wait racing its own wakeup no longer swallows the signal;
+  the queue chunk freelists, the io thread singleton and the per-socket
+  cached-wait slot are safe to hit from two threads at once.
 - Remove the socket attribute fil_first_misses (reporting-only, and unsafe to
   increment without a GIL).
 
