@@ -63,6 +63,16 @@ DEFAULTS = {
     "echo_msg": 64,             # payload bytes
     "echo_reps": 3,
     "echo_specs": [[100, 100], [1000, 20]],  # [concurrency, roundtrips]
+    # Yield to the scheduler every N client starts instead of firing them all
+    # at once.  macOS advances a mass of simultaneous loopback handshakes in
+    # batches with ~20-30ms holes between them (reproducible with plain
+    # non-blocking connect() + selectors, no framework involved), so a runtime
+    # that starts greenthreads fast enough to issue 1000 connects in one burst
+    # pays those holes -- and _echo_once counts the connect phase as echo
+    # throughput.  It cost filament 33ms of connect latency per client against
+    # gevent's 4.8ms, purely for starting its clients promptly.  A sleep(0) is
+    # enough; it adds no wall clock of its own.  0 disables.
+    "echo_start_wave": 50,
     "log_workers": 4,           # threadpool workers
     "log_msgs": 20000,          # log lines per worker
     "log_hub_greenthreads": 8,  # greenthreads spinning sleep(0) in the hub
@@ -536,6 +546,7 @@ def bench_echo(env, p):
     msg = b"x" * p["echo_msg"]
     mlen = len(msg)
     reps = p["echo_reps"]
+    wave = p.get("echo_start_wave", 0)
     results = {}
 
     for conc, rounds in p["echo_specs"]:
@@ -543,7 +554,7 @@ def bench_echo(env, p):
         spec_samples_rps = []
         last_lat = None
         for _rep in range(reps):
-            out = _echo_once(env, msg, mlen, conc, rounds)
+            out = _echo_once(env, msg, mlen, conc, rounds, wave)
             spec_samples_rps.append(out["rps"])
             last_lat = out  # keep latency from last rep
         spec_samples_rps.sort()
@@ -561,8 +572,11 @@ def bench_echo(env, p):
     return results
 
 
-def _echo_once(env, msg, mlen, conc, rounds):
-    """One echo run at a given concurrency; returns rps + latency percentiles."""
+def _echo_once(env, msg, mlen, conc, rounds, wave=0):
+    """One echo run at a given concurrency; returns rps + latency percentiles.
+
+    `wave` yields to the scheduler every that-many client starts; see
+    echo_start_wave in DEFAULTS for why it exists."""
     state = {}
 
     def body():
@@ -636,7 +650,14 @@ def _echo_once(env, msg, mlen, conc, rounds):
                 state.setdefault("client_error", "%s: %s" % (type(e).__name__, e))
 
         t0 = perf()
-        clients = [env.spawn(client) for _ in range(conc)]
+        if wave:
+            clients = []
+            for i in range(conc):
+                clients.append(env.spawn(client))
+                if (i + 1) % wave == 0:
+                    env.sleep(0)
+        else:
+            clients = [env.spawn(client) for _ in range(conc)]
         env.joinall(clients)
         wall = perf() - t0
 

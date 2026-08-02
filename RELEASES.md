@@ -101,6 +101,38 @@
   socket with no GIL. `iobench/apply_counters.py` measures the same thing, and
   more, when it is actually wanted.
 
+**Testing & benchmarks**
+
+- `benchmarks/RESULTS.md` was re-measured end to end on both architectures, and
+  both now run the same interpreter set (amd64 3.14.4 -> 3.14.6, aarch64 3.9.6 ->
+  3.9.25). Every row carries the commit it was measured at. It is tables only
+  now; the methodology, the caveats about which numbers may be compared with
+  which, and the recipe for re-running it live in `benchmarks/METHODOLOGY.md`.
+- **Free-threaded tables on both architectures**, the same suite on 3.14.6t with
+  the GIL genuinely off, plus a filament GIL-on against GIL-off comparison per
+  host. filament completes every benchmark on both. gevent 26.7.0 publishes no
+  free-threaded wheel at all, and eventlet **segfaults** -- SIGSEGV, reproduced
+  outside the harness.
+- **The echo row is now a server measurement.** `benchmarks/netecho` drives the
+  server from a second machine with one fixed Go generator, three repeats per
+  cell with the arms alternated, so it can no longer conflate a fast server with
+  a fast client the way the in-process form did. filament leads gevent by
+  **1.51-2.01x** and eventlet by **1.93-3.56x** across the matrix, p50 and p99
+  ordered the same way in every cell. The in-process form still runs and remains
+  the source for the one row that has no second host (aarch64 2.7).
+- Harness fixes: a worker killed by a signal is reported as such rather than as
+  a generic crash (this is how eventlet's SIGSEGV was found); the GIL on/off
+  comparison refuses to divide runs from different hosts or sizes; and the
+  in-process echo staggers its client starts, without which that benchmark
+  measured the platform's connection setup rather than the echo server.
+- Built and tested on CPython 3.9 through 3.15 plus 3.14t on **three**
+  platforms: x86_64 Linux, aarch64 Linux and aarch64 macOS (2.7 on aarch64 Linux
+  as well) -- 25 combinations, all green, warning-free on Linux. The six
+  `test_debug_mode.py` cases that skip outside 3.12/3.13 are the lazy
+  frame-materialisation tests: that mode only exists for the vendored greenlet
+  on 3.12/3.13 GIL builds, so they are skipped everywhere else by design,
+  free-threading included.
+
 ## 0.9.4 (2026-07-30)
 
 **Packaging**
