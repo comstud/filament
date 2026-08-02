@@ -39,13 +39,14 @@ def test_queue_item_cycle_is_collectable():
 
 
 def test_queue_many_items_cycle_is_collectable():
-    # Items spanning growth of the ring still all traversed.
+    # More items than one ring chunk holds (8192), so the traverse walks the
+    # chunk chain, not just the head.
     def build():
         q = Queue()
         first = Node()
         first.q = q
         q.put(first)
-        for _ in range(1000):
+        for _ in range(9000):
             n = Node()
             n.q = q
             q.put(n)
@@ -69,6 +70,20 @@ def test_condition_lock_cycle_is_collectable():
         cond = Condition(lock=n)   # condition -> lock object
         n.cond = cond              # lock object -> condition
         return n
+    _assert_dies(build)
+
+
+def test_condition_subclass_self_cycle_is_collectable():
+    # A self-loop through the subclass dict guarantees the collector calls
+    # the Condition's own tp_clear (subtype_clear chains to it), not just a
+    # neighbor's.
+    class MyCond(Condition):
+        pass
+
+    def build():
+        c = MyCond()
+        c.me = c
+        return c
     _assert_dies(build)
 
 
