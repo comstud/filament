@@ -162,6 +162,30 @@ def test_thrpool_run_timeout_cancel_handshake():
         tp.shutdown(now=True, wait=True)
 
 
+def test_queue_chunk_churn_across_threads():
+    # Each ring chunk holds 8192 items; filling past that and draining forces
+    # chunk alloc/free through the shared (per-TU) freelist, which several
+    # queues on several threads hit concurrently -- the shape that corrupted
+    # the unlocked freelist on free-threaded builds.
+    from _filament.queue import Queue
+
+    def churn():
+        q = Queue()
+        for round_ in range(3):
+            for i in range(9000):
+                q.put(i)
+            total = 0
+            while not q.empty():
+                total += q.get_nowait()
+            assert total == sum(range(9000))
+
+    threads = [threading.Thread(target=churn) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
 def test_timer_concurrent_cancel():
     from _filament.timer import Timer
 

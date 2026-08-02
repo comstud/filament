@@ -59,25 +59,35 @@ typedef struct _fil_fifoq_chunk FilFifoQChunk;
 typedef struct _fil_fifoq FilFifoQ;
 
 /*
- * Freelists: per-translation-unit statics, serialized by the GIL exactly like
- * the waiter freelist (see fil_waiter.h) -- every put/get/init/deinit runs
- * GIL-held on a normal build.
+ * Freelists: per-translation-unit statics, serialized by the GIL on a normal
+ * build exactly like the waiter freelist (see fil_waiter.h) -- every
+ * put/get/init/deinit runs GIL-held there, and FIL_FIFOQ_FL_LOCK compiles to
+ * nothing.
  *
  * On a FREE-THREADING build (PEP 703) there is no GIL, and unlike the queue
  * state itself these statics are shared BETWEEN queues: two Queue objects on
  * two OS threads, each correctly holding its own queue lock, still race here
  * -- two allocs can pop the same chunk (both queues then scribble PyObject
  * pointers into one block) and two frees can both pass the bounds test and
- * push past the end of the array.  The waiter freelist went per-thread TLS
- * because it is the hottest allocation in the scheduler; a chunk is touched
- * once per FIL_FIFOQ_CHUNK_SIZE (8192) operations, so here the freelists are
- * simply compiled out and malloc/free pay the bill -- ~8 bytes of amortized
- * cost per queue op, unmeasurable.
+ * push past the end of the array.  There the freelists get their own mutex.
+ * A mutex and not the waiter freelist's per-thread TLS treatment because the
+ * trade is reversed: waiters are the hottest allocation in the scheduler
+ * (every park), while a chunk changes hands once per FIL_FIFOQ_CHUNK_SIZE
+ * (8192) queue operations -- far too cold for a lock to matter -- and chunks
+ * are ~64KB each, so per-thread pools of up to 128 of them would also trade
+ * a lock for a multi-MB-per-thread memory hazard.
  */
-#ifndef Py_GIL_DISABLED
 static int _fil_fifoq_freelist_len, _fil_fifoq_chunk_freelist_len;
 static FilFifoQ *_fil_fifoq_freelist[FIL_FIFOQ_FREELIST_SIZE];
 static FilFifoQChunk *_fil_fifoq_chunk_freelist[FIL_FIFOQ_CHUNK_FREELIST_SIZE];
+
+#ifdef Py_GIL_DISABLED
+static pthread_mutex_t _fil_fifoq_freelist_lock = PTHREAD_MUTEX_INITIALIZER;
+#  define FIL_FIFOQ_FL_LOCK()   pthread_mutex_lock(&_fil_fifoq_freelist_lock)
+#  define FIL_FIFOQ_FL_UNLOCK() pthread_mutex_unlock(&_fil_fifoq_freelist_lock)
+#else
+#  define FIL_FIFOQ_FL_LOCK()   ((void)0)
+#  define FIL_FIFOQ_FL_UNLOCK() ((void)0)
 #endif
 
 struct _fil_fifoq_chunk
@@ -96,25 +106,36 @@ struct _fil_fifoq {
 
 static inline FilFifoQChunk *_fil_fifoq_chunk_alloc(void)
 {
-#ifndef Py_GIL_DISABLED
+    FilFifoQChunk *chunk = NULL;
+
+    FIL_FIFOQ_FL_LOCK();
     if (_fil_fifoq_chunk_freelist_len)
     {
-        return _fil_fifoq_chunk_freelist[--_fil_fifoq_chunk_freelist_len];
+        chunk = _fil_fifoq_chunk_freelist[--_fil_fifoq_chunk_freelist_len];
     }
-#endif
+    FIL_FIFOQ_FL_UNLOCK();
+
+    if (chunk != NULL)
+    {
+        return chunk;
+    }
     return malloc(FIL_FIFOQ_CHUNK_OBJ_SIZE);
 }
 
 static inline void _fil_fifoq_chunk_free(FilFifoQChunk *chunk)
 {
-#ifndef Py_GIL_DISABLED
+    FIL_FIFOQ_FL_LOCK();
     if (_fil_fifoq_chunk_freelist_len < FIL_FIFOQ_CHUNK_FREELIST_SIZE - 1)
     {
         _fil_fifoq_chunk_freelist[_fil_fifoq_chunk_freelist_len++] = chunk;
-        return;
+        chunk = NULL;
     }
-#endif
-    free(chunk);
+    FIL_FIFOQ_FL_UNLOCK();
+
+    if (chunk != NULL)
+    {
+        free(chunk);
+    }
 }
 
 /* for when statically allocated */
@@ -135,15 +156,16 @@ static inline int fil_fifoq_init(FilFifoQ *q)
 
 static inline FilFifoQ *fil_fifoq_alloc(void)
 {
-    FilFifoQ *q;
+    FilFifoQ *q = NULL;
 
-#ifndef Py_GIL_DISABLED
+    FIL_FIFOQ_FL_LOCK();
     if (_fil_fifoq_freelist_len)
     {
         q = _fil_fifoq_freelist[--_fil_fifoq_freelist_len];
     }
-    else
-#endif
+    FIL_FIFOQ_FL_UNLOCK();
+
+    if (q == NULL)
     {
         q = malloc(sizeof(FilFifoQ));
         if (q == NULL)
@@ -186,16 +208,20 @@ static inline void fil_fifoq_deinit(FilFifoQ *q)
 
 static inline void fil_fifoq_free(FilFifoQ *q)
 {
-#ifndef Py_GIL_DISABLED
+    FIL_FIFOQ_FL_LOCK();
     if (_fil_fifoq_freelist_len < FIL_FIFOQ_FREELIST_SIZE - 1)
     {
         q->len = 0;
         _fil_fifoq_freelist[_fil_fifoq_freelist_len++] = q;
-        return;
+        q = NULL;
     }
-#endif
-    fil_fifoq_deinit(q);
-    free(q);
+    FIL_FIFOQ_FL_UNLOCK();
+
+    if (q != NULL)
+    {
+        fil_fifoq_deinit(q);
+        free(q);
+    }
 }
 
 static inline int fil_fifoq_put(FilFifoQ *q, void *item)
