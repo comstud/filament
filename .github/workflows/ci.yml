@@ -67,17 +67,6 @@ jobs:
         run: |
           .venv/bin/python setup.py build_ext --inplace
 
-      # A free-threaded interpreter silently switches the GIL back ON if any
-      # imported extension has not declared Py_mod_gil = Py_MOD_GIL_NOT_USED,
-      # and the suite would still pass -- against the stock runtime. Assert the
-      # property the build actually claims, before running anything.
-      - name: Assert the GIL is really disabled
-        if: endsWith(matrix.python, 't')
-        run: >
-          .venv/bin/python -c "import sys, filament;
-          assert not sys._is_gil_enabled(), 'importing filament re-enabled the GIL';
-          print('gil disabled: ok')"
-
       - name: Run test suite
         run: |
           .venv/bin/python -m pytest tests -q --ignore=tests/test_wsgi.py

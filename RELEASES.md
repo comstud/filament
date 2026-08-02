@@ -127,11 +127,13 @@
   measured the platform's connection setup rather than the echo server.
 - Built and tested on CPython 3.9 through 3.15 plus 3.14t on **three**
   platforms: x86_64 Linux, aarch64 Linux and aarch64 macOS (2.7 on aarch64 Linux
-  as well) -- 25 combinations, all green, warning-free on Linux. The six
-  `test_debug_mode.py` cases that skip outside 3.12/3.13 are the lazy
-  frame-materialisation tests: that mode only exists for the vendored greenlet
-  on 3.12/3.13 GIL builds, so they are skipped everywhere else by design,
-  free-threading included.
+  as well) -- 25 combinations, all green, warning-free on Linux. CI covers
+  3.9-3.15 and 3.14t on amd64 and arm64, and the published wheels now include
+  cp314t. Two groups of tests skip by design: the six lazy
+  frame-materialisation cases in `test_debug_mode.py`, which need the vendored
+  greenlet on a 3.12/3.13 GIL build, and the two in `test_free_threading.py`,
+  which assert the GIL stays off after every extension is imported and so have
+  nothing to check on an ordinary build.
 
 ## 0.9.4 (2026-07-30)
 
