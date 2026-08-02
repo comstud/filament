@@ -100,7 +100,10 @@ static inline int _fil_ts_from_double(double timeout, struct timespec *ts_buf, s
     long sec;
     long nsec;
 
-    if (timeout > (double)LONG_MAX)
+    /* >= and not >: (double)LONG_MAX rounds UP to 2^63, so 'timeout ==
+     * (double)LONG_MAX' would pass a > test and then make the (long) cast
+     * below undefined. */
+    if (timeout >= (double)LONG_MAX)
     {
         PyErr_SetString(PyExc_OverflowError,
                         "timeout period too long");
@@ -122,7 +125,10 @@ static inline int _fil_ts_from_double(double timeout, struct timespec *ts_buf, s
         ts_buf->tv_nsec -= 1000000000L - nsec;
     }
 
-    if (ts_buf->tv_sec + sec < ts_buf->tv_sec)
+    /* Overflow test without performing the overflow: the old 'a + sec < a'
+     * form is signed-overflow UB, which compilers fold to 'sec < 0' --
+     * executing the very overflow it meant to catch. */
+    if (sec > 0 && ts_buf->tv_sec > LONG_MAX - sec)
     {
         PyErr_SetString(PyExc_OverflowError,
                         "timeout period too long");

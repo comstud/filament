@@ -476,9 +476,19 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
         if (ts != NULL && waiter->timeout_event == NULL)
         {
             waiter->refcnt++;
-            fil_scheduler_add_event_ref(waiter->sched, ts, 0,
-                                        (fil_event_cb_t)_fil_waiter_handle_timeout,
-                                        waiter, &(waiter->timeout_event));
+            if (fil_scheduler_add_event_ref(waiter->sched, ts, 0,
+                                            (fil_event_cb_t)_fil_waiter_handle_timeout,
+                                            waiter, &(waiter->timeout_event)) < 0)
+            {
+                /* OOM: no event owns the reference we just took, so give it
+                 * back or the waiter (and its mutex/cond and sched/gl refs)
+                 * leaks for good.  The wait proceeds without a deadline --
+                 * acceptable, the process is dying of OOM -- and bailing out
+                 * here instead would mean re-running the whole resume
+                 * settlement against a signaler that may already be
+                 * switching us. */
+                waiter->refcnt--;
+            }
         }
 
         fil_scheduler_switch(waiter->sched);

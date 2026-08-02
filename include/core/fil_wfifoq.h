@@ -113,22 +113,72 @@ static inline int fil_wfifoq_init(FilWFifoQ *q, uint64_t max_size, PyObject *emp
     return 0;
 }
 
+/*
+ * GC support for the owning Python object.
+ *
+ * Traverse visits every queued item in place (each holds the reference
+ * _fil_wfifoq_put took for the getter that never came) plus the two error
+ * classes.  No locking even on free-threading builds: the collector runs the
+ * world stopped, and on stock builds the GIL is held.
+ */
+static inline int fil_wfifoq_traverse(FilWFifoQ *q, visitproc visit, void *arg)
+{
+    if (q->_queue_inited && q->queue.len > 0)
+    {
+        FilFifoQChunk *chunk = q->queue.head;
+        uint64_t idx = q->queue.pop_idx;
+
+        for (;;)
+        {
+            /* append_idx is the last WRITTEN slot of a chunk; interior
+             * chunks are full through FIL_FIFOQ_CHUNK_SIZE - 1. */
+            uint64_t last = (chunk == q->queue.tail)
+                ? chunk->append_idx
+                : (uint64_t)(FIL_FIFOQ_CHUNK_SIZE - 1);
+
+            for (; idx <= last; idx++)
+            {
+                Py_VISIT((PyObject *)chunk->items[idx]);
+            }
+            if (chunk == q->queue.tail)
+            {
+                break;
+            }
+            chunk = chunk->next_chunk;
+            idx = 0;
+        }
+    }
+    Py_VISIT(q->empty_error);
+    Py_VISIT(q->full_error);
+    return 0;
+}
+
+/* Drop every queued item (tp_clear, and the head of deinit).  The queue
+ * stays valid and usable afterwards -- just empty. */
+static inline void fil_wfifoq_clear_items(FilWFifoQ *q)
+{
+    void *item;
+
+    if (q->_queue_inited)
+    {
+        while (fil_fifoq_get(&(q->queue), &item) == 0)
+        {
+            Py_DECREF((PyObject *)item);
+        }
+    }
+}
+
 static inline void fil_wfifoq_deinit(FilWFifoQ *q)
 {
     assert(fil_waiterlist_empty(q->getters));
     assert(fil_waiterlist_empty(q->putters));
     if (q->_queue_inited)
     {
-        void *item;
-
         /* Every item in the ring holds the reference _fil_wfifoq_put took
          * for the getter that never came; dropping the chunks without
          * dropping those references leaks every item still queued at
          * dealloc. */
-        while (fil_fifoq_get(&(q->queue), &item) == 0)
-        {
-            Py_DECREF((PyObject *)item);
-        }
+        fil_wfifoq_clear_items(q);
         fil_fifoq_deinit(&(q->queue));
     }
     Py_CLEAR(q->empty_error);

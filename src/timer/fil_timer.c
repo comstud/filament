@@ -96,6 +96,13 @@ static void _timer_callback(PyFilScheduler *sched, PyFilTimer *timer)
         PyObject *result;
 
         result = PyObject_Call(func, args, kwargs);
+        if (result == NULL)
+        {
+            /* Report it now, like threading.Timer does.  Leaving it pending
+             * hands the exception to whatever the scheduler runs next, which
+             * then dies with "returned a result with an exception set". */
+            PyErr_WriteUnraisable(func);
+        }
         Py_XDECREF(result);
         Py_DECREF(func);
         Py_XDECREF(args);

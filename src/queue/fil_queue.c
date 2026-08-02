@@ -79,8 +79,26 @@ static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     return 0;
 }
 
+/*
+ * GC support.  A queued item routinely closes a cycle back to the queue --
+ * the ubiquitous worker pattern hands tasks that carry their reply queue --
+ * and without a traverse the collector cannot see through the ring, so the
+ * whole cycle (queue, items and everything they pin) leaks.
+ */
+static int _queue_traverse(PyFilQueue *self, visitproc visit, void *arg)
+{
+    return fil_wfifoq_traverse(&(self->queue), visit, arg);
+}
+
+static int _queue_clear(PyFilQueue *self)
+{
+    fil_wfifoq_clear_items(&(self->queue));
+    return 0;
+}
+
 static void _queue_dealloc(PyFilQueue *self)
 {
+    PyObject_GC_UnTrack(self);
     fil_wfifoq_deinit(&(self->queue));
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
@@ -534,10 +552,10 @@ static PyTypeObject _queue_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_HAVE_GC,     /* tp_flags */
     0,                                          /* tp_doc */
-    0,                                          /* tp_traverse */
-    0,                                          /* tp_clear */
+    (traverseproc)_queue_traverse,                 /* tp_traverse */
+    (inquiry)_queue_clear,                         /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
     PyObject_SelfIter,                          /* tp_iter */
@@ -553,7 +571,10 @@ static PyTypeObject _queue_type = {
     (initproc)_queue_init,                      /* tp_init */
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_queue_new,                        /* tp_new */
-    PyObject_Del,                               /* tp_free */
+    /* Must match tp_alloc: PyType_GenericAlloc allocates (and tracks) a GC
+     * header for Py_TPFLAGS_HAVE_GC types, so freeing with PyObject_Del
+     * corrupts the heap. */
+    PyObject_GC_Del,                            /* tp_free */
     0,                                          /* tp_is_gc */
     0,                                          /* tp_bases */
     0,                                          /* tp_mro */

@@ -37,11 +37,12 @@
  * and the waiter sleeps through its own notification.  The GIL closed that
  * window by making the release-and-add indivisible; without it we have to.
  *
- * The lock is held across lock.release() and the add, then dropped for the
- * park.  Holding it across the Python-level release()/acquire() calls is safe:
- * those take the target lock's own mutex and never call back into a Condition,
- * so the order is cond_lock -> lock_mutex -> waiter_lock -> sched_lock and
- * nothing runs it backwards.
+ * The waiter therefore joins the list BEFORE lock.release() is called (safe:
+ * an early notify() just sets SIGNALED, which fil_waiter_wait() tests before
+ * parking), and the mutex is held only around the list operations themselves
+ * -- never across a PyObject_CallMethod, whose target is an arbitrary user
+ * lock that could re-enter this Condition and self-deadlock.  Order is
+ * cond_lock -> waiter_lock -> sched_lock and nothing runs it backwards.
  */
 #ifdef Py_GIL_DISABLED
 #  define FIL_COND_LOCK(__c)    pthread_mutex_lock(&((__c)->mutex))
@@ -116,8 +117,30 @@ static int _cond_init(PyFilCond *self, PyObject *args, PyObject *kwargs)
     return 0;
 }
 
+/*
+ * GC support.  'lock' is an arbitrary user object that can (and in the
+ * bound-method case routinely does) refer back to this Condition; without a
+ * traverse that cycle is invisible to the collector and leaks.  The waiter
+ * list needs no traversal: waiters are plain C structs that only exist while
+ * a greenthread is parked, and a parked greenthread is not collectable.
+ */
+static int _cond_traverse(PyFilCond *self, visitproc visit, void *arg)
+{
+    Py_VISIT(self->lock);
+    Py_VISIT(self->verbose);
+    return 0;
+}
+
+static int _cond_clear(PyFilCond *self)
+{
+    Py_CLEAR(self->lock);
+    Py_CLEAR(self->verbose);
+    return 0;
+}
+
 static void _cond_dealloc(PyFilCond *self)
 {
+    PyObject_GC_UnTrack(self);
     assert(fil_waiterlist_empty(self->waiters));
 #ifdef Py_GIL_DISABLED
     pthread_mutex_destroy(&(self->mutex));
@@ -133,19 +156,90 @@ static void _cond_dealloc(PyFilCond *self)
 static int __cond_wait(PyFilCond *cond, struct timespec *ts)
 {
     PyObject *result;
+    FilWaiter *waiter;
+    FilWaiterList *entry;
     int err;
 
+    waiter = fil_waiter_alloc();
+    if (waiter == NULL)
+    {
+        return -1;
+    }
+    entry = &(waiter->waiter_list);
+
+    /* Join the waiter list BEFORE calling the lock's release(), holding the
+     * condition's own mutex (a no-op on stock builds) only around the list
+     * itself.  Two problems die at once:
+     *
+     *  - the classic condition-variable hole: release-then-add leaves a
+     *    window where a notify() sweeps an empty list and the waiter sleeps
+     *    through its own notification.  The GIL only ever closed it for
+     *    locks whose release() cannot switch greenthreads; a Python-level
+     *    lock that parks inside release() reopened it even on stock builds.
+     *
+     *  - cond->lock is an arbitrary object, so holding a non-recursive
+     *    pthread mutex across PyObject_CallMethod meant a release() -- or a
+     *    GC finalizer it triggers -- touching this same Condition would
+     *    self-deadlock on a free-threading build.
+     *
+     * Joining this early is safe: a notify() that arrives before we park
+     * just sets SIGNALED, and fil_waiter_wait() tests SIGNALED before doing
+     * anything else. */
     FIL_COND_LOCK(cond);
+    _fil_waiterlist_add(&(cond->waiters), waiter);
+    FIL_COND_UNLOCK(cond);
 
     result = PyObject_CallMethod(cond->lock, "release", NULL);
     Py_XDECREF(result);
     if (result == NULL)
     {
+        /* Never parked.  Take ourselves back off the list -- unless a
+         * notify() already popped us (the detached entry self-points; see
+         * __fil_waiterlist_signal_first), in which case its notification
+         * must be passed on rather than dying with us. */
+        FIL_COND_LOCK(cond);
+        if (entry->next == entry)
+        {
+            _fil_waiterlist_signal_first_keep_exc(&(cond->waiters));
+        }
+        else
+        {
+            _fil_waiterlist_del(entry);
+        }
         FIL_COND_UNLOCK(cond);
+        fil_waiter_decref(waiter);
         return -1;
     }
 
-    err = FIL_COND_WAIT(cond, cond->waiters, ts, NULL);
+    err = fil_waiter_wait(waiter, ts, NULL);
+
+    FIL_COND_LOCK(cond);
+    if (err)
+    {
+        if (entry->next == entry)
+        {
+            /* A notify() popped us after we gave up -- same race as in
+             * _fil_waiterlist_wait_locked.  Its notification is ours: a
+             * plain timeout loses to it (report success), a throw carries
+             * it out through the unwind path below. */
+            if (err == -ETIMEDOUT)
+            {
+                PyErr_Clear();
+                err = 0;
+            }
+            else if (err < 0)
+            {
+                err = FIL_WAITER_SIGNALED_UNWIND;
+            }
+        }
+        else
+        {
+            _fil_waiterlist_del(entry);
+        }
+    }
+    FIL_COND_UNLOCK(cond);
+    fil_waiter_decref(waiter);
+
     if (err)
     {
         PyObject *exc_type, *exc_value, *exc_tb;
@@ -157,17 +251,16 @@ static int __cond_wait(PyFilCond *cond, struct timespec *ts)
              * wakeup.  We cannot use the notification, so pass it to the next
              * waiter rather than swallowing it -- a notify_all() that reaches
              * a greenthread being killed must still reach the others. */
+            FIL_COND_LOCK(cond);
             fil_waiterlist_signal_first(cond->waiters);
+            FIL_COND_UNLOCK(cond);
         }
 
-        FIL_COND_UNLOCK(cond);
         result = PyObject_CallMethod(cond->lock, "acquire", NULL);
         Py_XDECREF(result);
         PyErr_Restore(exc_type, exc_value, exc_tb);
         return -1;
     }
-
-    FIL_COND_UNLOCK(cond);
 
     result = PyObject_CallMethod(cond->lock, "acquire", NULL);
     Py_XDECREF(result);
@@ -300,10 +393,10 @@ static PyTypeObject _cond_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_HAVE_GC,     /* tp_flags */
     0,                                          /* tp_doc */
-    0,                                          /* tp_traverse */
-    0,                                          /* tp_clear */
+    (traverseproc)_cond_traverse,                 /* tp_traverse */
+    (inquiry)_cond_clear,                         /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
@@ -319,7 +412,10 @@ static PyTypeObject _cond_type = {
     (initproc)_cond_init,                       /* tp_init */
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_cond_new,                         /* tp_new */
-    PyObject_Del,                               /* tp_free */
+    /* Must match tp_alloc: PyType_GenericAlloc allocates (and tracks) a GC
+     * header for Py_TPFLAGS_HAVE_GC types, so freeing with PyObject_Del
+     * corrupts the heap. */
+    PyObject_GC_Del,                            /* tp_free */
     0,                                          /* tp_is_gc */
     0,                                          /* tp_bases */
     0,                                          /* tp_mro */
