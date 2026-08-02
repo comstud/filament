@@ -10,10 +10,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Build manylinux wheels for cp39-cp314 on amd64 and native arm64 runners.
+  # Build manylinux wheels for cp39-cp314, plus the free-threaded cp314t, on
+  # amd64 and native arm64 runners.
   # 3.15 is intentionally excluded from published wheels while it is a beta; the
-  # CI workflow still tests it. To add it once it ships, set
-  # CIBW_ENABLE=cpython-prerelease and extend CIBW_BUILD.
+  # CI workflow still tests it. To add it once it ships, append
+  # cpython-prerelease to CIBW_ENABLE (it takes a space-separated list) and
+  # extend CIBW_BUILD.
   wheels:
     name: wheels (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
@@ -29,9 +31,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21
+        uses: pypa/cibuildwheel@v2.22
         env:
-          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+          # cp314t is the free-threaded build. "cp314-*" does NOT match it --
+          # the free-threaded interpreters are separate identifiers and are off
+          # unless CIBW_ENABLE turns them on. Only 3.14t is published: that is
+          # the free-threaded runtime filament has been validated against.
+          # (CIBW_ENABLE replaced CIBW_FREE_THREADED_SUPPORT in cibuildwheel
+          # 2.22, hence the pin.)
+          CIBW_ENABLE: "cpython-freethreading"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-*"
           CIBW_SKIP: "*-musllinux_*"
           # Native 64-bit only. Without this an x86_64 runner also builds
           # i686, whose only image is manylinux2014 (CentOS 7) — no dnf, and
