@@ -268,9 +268,25 @@ static inline FilSchedEvent *_get_ready_events(PyFilScheduler *sched, struct tim
 
 static void _scheduler_key_delete(void *sched)
 {
+    /* pthread TSD destructor: runs at thread exit, on a thread whose Python
+     * thread state is already gone -- a bare Py_DECREF here runs with no GIL
+     * (racing every GIL-held refcount op on a normal build, and invalid
+     * outright on a free-threading one), and if it is the LAST reference it
+     * runs the scheduler's dealloc with no thread state at all.  Attach one
+     * for the duration; if the interpreter is finalizing, attaching would
+     * abort (the gilstate TSS key is gone on 3.14+), so leak the reference
+     * -- the process is exiting anyway. */
     if (sched != NULL)
     {
+        PyGILState_STATE gstate;
+
+        if (fil_py_is_finalizing())
+        {
+            return;
+        }
+        gstate = PyGILState_Ensure();
         Py_DECREF((PyObject *)sched);
+        PyGILState_Release(gstate);
     }
 }
 
@@ -354,7 +370,13 @@ static int _scheduler_add_event(PyFilScheduler *sched, struct timespec *ts, uint
     pthread_mutex_unlock(&(sched->sched_lock));
     if (wake_scheduler)
     {
-        pthread_cond_signal(&(sched->sched_cond));
+        /* Broadcast, not signal: sched_cond is shared with cross-thread
+         * abort() waiters (see _sched_abort), and a signal here could be
+         * consumed by one of them instead of the sleeping scheduler --
+         * delaying the event by up to the scheduler's 250ms nap.  Everyone
+         * woken re-checks its own predicate, so the broadcast is merely a
+         * spurious wake for the abort waiters, and only while one exists. */
+        pthread_cond_broadcast(&(sched->sched_cond));
     }
 
     return 0;
@@ -817,7 +839,9 @@ static PyObject *_sched_main(PyFilScheduler *self, PyObject *args)
     }
 
     self->running = 0;
-    pthread_cond_signal(&(self->sched_cond));
+    /* Broadcast: several threads can be parked in _sched_abort waiting for
+     * 'running' to drop, and they all need to see it. */
+    pthread_cond_broadcast(&(self->sched_cond));
     pthread_mutex_unlock(&(self->sched_lock));
 
     /* Block threads */
@@ -867,8 +891,11 @@ static PyObject *_sched_abort(PyFilScheduler *self, PyObject *args)
     Py_BEGIN_ALLOW_THREADS
     pthread_mutex_lock(&(self->sched_lock));
     self->aborting = 1;
-    /* FIXME: don't use the same cond here and below */
-    pthread_cond_signal(&(self->sched_cond));
+    /* Broadcast: this wake is meant for the sleeping scheduler, but other
+     * abort waiters share the cond and a signal could land on one of them
+     * instead.  (The historical FIXME about splitting the cond in two is
+     * resolved by broadcasting -- everyone re-checks its own predicate.) */
+    pthread_cond_broadcast(&(self->sched_cond));
     while (self->running)
     {
         pthread_cond_wait(&(self->sched_cond),

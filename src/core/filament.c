@@ -105,6 +105,11 @@ static int _fil_filament_init_common(PyFilament *self, PyObject *method, PyObjec
 
     Py_DECREF(main_method);
 
+    if (gl_args == NULL)
+    {
+        return -1;
+    }
+
     if (PyGreenlet_Type.tp_init((PyObject *)self, gl_args, NULL) < 0)
     {
         Py_DECREF(gl_args);
@@ -219,6 +224,13 @@ static int _fil_filament_clear(PyFilament *self)
 
 static void _fil_filament_dealloc(PyFilament *self)
 {
+    /* Untrack before clearing: Py_CLEAR below can run arbitrary destructors
+     * (the message's traceback pins frames and user objects), and a GC pass
+     * triggered from one would traverse this refcount-0 object if it were
+     * still tracked.  green_dealloc's own untrack (and its resurrection
+     * handling) remain intact -- untracking twice is a no-op. */
+    PyObject_GC_UnTrack((PyObject *)self);
+
     Py_CLEAR(self->message);
     Py_CLEAR(self->sched);
     Py_CLEAR(self->method);

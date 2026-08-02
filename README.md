@@ -244,20 +244,28 @@ subprocess. Run it with:
 python benchmarks/run_all.py [--python /path/to/venv/bin/python]
 ```
 
-Full numbers are in [benchmarks/RESULTS.md](benchmarks/RESULTS.md). As of the
-latest full matrix, **filament wins or ties every benchmark against both
-gevent and eventlet on every supported interpreter** (2.7 through 3.15).
-Headlines (within-version ratios vs gevent):
+Full numbers are in [benchmarks/RESULTS.md](benchmarks/RESULTS.md), which is
+tables only; what each benchmark does, which numbers may be compared with
+which, and how to re-run the matrix are in
+[benchmarks/METHODOLOGY.md](benchmarks/METHODOLOGY.md). As of the
+latest full matrix, **filament leads gevent and eventlet on every benchmark on
+every supported interpreter** (2.7 through 3.15). Headlines (within-version
+ratios vs gevent):
 
-- **Context switches:** 2.4–3.1× (3.4–4.4M switches/s with the fiber core).
-- **Spawn throughput:** ~2.4× on 3.13, widening to ~6× on 2.7.
-- **Semaphore ops:** ~4×; **queue:** ~1.3×.
-- **Thread-pool round-trip and echo-server req/s:** ahead of gevent, with
-  substantially better p99 tail latency at high concurrency.
-- **Mixed green+native shared queue:** ~1–3M items/s; gevent silently loses
+- **Context switches:** 1.9–3.0× (up to 4.7M switches/s with the fiber core).
+- **Spawn throughput:** 2.3–4.2×, widest on 2.7 and 3.9.
+- **Semaphore ops:** 2.2–3.2×; **queue:** 1.1–1.4×.
+- **Thread-pool round-trip:** 1.1–1.9× on Python 3 (read a single cell loosely —
+  it is thread-placement sensitive); on 2.7 gevent's threadpool stalls outright.
+- **Echo server:** 1.2–2.4× gevent's req/s at concurrency 100 and 1.3–2.2× at
+  concurrency 1000, on both machines, with far better p50/p99 throughout.
+- **Mixed green+native shared queue:** 1–5.5M items/s; gevent silently loses
   items and eventlet deadlocks on the same workload.
-- **#137 logging-from-threadpool:** filament completes (~15–17k msg/s); gevent
-  and eventlet both **deadlock**.
+- **#137 logging-from-threadpool:** filament completes on every interpreter and
+  both machines; eventlet always deadlocks, and gevent deadlocks on macOS while
+  completing on Linux. filament's throughput is 1.6–2.9k msg/s on macOS against
+  114–164k on Linux — that gap is GIL handoff, and on a free-threaded build
+  macOS reaches 142–153k.
 
 ## Running the tests
 

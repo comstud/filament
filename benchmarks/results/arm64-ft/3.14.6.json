@@ -1,0 +1,612 @@
+{
+  "python": "3.14.6",
+  "worker_params": {},
+  "runs": {
+    "spawn": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "spawn",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "k": 100000,
+          "tracked_spawn_per_sec": {
+            "per_sec_median": 492374.04933210777,
+            "per_sec_min": 460111.5832863791,
+            "per_sec_max": 497056.3920991214,
+            "reps": 5,
+            "samples": [
+              460111.6,
+              492374.0,
+              492262.2,
+              497056.4,
+              495387.5
+            ]
+          },
+          "fireforget_spawn_n_per_sec": {
+            "per_sec_median": 481622.77992845385,
+            "per_sec_min": 478353.412820869,
+            "per_sec_max": 483407.0527386254,
+            "reps": 3,
+            "samples": [
+              478353.4,
+              483407.1,
+              481622.8
+            ]
+          },
+          "fireforget_error": null
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "spawn",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "spawn",
+        "status": "segfault",
+        "error": "killed by SIGSEGV (11); stderr tail:\n/private/var/hermes/filbench/bench-head/benchmarks/worker.py:232: EventletDeprecationWarning: \nEventlet is deprecated. It is currently being maintained in bugfix mode, and\nwe strongly recommend against using it for new projects.\nIf you are already using Eventlet, we recommend migrating to a different\nframework.  For more detail see\nhttps://eventlet.readthedocs.io/en/latest/asyncio/migration.html\n  import eventlet",
+        "result": null
+      }
+    },
+    "ctxswitch": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "ctxswitch",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "greenthreads": 100,
+          "iters_each": 10000,
+          "total_switches": 1000000,
+          "switches_per_sec": {
+            "per_sec_median": 3376160.879354877,
+            "per_sec_min": 3334870.6202322454,
+            "per_sec_max": 3448940.3778538248,
+            "reps": 5,
+            "samples": [
+              3334870.6,
+              3448940.4,
+              3376160.9,
+              3440425.2,
+              3371141.2
+            ]
+          }
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "ctxswitch",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "ctxswitch",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "0.41.1",
+        "result": {
+          "greenthreads": 100,
+          "iters_each": 10000,
+          "total_switches": 1000000,
+          "switches_per_sec": {
+            "per_sec_median": 970689.6220845085,
+            "per_sec_min": 963689.6206858503,
+            "per_sec_max": 972015.550751798,
+            "reps": 5,
+            "samples": [
+              970689.6,
+              972015.6,
+              970218.5,
+              970882.3,
+              963689.6
+            ]
+          }
+        },
+        "log_mode": "naive"
+      }
+    },
+    "semaphore": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "semaphore",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "uncontended_ops": 1000000,
+          "uncontended_ops_per_sec": {
+            "per_sec_median": 34495594.57583607,
+            "per_sec_min": 34398195.96386595,
+            "per_sec_max": 34761551.02964538,
+            "reps": 5,
+            "samples": [
+              34407072.5,
+              34398196.0,
+              34693862.5,
+              34495594.6,
+              34761551.0
+            ]
+          },
+          "contended_greenthreads": 50,
+          "contended_total_ops": 200000,
+          "contended_ops_per_sec": {
+            "per_sec_median": 31397992.717255067,
+            "per_sec_min": 31136682.020176362,
+            "per_sec_max": 31593495.32423743,
+            "reps": 5,
+            "samples": [
+              31191515.7,
+              31397992.7,
+              31593495.3,
+              31136682.0,
+              31549264.9
+            ]
+          }
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "semaphore",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "semaphore",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "0.41.1",
+        "result": {
+          "uncontended_ops": 1000000,
+          "uncontended_ops_per_sec": {
+            "per_sec_median": 13601656.29849165,
+            "per_sec_min": 13564494.93985533,
+            "per_sec_max": 13642332.156938715,
+            "reps": 5,
+            "samples": [
+              13564494.9,
+              13588841.4,
+              13642332.2,
+              13608165.5,
+              13601656.3
+            ]
+          },
+          "contended_greenthreads": 50,
+          "contended_total_ops": 200000,
+          "contended_ops_per_sec": {
+            "per_sec_median": 13336370.434591064,
+            "per_sec_min": 13291833.497210458,
+            "per_sec_max": 13428376.728802355,
+            "reps": 5,
+            "samples": [
+              13428376.7,
+              13291833.5,
+              13334963.7,
+              13336370.4,
+              13415653.6
+            ]
+          }
+        },
+        "log_mode": "naive"
+      }
+    },
+    "queue": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "queue",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "items": 200000,
+          "items_per_sec": {
+            "per_sec_median": 12489430.018929845,
+            "per_sec_min": 12414713.993487284,
+            "per_sec_max": 12750629.566386454,
+            "reps": 5,
+            "samples": [
+              12750629.6,
+              12596838.1,
+              12415580.3,
+              12489430.0,
+              12414714.0
+            ]
+          }
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "queue",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "queue",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "0.41.1",
+        "result": {
+          "items": 200000,
+          "items_per_sec": {
+            "per_sec_median": 5522662.4303815765,
+            "per_sec_min": 5487457.739785571,
+            "per_sec_max": 5533115.693215655,
+            "reps": 5,
+            "samples": [
+              5487457.7,
+              5526706.8,
+              5522662.4,
+              5533115.7,
+              5514104.1
+            ]
+          }
+        },
+        "log_mode": "naive"
+      }
+    },
+    "queue_mixed": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "queue_mixed",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "items": 100000,
+          "maxsize": 100,
+          "items_per_sec": {
+            "per_sec_median": 2679540.388881008,
+            "per_sec_min": 2620928.5957868733,
+            "per_sec_max": 2815784.375490164,
+            "reps": 5,
+            "samples": [
+              2815784.4,
+              2679540.4,
+              2671549.7,
+              2773915.5,
+              2620928.6
+            ]
+          }
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "queue_mixed",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "queue_mixed",
+        "status": "deadlock",
+        "error": "timeout after 60s",
+        "result": null
+      }
+    },
+    "tpool": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "tpool",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "calls": 3000,
+          "calls_per_sec": {
+            "per_sec_median": 137200.08921427865,
+            "per_sec_min": 135929.07146998757,
+            "per_sec_max": 139695.42953134538,
+            "reps": 5,
+            "samples": [
+              137200.1,
+              139695.4,
+              137341.7,
+              135929.1,
+              136518.8
+            ]
+          },
+          "mean_latency_us": 7.29
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "tpool",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "tpool",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "0.41.1",
+        "result": {
+          "calls": 3000,
+          "calls_per_sec": {
+            "per_sec_median": 44053.40224511763,
+            "per_sec_min": 30415.102897808898,
+            "per_sec_max": 45667.92189961032,
+            "reps": 5,
+            "samples": [
+              30415.1,
+              39819.6,
+              44925.0,
+              45667.9,
+              44053.4
+            ]
+          },
+          "mean_latency_us": 22.7
+        },
+        "log_mode": "naive"
+      }
+    },
+    "echo": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "echo",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "c100_r100": {
+            "concurrency": 100,
+            "roundtrips_each": 100,
+            "total_requests": 10000,
+            "requests_per_sec_median": 174597.8984253158,
+            "requests_per_sec_min": 174222.22261163924,
+            "requests_per_sec_max": 174674.1426413331,
+            "p50_ms": 0.546,
+            "p99_ms": 0.782,
+            "reps": 3
+          },
+          "c1000_r20": {
+            "concurrency": 1000,
+            "roundtrips_each": 20,
+            "total_requests": 20000,
+            "requests_per_sec_median": 135769.02970655708,
+            "requests_per_sec_min": 134952.84312708184,
+            "requests_per_sec_max": 136116.65400798555,
+            "p50_ms": 5.518,
+            "p99_ms": 7.978,
+            "reps": 3
+          }
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "echo",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "echo",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "0.41.1",
+        "result": {
+          "c100_r100": {
+            "concurrency": 100,
+            "roundtrips_each": 100,
+            "total_requests": 10000,
+            "requests_per_sec_median": 74442.44949197117,
+            "requests_per_sec_min": 67354.75157140616,
+            "requests_per_sec_max": 76144.16135829085,
+            "p50_ms": 1.238,
+            "p99_ms": 2.461,
+            "reps": 3
+          },
+          "c1000_r20": {
+            "concurrency": 1000,
+            "roundtrips_each": 20,
+            "total_requests": 20000,
+            "requests_per_sec_median": 59410.21983413929,
+            "requests_per_sec_min": 58742.01778073213,
+            "requests_per_sec_max": 59535.91001390986,
+            "p50_ms": 14.048,
+            "p99_ms": 20.118,
+            "reps": 3
+          }
+        },
+        "log_mode": "naive"
+      }
+    },
+    "logging137": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "logging137",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "filament(greenlet 3.3.2)",
+        "result": {
+          "status": "ok",
+          "msgs_per_sec": 155368.8,
+          "error": null,
+          "label": "filament.tpool",
+          "mode": "naive"
+        },
+        "log_mode": "naive"
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "logging137",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "naive"
+      },
+      "gevent:workaround": {
+        "framework": "gevent",
+        "benchmark": "logging137",
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "ModuleNotFoundError: No module named 'gevent'",
+        "lib_version": null,
+        "result": null,
+        "log_mode": "workaround"
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "logging137",
+        "status": "segfault",
+        "error": "killed by SIGSEGV (11); stderr tail:\n/private/var/hermes/filbench/bench-head/benchmarks/worker.py:824: EventletDeprecationWarning: \nEventlet is deprecated. It is currently being maintained in bugfix mode, and\nwe strongly recommend against using it for new projects.\nIf you are already using Eventlet, we recommend migrating to a different\nframework.  For more detail see\nhttps://eventlet.readthedocs.io/en/latest/asyncio/migration.html\n  import eventlet\n1 RLock(s) were not greened, to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.",
+        "result": null
+      }
+    },
+    "netecho": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "netecho",
+        "status": "ok",
+        "result": {
+          "c200": {
+            "requests_per_sec_mean": 313913.692579174,
+            "requests_per_sec_min": 312165.99181582,
+            "requests_per_sec_max": 315975.5153670574,
+            "p50_ms": 0.632,
+            "p99_ms": 0.77,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 64,
+            "generator": "thor",
+            "concurrency": 200
+          },
+          "c1000": {
+            "requests_per_sec_mean": 292214.56344334607,
+            "requests_per_sec_min": 291407.70313414687,
+            "requests_per_sec_max": 293131.8604775437,
+            "p50_ms": 3.403,
+            "p99_ms": 3.864,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 64,
+            "generator": "thor",
+            "concurrency": 1000
+          }
+        }
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "netecho",
+        "status": "error",
+        "error": "server did not start",
+        "result": null
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "netecho",
+        "status": "ok",
+        "result": {
+          "c200": {
+            "requests_per_sec_mean": 162877.43216203846,
+            "requests_per_sec_min": 161891.0018886086,
+            "requests_per_sec_max": 164499.09149058184,
+            "p50_ms": 1.22,
+            "p99_ms": 1.356,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 64,
+            "generator": "thor",
+            "concurrency": 200
+          },
+          "c1000": {
+            "requests_per_sec_mean": 142597.92942384497,
+            "requests_per_sec_min": 141347.26907503518,
+            "requests_per_sec_max": 143593.60923157385,
+            "p50_ms": 6.955,
+            "p99_ms": 8.372,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 64,
+            "generator": "thor",
+            "concurrency": 1000
+          }
+        }
+      }
+    }
+  },
+  "measured_utc": "2026-08-01",
+  "commit": "a25ac2d",
+  "host": "Apple M5 Max, 18c, bare metal",
+  "free_threaded": true,
+  "gil_enabled": false
+}

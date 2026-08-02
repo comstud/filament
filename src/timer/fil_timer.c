@@ -41,7 +41,30 @@ typedef struct _pyfil_timer {
      * being able to unlink it. */
     PyFilScheduler *sched;
     FilSchedEvent *event;
+#ifdef Py_GIL_DISABLED
+    /* Guards {flags, func, args, kwargs, sched, event} as a unit.  On a
+     * stock build the GIL serializes init/cancel/callback; without it two
+     * cancel()s can both win the del_event test and the loser then reads
+     * 'sched' after the winner dropped the last reference to it.  All
+     * Py_DECREFs happen OUTSIDE this lock (a destructor can re-enter this
+     * very timer), and PyObject_Call runs outside it too.  Ordering is
+     * timer_lock -> sched_lock; the scheduler never calls back in while
+     * holding sched_lock (event callbacks run with it dropped). */
+    pthread_mutex_t lock;
+#endif
 } PyFilTimer;
+
+#ifdef Py_GIL_DISABLED
+#  define FIL_TIMER_INIT(__t)    pthread_mutex_init(&((__t)->lock), NULL)
+#  define FIL_TIMER_DESTROY(__t) pthread_mutex_destroy(&((__t)->lock))
+#  define FIL_TIMER_LOCK(__t)    pthread_mutex_lock(&((__t)->lock))
+#  define FIL_TIMER_UNLOCK(__t)  pthread_mutex_unlock(&((__t)->lock))
+#else
+#  define FIL_TIMER_INIT(__t)    ((void)0)
+#  define FIL_TIMER_DESTROY(__t) ((void)0)
+#  define FIL_TIMER_LOCK(__t)    ((void)0)
+#  define FIL_TIMER_UNLOCK(__t)  ((void)0)
+#endif
 
 typedef struct _pyfil_localtimer {
     PyFilTimer timer;
@@ -51,15 +74,39 @@ typedef struct _pyfil_localtimer {
 
 static void _timer_callback(PyFilScheduler *sched, PyFilTimer *timer)
 {
+    PyObject *func = NULL, *args = NULL, *kwargs = NULL;
+
+    /* Snapshot-and-clear under the lock, call outside it: the user callback
+     * (or any destructor these decrefs run) may cancel() this same timer,
+     * and the lock is not recursive. */
+    FIL_TIMER_LOCK(timer);
     if (!(timer->flags & FIL_TIMER_FLAGS_CANCELLED))
+    {
+        func = timer->func;
+        timer->func = NULL;
+        args = timer->args;
+        timer->args = NULL;
+        kwargs = timer->kwargs;
+        timer->kwargs = NULL;
+    }
+    FIL_TIMER_UNLOCK(timer);
+
+    if (func != NULL)
     {
         PyObject *result;
 
-        result = PyObject_Call(timer->func, timer->args, timer->kwargs);
+        result = PyObject_Call(func, args, kwargs);
+        if (result == NULL)
+        {
+            /* Report it now, like threading.Timer does.  Leaving it pending
+             * hands the exception to whatever the scheduler runs next, which
+             * then dies with "returned a result with an exception set". */
+            PyErr_WriteUnraisable(func);
+        }
         Py_XDECREF(result);
-        Py_CLEAR(timer->func);
-        Py_CLEAR(timer->args);
-        Py_CLEAR(timer->kwargs);
+        Py_DECREF(func);
+        Py_XDECREF(args);
+        Py_XDECREF(kwargs);
     }
     Py_DECREF(timer);
 }
@@ -71,6 +118,7 @@ static PyFilTimer *_timer_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     self = (PyFilTimer *)type->tp_alloc(type, 0);
     if (self == NULL)
         return NULL;
+    FIL_TIMER_INIT(self);
     return self;
 }
 
@@ -136,17 +184,25 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
         return -1;
     }
 
-    if (self->func != NULL)
-    {
-        Py_DECREF(sched);
-        PyErr_SetString(PyExc_TypeError, "Timer() already initialized");
-        return -1;
-    }
-
     method_args = PyTuple_GetSlice(args, 2, args_len);
     if (method_args == NULL)
     {
         Py_DECREF(sched);
+        return -1;
+    }
+
+    /* Publish the fields and arm the event as one unit: a concurrent
+     * __init__ on a free-threading build must see either "not initialized"
+     * or the fully-armed timer, never the half-written middle.  add_event
+     * takes sched_lock inside, matching cancel()'s ordering. */
+    FIL_TIMER_LOCK(self);
+
+    if (self->func != NULL)
+    {
+        FIL_TIMER_UNLOCK(self);
+        Py_DECREF(sched);
+        Py_DECREF(method_args);
+        PyErr_SetString(PyExc_TypeError, "Timer() already initialized");
         return -1;
     }
 
@@ -167,14 +223,22 @@ static int _timer_init(PyFilTimer *self, PyObject *args, PyObject *kwargs)
                                       &self->event);
     if (err)
     {
-        Py_CLEAR(self->sched);
-        Py_CLEAR(self->func);
-        Py_CLEAR(self->args);
-        Py_CLEAR(self->kwargs);
+        /* Unpublish under the lock, decref outside it: a destructor could
+         * re-enter this timer. */
+        self->sched = NULL;
+        self->func = NULL;
+        self->args = NULL;
+        self->kwargs = NULL;
+        FIL_TIMER_UNLOCK(self);
+        Py_DECREF(sched);
+        Py_DECREF(method);
+        Py_DECREF(method_args);
+        Py_XDECREF(kwargs);
         Py_DECREF(self);
         return -1;
     }
 
+    FIL_TIMER_UNLOCK(self);
     return 0;
 }
 
@@ -187,6 +251,8 @@ static void _timer_dealloc(PyFilTimer *self)
     Py_CLEAR(self->args);
     Py_CLEAR(self->kwargs);
 
+    FIL_TIMER_DESTROY(self);
+
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -195,6 +261,12 @@ static void _timer_dealloc(PyFilTimer *self)
 PyDoc_STRVAR(_timer_cancel_doc, "Cancel the timer.");
 static PyObject *_timer_cancel(PyFilTimer *self, PyObject *args)
 {
+    PyObject *func = NULL, *targs = NULL, *kwargs = NULL;
+    PyFilScheduler *sched = NULL;
+    int won = 0;
+
+    FIL_TIMER_LOCK(self);
+
     /* The flag alone still matters: the event may already be out of the queue
      * and on its way to running, in which case unlinking is impossible and
      * this is what stops the callback. */
@@ -204,16 +276,36 @@ static PyObject *_timer_cancel(PyFilTimer *self, PyObject *args)
      * behind until its deadline.  A cancelled 60s timeout that lingers costs
      * a node and a reference for the full minute -- with a timeout armed per
      * request (which is what any HTTP client does) that is unbounded growth
-     * of both memory and the timer heap. */
+     * of both memory and the timer heap.
+     *
+     * Everything is read and unpublished under the timer lock (two racing
+     * cancel()s must not both see 'sched', or the loser dereferences it
+     * after the winner dropped the last reference), but the decrefs happen
+     * outside it -- a destructor can re-enter this timer. */
     if (self->event != NULL && self->sched != NULL &&
         fil_scheduler_del_event(self->sched, &self->event))
     {
         /* We took the event, so we own what its callback would have
          * released. */
-        Py_CLEAR(self->func);
-        Py_CLEAR(self->args);
-        Py_CLEAR(self->kwargs);
-        Py_CLEAR(self->sched);
+        won = 1;
+        func = self->func;
+        self->func = NULL;
+        targs = self->args;
+        self->args = NULL;
+        kwargs = self->kwargs;
+        self->kwargs = NULL;
+        sched = self->sched;
+        self->sched = NULL;
+    }
+
+    FIL_TIMER_UNLOCK(self);
+
+    if (won)
+    {
+        Py_XDECREF(func);
+        Py_XDECREF(targs);
+        Py_XDECREF(kwargs);
+        Py_XDECREF(sched);
         Py_DECREF(self);
     }
 

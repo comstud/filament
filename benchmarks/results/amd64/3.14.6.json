@@ -1,12 +1,12 @@
 {
-  "python": "3.15.0",
+  "python": "3.14.6",
   "worker_params": {},
   "runs": {
     "spawn": {
       "filament": {
         "framework": "filament",
         "benchmark": "spawn",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -14,27 +14,27 @@
         "result": {
           "k": 100000,
           "tracked_spawn_per_sec": {
-            "per_sec_median": 465320.2624732218,
-            "per_sec_min": 433590.86341601535,
-            "per_sec_max": 476818.9508526692,
+            "per_sec_median": 267341.1570053016,
+            "per_sec_min": 263224.41637729114,
+            "per_sec_max": 279734.0598323819,
             "reps": 5,
             "samples": [
-              465320.3,
-              476819.0,
-              433590.9,
-              469034.2,
-              462502.5
+              267341.2,
+              279734.1,
+              266018.1,
+              271989.0,
+              263224.4
             ]
           },
           "fireforget_spawn_n_per_sec": {
-            "per_sec_median": 462248.1903047348,
-            "per_sec_min": 459531.28125389863,
-            "per_sec_max": 466530.6982735877,
+            "per_sec_median": 253136.9118432468,
+            "per_sec_min": 247946.23342838621,
+            "per_sec_max": 256394.4986690387,
             "reps": 3,
             "samples": [
-              466530.7,
-              462248.2,
-              459531.3
+              256394.5,
+              253136.9,
+              247946.2
             ]
           },
           "fireforget_error": null
@@ -44,7 +44,7 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "spawn",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -52,27 +52,27 @@
         "result": {
           "k": 100000,
           "tracked_spawn_per_sec": {
-            "per_sec_median": 196097.01598756856,
-            "per_sec_min": 194770.96786286644,
-            "per_sec_max": 204302.24780698007,
+            "per_sec_median": 98567.53584399431,
+            "per_sec_min": 97479.09383503103,
+            "per_sec_max": 105375.06421647019,
             "reps": 5,
             "samples": [
-              202019.5,
-              194771.0,
-              195782.4,
-              196097.0,
-              204302.2
+              103945.7,
+              97479.1,
+              97812.8,
+              98567.5,
+              105375.1
             ]
           },
           "fireforget_spawn_n_per_sec": {
-            "per_sec_median": 379634.3857908388,
-            "per_sec_min": 378751.1743850498,
-            "per_sec_max": 383756.4210845614,
+            "per_sec_median": 215253.9139361206,
+            "per_sec_min": 211133.13552492845,
+            "per_sec_max": 215311.5288441633,
             "reps": 3,
             "samples": [
-              378751.2,
-              383756.4,
-              379634.4
+              215253.9,
+              215311.5,
+              211133.1
             ]
           },
           "fireforget_error": null
@@ -82,7 +82,7 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "spawn",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -90,27 +90,27 @@
         "result": {
           "k": 100000,
           "tracked_spawn_per_sec": {
-            "per_sec_median": 225368.97865925066,
-            "per_sec_min": 219875.7410372194,
-            "per_sec_max": 231603.33702452725,
+            "per_sec_median": 115693.62049558364,
+            "per_sec_min": 109580.69962796282,
+            "per_sec_max": 121034.2800430967,
             "reps": 5,
             "samples": [
-              219875.7,
-              225369.0,
-              230747.4,
-              220660.9,
-              231603.3
+              109580.7,
+              117423.6,
+              121034.3,
+              112599.5,
+              115693.6
             ]
           },
           "fireforget_spawn_n_per_sec": {
-            "per_sec_median": 333843.69699493825,
-            "per_sec_min": 327786.50272932707,
-            "per_sec_max": 338300.04716718354,
+            "per_sec_median": 194542.02201959305,
+            "per_sec_min": 185792.33562485574,
+            "per_sec_max": 195479.21627801209,
             "reps": 3,
             "samples": [
-              327786.5,
-              333843.7,
-              338300.0
+              195479.2,
+              185792.3,
+              194542.0
             ]
           },
           "fireforget_error": null
@@ -122,7 +122,7 @@
       "filament": {
         "framework": "filament",
         "benchmark": "ctxswitch",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -132,16 +132,16 @@
           "iters_each": 10000,
           "total_switches": 1000000,
           "switches_per_sec": {
-            "per_sec_median": 4205593.9786410425,
-            "per_sec_min": 4110507.57591049,
-            "per_sec_max": 4211026.46105101,
+            "per_sec_median": 2082162.108562343,
+            "per_sec_min": 2052452.172285447,
+            "per_sec_max": 2095846.2777911522,
             "reps": 5,
             "samples": [
-              4110507.6,
-              4183646.0,
-              4205594.0,
-              4211026.5,
-              4210802.6
+              2090095.9,
+              2095846.3,
+              2082162.1,
+              2071443.9,
+              2052452.2
             ]
           }
         },
@@ -150,7 +150,7 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "ctxswitch",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -160,16 +160,16 @@
           "iters_each": 10000,
           "total_switches": 1000000,
           "switches_per_sec": {
-            "per_sec_median": 1707419.2061232175,
-            "per_sec_min": 1704320.430985261,
-            "per_sec_max": 1710371.4052258844,
+            "per_sec_median": 814423.8437194119,
+            "per_sec_min": 811650.2273947931,
+            "per_sec_max": 821720.9914009516,
             "reps": 5,
             "samples": [
-              1710371.4,
-              1707419.2,
-              1707628.6,
-              1704320.4,
-              1706585.2
+              816204.0,
+              821721.0,
+              811774.7,
+              814423.8,
+              811650.2
             ]
           }
         },
@@ -178,7 +178,7 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "ctxswitch",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -188,16 +188,16 @@
           "iters_each": 10000,
           "total_switches": 1000000,
           "switches_per_sec": {
-            "per_sec_median": 993963.4116248222,
-            "per_sec_min": 990989.7556268859,
-            "per_sec_max": 994551.7214017691,
+            "per_sec_median": 481434.5367335781,
+            "per_sec_min": 474704.7240951193,
+            "per_sec_max": 485269.576956405,
             "reps": 5,
             "samples": [
-              993611.0,
-              994236.2,
-              993963.4,
-              990989.8,
-              994551.7
+              474704.7,
+              485269.6,
+              479777.6,
+              481434.5,
+              481525.6
             ]
           }
         },
@@ -208,7 +208,7 @@
       "filament": {
         "framework": "filament",
         "benchmark": "semaphore",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -216,31 +216,31 @@
         "result": {
           "uncontended_ops": 1000000,
           "uncontended_ops_per_sec": {
-            "per_sec_median": 43370932.879365295,
-            "per_sec_min": 43015455.85140171,
-            "per_sec_max": 45065090.97063821,
+            "per_sec_median": 18254881.85240527,
+            "per_sec_min": 18095381.486303598,
+            "per_sec_max": 19051092.14466435,
             "reps": 5,
             "samples": [
-              43370932.9,
-              43015455.9,
-              44203697.4,
-              43265303.5,
-              45065091.0
+              18210715.3,
+              19051092.1,
+              18095381.5,
+              18254881.9,
+              18513282.0
             ]
           },
           "contended_greenthreads": 50,
           "contended_total_ops": 200000,
           "contended_ops_per_sec": {
-            "per_sec_median": 42144826.87936082,
-            "per_sec_min": 41499157.07275181,
-            "per_sec_max": 42631425.108423114,
+            "per_sec_median": 20072947.12213847,
+            "per_sec_min": 19831853.557384577,
+            "per_sec_max": 20131103.797001746,
             "reps": 5,
             "samples": [
-              42144826.9,
-              42032993.3,
-              42433186.8,
-              42631425.1,
-              41499157.1
+              20131103.8,
+              20072947.1,
+              19831853.6,
+              20081627.9,
+              20019360.8
             ]
           }
         },
@@ -249,7 +249,7 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "semaphore",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -257,31 +257,31 @@
         "result": {
           "uncontended_ops": 1000000,
           "uncontended_ops_per_sec": {
-            "per_sec_median": 13916819.173511403,
-            "per_sec_min": 13907633.476472683,
-            "per_sec_max": 13938172.508963497,
+            "per_sec_median": 7216931.311571618,
+            "per_sec_min": 6979078.558996644,
+            "per_sec_max": 7354878.806874015,
             "reps": 5,
             "samples": [
-              13916819.2,
-              13912801.5,
-              13921186.4,
-              13907633.5,
-              13938172.5
+              7354878.8,
+              7124642.5,
+              6979078.6,
+              7275895.6,
+              7216931.3
             ]
           },
           "contended_greenthreads": 50,
           "contended_total_ops": 200000,
           "contended_ops_per_sec": {
-            "per_sec_median": 13489094.658385409,
-            "per_sec_min": 13380238.136562569,
-            "per_sec_max": 13655722.206093475,
+            "per_sec_median": 7391556.090497567,
+            "per_sec_min": 7342864.17462206,
+            "per_sec_max": 7407255.431328943,
             "reps": 5,
             "samples": [
-              13489094.7,
-              13380238.1,
-              13432961.1,
-              13655722.2,
-              13584764.6
+              7392347.3,
+              7407255.4,
+              7391556.1,
+              7342864.2,
+              7382519.0
             ]
           }
         },
@@ -290,7 +290,7 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "semaphore",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -298,31 +298,31 @@
         "result": {
           "uncontended_ops": 1000000,
           "uncontended_ops_per_sec": {
-            "per_sec_median": 13478269.662946172,
-            "per_sec_min": 13426107.73355618,
-            "per_sec_max": 13480094.174695052,
+            "per_sec_median": 7483456.175680983,
+            "per_sec_min": 7464912.226867623,
+            "per_sec_max": 7487993.527255885,
             "reps": 5,
             "samples": [
-              13478269.7,
-              13479420.2,
-              13446086.3,
-              13426107.7,
-              13480094.2
+              7480267.3,
+              7487993.5,
+              7486748.3,
+              7464912.2,
+              7483456.2
             ]
           },
           "contended_greenthreads": 50,
           "contended_total_ops": 200000,
           "contended_ops_per_sec": {
-            "per_sec_median": 13176749.597091736,
-            "per_sec_min": 13123215.745827744,
-            "per_sec_max": 13200666.584952023,
+            "per_sec_median": 7066905.8249760335,
+            "per_sec_min": 6998854.714663238,
+            "per_sec_max": 7096451.9207167365,
             "reps": 5,
             "samples": [
-              13123215.7,
-              13155695.5,
-              13200666.6,
-              13189965.4,
-              13176749.6
+              6998854.7,
+              7066905.8,
+              7069758.9,
+              7024205.3,
+              7096451.9
             ]
           }
         },
@@ -333,7 +333,7 @@
       "filament": {
         "framework": "filament",
         "benchmark": "queue",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -341,16 +341,16 @@
         "result": {
           "items": 200000,
           "items_per_sec": {
-            "per_sec_median": 15001406.749729162,
-            "per_sec_min": 14561958.817059847,
-            "per_sec_max": 15229490.205155915,
+            "per_sec_median": 7963710.653595541,
+            "per_sec_min": 7873945.362350427,
+            "per_sec_max": 8319096.586105368,
             "reps": 5,
             "samples": [
-              15001406.7,
-              14561958.8,
-              15190738.3,
-              15229490.2,
-              14990677.7
+              7873945.4,
+              7932088.9,
+              7963710.7,
+              8251052.1,
+              8319096.6
             ]
           }
         },
@@ -359,7 +359,7 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "queue",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -367,16 +367,16 @@
         "result": {
           "items": 200000,
           "items_per_sec": {
-            "per_sec_median": 12356706.913395684,
-            "per_sec_min": 12246429.218429074,
-            "per_sec_max": 12440905.743069964,
+            "per_sec_median": 6647766.621975574,
+            "per_sec_min": 6613478.197582111,
+            "per_sec_max": 6719289.672275552,
             "reps": 5,
             "samples": [
-              12440905.7,
-              12246429.2,
-              12434911.1,
-              12356706.9,
-              12353463.2
+              6640655.0,
+              6693313.4,
+              6647766.6,
+              6719289.7,
+              6613478.2
             ]
           }
         },
@@ -385,7 +385,7 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "queue",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -393,16 +393,16 @@
         "result": {
           "items": 200000,
           "items_per_sec": {
-            "per_sec_median": 6036217.370592941,
-            "per_sec_min": 6024119.0817655,
-            "per_sec_max": 6092050.809948755,
+            "per_sec_median": 3531777.497162191,
+            "per_sec_min": 3505264.206593325,
+            "per_sec_max": 3581445.2373132464,
             "reps": 5,
             "samples": [
-              6064005.6,
-              6036217.4,
-              6092050.8,
-              6028779.8,
-              6024119.1
+              3505264.2,
+              3531777.5,
+              3515553.4,
+              3572832.8,
+              3581445.2
             ]
           }
         },
@@ -413,7 +413,7 @@
       "filament": {
         "framework": "filament",
         "benchmark": "queue_mixed",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -422,16 +422,16 @@
           "items": 100000,
           "maxsize": 100,
           "items_per_sec": {
-            "per_sec_median": 5414563.638128354,
-            "per_sec_min": 5138768.346297954,
-            "per_sec_max": 5817166.442609244,
+            "per_sec_median": 3308341.5657360614,
+            "per_sec_min": 3280406.3772395165,
+            "per_sec_max": 3351881.4200992538,
             "reps": 5,
             "samples": [
-              5817166.4,
-              5138768.3,
-              5440893.9,
-              5284597.8,
-              5414563.6
+              3308341.6,
+              3351881.4,
+              3301751.2,
+              3349538.4,
+              3280406.4
             ]
           }
         },
@@ -440,10 +440,10 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "queue_mixed",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "error",
-        "error": "RuntimeError: consumed 50100 != expected 100000",
+        "error": "LoopExit: This operation would block forever\n\tHub: <Hub '' at 0x7fc0a339e2f0 epoll default pending=0 ref=0 fileno=4 thread_ident=0x7fc0a3be0740>\n\tHandles:\n[]",
         "lib_version": "26.7.0",
         "result": null,
         "log_mode": "naive"
@@ -451,16 +451,20 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "queue_mixed",
-        "status": "deadlock",
-        "error": "timeout after 60s",
-        "result": null
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "error",
+        "error": "RuntimeError: native thread hung in mixed queue bench",
+        "lib_version": "0.41.1",
+        "result": null,
+        "log_mode": "naive"
       }
     },
     "tpool": {
       "filament": {
         "framework": "filament",
         "benchmark": "tpool",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -468,26 +472,26 @@
         "result": {
           "calls": 3000,
           "calls_per_sec": {
-            "per_sec_median": 159976.1781799808,
-            "per_sec_min": 149273.53097044452,
-            "per_sec_max": 163802.77512617677,
+            "per_sec_median": 107487.1307727421,
+            "per_sec_min": 107256.00840029461,
+            "per_sec_max": 107838.34920919532,
             "reps": 5,
             "samples": [
-              149273.5,
-              163802.8,
-              159976.2,
-              151210.3,
-              161245.2
+              107838.3,
+              107487.1,
+              107310.4,
+              107533.5,
+              107256.0
             ]
           },
-          "mean_latency_us": 6.25
+          "mean_latency_us": 9.3
         },
         "log_mode": "naive"
       },
       "gevent": {
         "framework": "gevent",
         "benchmark": "tpool",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -495,26 +499,26 @@
         "result": {
           "calls": 3000,
           "calls_per_sec": {
-            "per_sec_median": 90390.93981385863,
-            "per_sec_min": 90093.92380904767,
-            "per_sec_max": 90516.50981023085,
+            "per_sec_median": 55004.79659245828,
+            "per_sec_min": 53296.436095814606,
+            "per_sec_max": 55421.60870223005,
             "reps": 5,
             "samples": [
-              90093.9,
-              90516.5,
-              90390.9,
-              90355.8,
-              90434.8
+              55004.8,
+              55202.8,
+              54812.3,
+              55421.6,
+              53296.4
             ]
           },
-          "mean_latency_us": 11.06
+          "mean_latency_us": 18.18
         },
         "log_mode": "naive"
       },
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "tpool",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -522,19 +526,19 @@
         "result": {
           "calls": 3000,
           "calls_per_sec": {
-            "per_sec_median": 38395.3723953583,
-            "per_sec_min": 35145.55861600646,
-            "per_sec_max": 43560.22542157263,
+            "per_sec_median": 26339.86204084041,
+            "per_sec_min": 23974.29015504145,
+            "per_sec_max": 26722.13921111333,
             "reps": 5,
             "samples": [
-              38395.4,
-              35145.6,
-              35817.8,
-              43521.5,
-              43560.2
+              23974.3,
+              25019.7,
+              26339.9,
+              26484.4,
+              26722.1
             ]
           },
-          "mean_latency_us": 26.04
+          "mean_latency_us": 37.97
         },
         "log_mode": "naive"
       }
@@ -543,7 +547,7 @@
       "filament": {
         "framework": "filament",
         "benchmark": "echo",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -553,22 +557,22 @@
             "concurrency": 100,
             "roundtrips_each": 100,
             "total_requests": 10000,
-            "requests_per_sec_median": 178674.45694340146,
-            "requests_per_sec_min": 175515.06251700022,
-            "requests_per_sec_max": 178877.942391718,
-            "p50_ms": 0.531,
-            "p99_ms": 0.84,
+            "requests_per_sec_median": 93699.04470391356,
+            "requests_per_sec_min": 65615.90493064484,
+            "requests_per_sec_max": 95777.0215643043,
+            "p50_ms": 0.996,
+            "p99_ms": 1.322,
             "reps": 3
           },
           "c1000_r20": {
             "concurrency": 1000,
             "roundtrips_each": 20,
             "total_requests": 20000,
-            "requests_per_sec_median": 135991.1673523357,
-            "requests_per_sec_min": 130157.20848269928,
-            "requests_per_sec_max": 136777.34874319122,
-            "p50_ms": 5.409,
-            "p99_ms": 7.821,
+            "requests_per_sec_median": 78258.27874015155,
+            "requests_per_sec_min": 60697.33044155011,
+            "requests_per_sec_max": 78453.32531940365,
+            "p50_ms": 9.866,
+            "p99_ms": 12.666,
             "reps": 3
           }
         },
@@ -577,7 +581,7 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "echo",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -587,22 +591,22 @@
             "concurrency": 100,
             "roundtrips_each": 100,
             "total_requests": 10000,
-            "requests_per_sec_median": 97558.83407801179,
-            "requests_per_sec_min": 94532.85050427844,
-            "requests_per_sec_max": 99545.20291983485,
-            "p50_ms": 0.98,
-            "p99_ms": 1.253,
+            "requests_per_sec_median": 75814.05548888684,
+            "requests_per_sec_min": 73757.73046899552,
+            "requests_per_sec_max": 76361.22104200548,
+            "p50_ms": 1.265,
+            "p99_ms": 1.45,
             "reps": 3
           },
           "c1000_r20": {
             "concurrency": 1000,
             "roundtrips_each": 20,
             "total_requests": 20000,
-            "requests_per_sec_median": 85527.28640160503,
-            "requests_per_sec_min": 84794.10328589543,
-            "requests_per_sec_max": 87160.76518971733,
-            "p50_ms": 8.862,
-            "p99_ms": 10.916,
+            "requests_per_sec_median": 61345.17402855525,
+            "requests_per_sec_min": 60804.04409573292,
+            "requests_per_sec_max": 62405.2873009831,
+            "p50_ms": 13.319,
+            "p99_ms": 15.332,
             "reps": 3
           }
         },
@@ -611,7 +615,7 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "echo",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
@@ -621,22 +625,22 @@
             "concurrency": 100,
             "roundtrips_each": 100,
             "total_requests": 10000,
-            "requests_per_sec_median": 77754.75372490945,
-            "requests_per_sec_min": 72092.92053594094,
-            "requests_per_sec_max": 78470.29998073024,
-            "p50_ms": 1.201,
-            "p99_ms": 1.485,
+            "requests_per_sec_median": 55280.267507614604,
+            "requests_per_sec_min": 55249.50308578736,
+            "requests_per_sec_max": 56170.19226777851,
+            "p50_ms": 1.738,
+            "p99_ms": 2.5,
             "reps": 3
           },
           "c1000_r20": {
             "concurrency": 1000,
             "roundtrips_each": 20,
             "total_requests": 20000,
-            "requests_per_sec_median": 63894.48883325535,
-            "requests_per_sec_min": 62580.751855598624,
-            "requests_per_sec_max": 64533.05166938489,
-            "p50_ms": 13.312,
-            "p99_ms": 24.39,
+            "requests_per_sec_median": 40271.54887897068,
+            "requests_per_sec_min": 38979.678003862406,
+            "requests_per_sec_max": 40502.32465552031,
+            "p50_ms": 19.831,
+            "p99_ms": 32.701,
             "reps": 3
           }
         },
@@ -647,14 +651,14 @@
       "filament": {
         "framework": "filament",
         "benchmark": "logging137",
-        "python": "3.15.0",
+        "python": "3.14.6",
         "greenlet": "3.3.2",
         "status": "ok",
         "error": null,
         "lib_version": "filament(greenlet 3.3.2)",
         "result": {
           "status": "ok",
-          "msgs_per_sec": 2487.4,
+          "msgs_per_sec": 154694.3,
           "error": null,
           "label": "filament.tpool",
           "mode": "naive"
@@ -664,9 +668,19 @@
       "gevent": {
         "framework": "gevent",
         "benchmark": "logging137",
-        "status": "deadlock",
-        "error": "timeout after 45s",
-        "result": null
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "26.7.0",
+        "result": {
+          "status": "ok",
+          "msgs_per_sec": 127912.2,
+          "error": null,
+          "label": "gevent.threadpool.ThreadPool",
+          "mode": "naive"
+        },
+        "log_mode": "naive"
       },
       "gevent:workaround": {
         "framework": "gevent",
@@ -678,9 +692,19 @@
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "logging137",
-        "status": "deadlock",
-        "error": "timeout after 45s",
-        "result": null
+        "python": "3.14.6",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "0.41.1",
+        "result": {
+          "status": "ok",
+          "msgs_per_sec": 1825.6,
+          "error": null,
+          "label": "eventlet.tpool",
+          "mode": "naive"
+        },
+        "log_mode": "naive"
       }
     },
     "netecho": {
@@ -690,27 +714,27 @@
         "status": "ok",
         "result": {
           "c200": {
-            "requests_per_sec_mean": 319824.59026854375,
-            "requests_per_sec_min": 318717.1314036375,
-            "requests_per_sec_max": 321554.73284160945,
-            "p50_ms": 0.619,
-            "p99_ms": 0.863,
+            "requests_per_sec_mean": 171578.90487965132,
+            "requests_per_sec_min": 162766.44799611988,
+            "requests_per_sec_max": 184230.8656649938,
+            "p50_ms": 1.205,
+            "p99_ms": 1.415,
             "reps": 3,
             "errors": 0,
-            "gomaxprocs": 64,
-            "generator": "thor",
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
             "concurrency": 200
           },
           "c1000": {
-            "requests_per_sec_mean": 300368.94540631626,
-            "requests_per_sec_min": 299218.66293017624,
-            "requests_per_sec_max": 301302.1349222465,
-            "p50_ms": 3.305,
-            "p99_ms": 3.98,
+            "requests_per_sec_mean": 184212.43596677392,
+            "requests_per_sec_min": 179039.9341534722,
+            "requests_per_sec_max": 189838.58682792835,
+            "p50_ms": 5.339,
+            "p99_ms": 6.387,
             "reps": 3,
             "errors": 0,
-            "gomaxprocs": 64,
-            "generator": "thor",
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
             "concurrency": 1000
           }
         }
@@ -721,27 +745,27 @@
         "status": "ok",
         "result": {
           "c200": {
-            "requests_per_sec_mean": 210339.95417844894,
-            "requests_per_sec_min": 208771.71843929763,
-            "requests_per_sec_max": 211518.40399606197,
-            "p50_ms": 0.791,
-            "p99_ms": 1.641,
+            "requests_per_sec_mean": 111222.34634651715,
+            "requests_per_sec_min": 108773.60342957084,
+            "requests_per_sec_max": 112907.96830618435,
+            "p50_ms": 1.79,
+            "p99_ms": 2.78,
             "reps": 3,
             "errors": 0,
-            "gomaxprocs": 64,
-            "generator": "thor",
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
             "concurrency": 200
           },
           "c1000": {
-            "requests_per_sec_mean": 198025.9373695863,
-            "requests_per_sec_min": 196411.03359819142,
-            "requests_per_sec_max": 199060.90671065764,
-            "p50_ms": 4.903,
-            "p99_ms": 9.778,
+            "requests_per_sec_mean": 104101.63390378129,
+            "requests_per_sec_min": 101396.03266029782,
+            "requests_per_sec_max": 106541.57995994276,
+            "p50_ms": 9.555,
+            "p99_ms": 17.367,
             "reps": 3,
             "errors": 0,
-            "gomaxprocs": 64,
-            "generator": "thor",
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
             "concurrency": 1000
           }
         }
@@ -752,27 +776,27 @@
         "status": "ok",
         "result": {
           "c200": {
-            "requests_per_sec_mean": 162222.45784165207,
-            "requests_per_sec_min": 160207.80827608646,
-            "requests_per_sec_max": 163422.46538466346,
-            "p50_ms": 1.22,
-            "p99_ms": 1.56,
+            "requests_per_sec_mean": 85729.70015521208,
+            "requests_per_sec_min": 85085.58572191278,
+            "requests_per_sec_max": 86066.81172884935,
+            "p50_ms": 2.332,
+            "p99_ms": 4.252,
             "reps": 3,
             "errors": 0,
-            "gomaxprocs": 64,
-            "generator": "thor",
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
             "concurrency": 200
           },
           "c1000": {
-            "requests_per_sec_mean": 147351.39058185995,
-            "requests_per_sec_min": 145852.2710121791,
-            "requests_per_sec_max": 148630.14172704337,
-            "p50_ms": 6.741,
-            "p99_ms": 7.425,
+            "requests_per_sec_mean": 76279.45944754627,
+            "requests_per_sec_min": 75105.17007972863,
+            "requests_per_sec_max": 76984.23803546868,
+            "p50_ms": 13.058,
+            "p99_ms": 24.682,
             "reps": 3,
             "errors": 0,
-            "gomaxprocs": 64,
-            "generator": "thor",
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
             "concurrency": 1000
           }
         }
@@ -781,7 +805,7 @@
   },
   "measured_utc": "2026-08-01",
   "commit": "a25ac2d",
-  "host": "Apple M5 Max, 18c, bare metal",
+  "host": "AMD Ryzen Threadripper PRO 5975WX, 32c/64t",
   "free_threaded": false,
   "gil_enabled": true
 }

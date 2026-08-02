@@ -23,17 +23,23 @@
 # ValueError rather than anything that names setuptools.
 
 %global srcname filament
+# Prerelease: rpm would sort a Version of 0.9.5a1 as NEWER than 0.9.5, so the
+# alpha keeps the release version and carries the marker in Release (0.x.<pre>
+# sorts before the eventual 1%%{?dist}).  upstream_version is what pyproject
+# says and what make-tarball.sh names the archive, which is not the same
+# string -- Source0 and %%autosetup follow it, not %%{version}.
+%global upstream_version 0.9.5a1
 
 Name:           python-%{srcname}
-Version:        0.9.4
-Release:        1%{?dist}
+Version:        0.9.5
+Release:        0.1.a1%{?dist}
 Summary:        Microthreads for Python
 
 # MIT overall; PSF-2.0 for the Stackless-derived files in the vendored
 # greenlet and the CPython-derived stdlib shims (see THIRD_PARTY_NOTICES.md).
 License:        MIT AND PSF-2.0
 URL:            https://github.com/comstud/filament
-Source0:        %{srcname}-%{version}.tar.gz
+Source0:        %{srcname}-%{upstream_version}.tar.gz
 
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
@@ -61,7 +67,7 @@ Summary:        %{summary}
 %description -n python%{python3_pkgversion}-%{srcname} %_description
 
 %prep
-%autosetup -n %{srcname}-%{version}
+%autosetup -n %{srcname}-%{upstream_version}
 
 %generate_buildrequires
 %pyproject_buildrequires
@@ -83,6 +89,42 @@ Summary:        %{summary}
 %doc README.md RELEASES.md THIRD_PARTY_NOTICES.md AUTHORS
 
 %changelog
+* Sun Aug 02 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.5-0.1.a1
+- The io thread performs a blocked socket recv()/send() itself, into the
+  caller's own buffer, so the wakeup hands back data rather than readiness.
+  Echo +9.7%% to +88%%; locust FastPingUser @1000 +11.6%%.
+- Free-threaded (PEP 703) support: builds and runs with the GIL genuinely
+  disabled, out of the box. 5.93x on six cores for CPU-bound work.
+- Fix Queue.task_done() raising for a task that really was queued, and
+  Queue.join() then waiting forever.
+- Fix a blocked read/write with more than one waiter hanging forever, ignoring
+  settimeout().
+- A whole-codebase memory-safety audit: fix a use-after-free freeing a
+  socket's cached wait state under a second parked waiter; a refcount
+  underflow (then use-after-free) raising a custom timeout_exc instance, and
+  a crash on a non-exception timeout_exc; eager-io data loss when a transfer
+  completed as its deadline expired; queues leaking every item still enqueued
+  at deallocation; fd leaks in accept()/dup()/socketpair(); sendall()
+  silently truncating buffers over 4 GiB; a ThreadPool shutdown
+  use-after-free and a construction deadlock under thread exhaustion; and
+  Queue.join() waiting forever after a blocked putter was killed.
+- Queue, SimpleQueue and Condition support cyclic garbage collection:
+  reference cycles through queued items or a condition's lock used to be
+  invisible to the collector and leaked permanently.
+- Condition.wait() joins the waiter list before releasing the lock, so a
+  Python-level lock whose release() switches greenthreads can no longer miss
+  its own notification.
+- Timer callbacks that raise are reported via the unraisable hook instead of
+  poisoning the next scheduler event; Timeout no longer throws into a
+  greenlet that already finished.
+- Free-threading: ThreadPool and Timer get their own locks (both had still
+  been relying on the GIL; concurrent shutdown() calls could free the pool
+  twice); a timed wait racing its own wakeup no longer swallows the signal;
+  the queue chunk freelists, the io thread singleton and the per-socket
+  cached-wait slot are safe to hit from two threads at once.
+- Remove the socket attribute fil_first_misses (reporting-only, and unsafe to
+  increment without a GIL).
+
 * Thu Jul 30 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.4-1
 - A socket with settimeout() set now uses the same cheap cached edge-triggered
   wait as one without, instead of being pushed onto the classic io path and

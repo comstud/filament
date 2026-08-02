@@ -578,3 +578,394 @@ def test_message_double_send_and_exception():
         m2.send_exception(*sys.exc_info())
     with pytest.raises(ValueError):
         m2.wait()
+
+
+# ---------------------------------------------------------------------------
+# 0.9.5a1 audit surfaces: error paths and handoffs the rest of the suite
+# never reaches (mapped via gcov, like everything above).
+# ---------------------------------------------------------------------------
+
+import time as std_time
+
+import filament.socket as fsocket
+
+import _filament.io as _cio
+import _filament.locking as _clocking
+import _filament.thrpool as _cthrpool
+import _filament.timer as _ctimer
+
+
+class _EvilBool(object):
+    def __bool__(self):
+        raise RuntimeError('evil bool')
+    __nonzero__ = __bool__
+
+
+def _quiet_nonblocking_fd():
+    r, w = std_socket.socketpair()
+    r.setblocking(False)
+    return r, w
+
+
+def test_fd_wait_bogus_timeout_exc_raises_typeerror():
+    # A timeout_exc that is neither an exception nor a callable used to walk
+    # into PyExceptionInstance_Class(NULL) and crash the interpreter.
+    r, w = _quiet_nonblocking_fd()
+    try:
+        with pytest.raises(TypeError):
+            _cio.fd_wait_read_ready(r.fileno(), timeout=0.001, timeout_exc=42)
+    finally:
+        r.close()
+        w.close()
+
+
+def test_fd_wait_timeout_exc_instance_refcount_stable():
+    # PyErr_Restore steals references: raising a caller-owned instance used to
+    # decref it (and its class) once per timeout, toward a use-after-free.
+    class MyTimeout(Exception):
+        pass
+
+    excobj = MyTimeout()
+    r, w = _quiet_nonblocking_fd()
+    try:
+        before = sys.getrefcount(excobj)
+        for _ in range(20):
+            with pytest.raises(MyTimeout):
+                _cio.fd_wait_read_ready(r.fileno(), timeout=0.001,
+                                        timeout_exc=excobj)
+        assert sys.getrefcount(excobj) == before
+    finally:
+        r.close()
+        w.close()
+
+
+def test_fd_wait_already_expired_deadline():
+    # A deadline that has already passed when the io thread arms the event
+    # takes the "immediate timeout" branch of the absolute->relative
+    # conversion instead of computing a negative interval.
+    r, w = _quiet_nonblocking_fd()
+    try:
+        with pytest.raises(fil_exc.Timeout):
+            _cio.fd_wait_read_ready(r.fileno(), timeout=1e-9)
+    finally:
+        r.close()
+        w.close()
+
+
+def test_non_numeric_timeout_raises_typeerror():
+    # Used to return -1 with no exception set: "SystemError: ... returned NULL
+    # without setting an exception".
+    q = _cqueue.Queue()
+    with pytest.raises(TypeError):
+        q.get(timeout='nope')
+    with pytest.raises(TypeError):
+        q.put(1, timeout=object())
+
+
+def test_queue_block_arg_raising_bool_propagates():
+    # A block= argument whose __bool__ raises used to be treated as true and
+    # the call carried on with the exception set.
+    q = _cqueue.Queue()
+    with pytest.raises(RuntimeError):
+        q.get(block=_EvilBool())
+    with pytest.raises(RuntimeError):
+        q.put(1, block=_EvilBool())
+    sq = _cqueue.SimpleQueue()
+    with pytest.raises(RuntimeError):
+        sq.get(block=_EvilBool())
+    with pytest.raises(RuntimeError):
+        sq.put(1, block=_EvilBool())
+
+
+def test_full_queue_put_failures_roll_the_task_count_back():
+    q = _cqueue.Queue(1)
+    q.put('keep')
+
+    # Non-blocking flavors: both count then roll back.
+    with pytest.raises(_cqueue.Full):
+        q.put_nowait('nope')
+    with pytest.raises(_cqueue.Full):
+        q.put('nope', block=False)
+    # Blocking with a timeout: parks, times out, rolls back.
+    with pytest.raises(_cqueue.Full):
+        q.put('nope', timeout=0.01)
+
+    # The rollbacks must leave the accounting exact: one task outstanding.
+    assert q.get() == 'keep'
+    q.task_done()
+    assert q.join(timeout=1)
+
+
+def test_join_survives_killed_blocked_putter():
+    # Regression: a putter killed after the last real task_done() used to
+    # take the count to zero without waking join(), stranding it forever.
+    q = _cqueue.Queue(1)
+    q.put('first')
+
+    state = {'joined': False}
+
+    def joiner():
+        q.join()
+        state['joined'] = True
+
+    def putter():
+        q.put('second')
+
+    j = filament.spawn(joiner)
+    p = filament.spawn(putter)
+    filament.sleep(0)            # both park: joiner on count, putter on space
+
+    assert q.get() == 'first'    # putter is signaled the free slot
+    q.task_done()                # count drops to the doomed putter alone
+    # Schedule the throw on the scheduler (a bare p.throw() from here would
+    # strand this greenlet -- see filament.greenthread.kill's docstring).
+    from filament import greenthread
+    greenthread.kill(p)          # putter unwinds; its rollback is the 0-cross
+
+    # Whatever the wakeup interleaving, join() must complete.
+    for _ in range(100):
+        if state['joined']:
+            break
+        filament.sleep(0.01)
+        # If the putter won its race and did enqueue, consume it so the
+        # count still reaches zero.
+        try:
+            q.get_nowait()
+            q.task_done()
+        except _cqueue.Empty:
+            pass
+    j.wait()
+    assert state['joined']
+
+
+def test_queue_churn_overflows_chunk_freelist():
+    # Deallocating more queues than the chunk freelist holds exercises the
+    # freelist-full free() branch.
+    queues = [_cqueue.Queue() for _ in range(200)]
+    for q in queues:
+        q.put(1)
+    del queues
+
+
+def test_thrpool_run_propagates_worker_exception():
+    tp = _cthrpool.ThreadPool(1, 1)
+    try:
+        with pytest.raises(ZeroDivisionError):
+            tp.run(lambda: 1 // 0)
+    finally:
+        tp.shutdown(now=True, wait=True)
+
+
+def test_thrpool_kill_races_completion():
+    # Throwing into the greenthread that waits on run() at varying points
+    # around job completion walks the CANCEL/DONE ownership handshake --
+    # including the "signaled and thrown in the same wakeup" unwind.
+    from filament import greenthread
+    tp = _cthrpool.ThreadPool(2, 2)
+    try:
+        for i in range(30):
+            fil = filament.spawn(tp.run, std_time.sleep, 0.002)
+            filament.sleep((i % 5) * 0.001)
+            greenthread.kill(fil)
+            try:
+                fil.wait()
+            except BaseException:
+                pass
+    finally:
+        tp.shutdown(now=True, wait=True)
+
+
+def test_timer_double_init_raises():
+    t = _ctimer.Timer(60.0, lambda: None)
+    try:
+        with pytest.raises(TypeError):
+            t.__init__(60.0, lambda: None)
+    finally:
+        t.cancel()
+
+
+def test_timeout_fires_after_target_finished():
+    # The armed greenthread returns without cancel(); when the timer fires
+    # the target is dead, and _on_timeout must simply do nothing rather than
+    # throw into the corpse and report the bounce as unraisable noise.
+    def body():
+        filament.Timeout(0.005).start()
+
+    filament.spawn(body).wait()
+    filament.sleep(0.05)
+
+
+@pytest.mark.skipif(not hasattr(sys, 'unraisablehook'),
+                    reason='needs sys.unraisablehook (3.8+)')
+def test_timeout_target_dying_of_other_exception_is_reported():
+    # The target catches the Timeout but dies of something else; that bounces
+    # to the timer callback, which must NOT swallow it -- it is reported
+    # through the unraisable hook like any exception escaping a timer.
+    seen = []
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = lambda args: seen.append(args)
+    try:
+        def body():
+            try:
+                with filament.Timeout(0.005):
+                    filament.sleep(1)
+            except filament.Timeout:
+                raise KeyboardInterrupt('escapes the filament wrapper')
+
+        fil = filament.spawn(body)
+        try:
+            fil.wait()
+        except BaseException:
+            pass
+        filament.sleep(0.05)
+    finally:
+        sys.unraisablehook = old_hook
+    assert any(isinstance(a.exc_value, KeyboardInterrupt) for a in seen)
+
+
+def test_three_readers_share_one_socket():
+    # Reader one holds the cached edge-triggered slot; readers two and three
+    # take the classic path, and every message that only one of them wins
+    # sends the losers through the EAGAIN re-arm.  All bytes must arrive and
+    # nobody may hang (the pre-0.9.5 re-arm bug hung reader three forever).
+    a, b = fsocket.socketpair()
+    got = []
+
+    def reader():
+        while True:
+            d = a.recv(16)
+            if not d:
+                return
+            got.append(d)
+
+    readers = [filament.spawn(reader) for _ in range(3)]
+    try:
+        for _ in range(60):
+            b.sendall(b'm')
+            filament.sleep(0.001)
+    finally:
+        b.close()
+    for r in readers:
+        r.wait()
+    a.close()
+    assert len(b''.join(got)) == 60
+
+
+def test_blocked_send_completed_while_parked():
+    # A send that blocks on a full socket buffer parks with an eager request;
+    # the io thread performs the send itself once space opens, and the woken
+    # side consumes the completed result instead of re-entering the kernel.
+    a, b = fsocket.socketpair()
+    try:
+        a.setsockopt(std_socket.SOL_SOCKET, std_socket.SO_SNDBUF, 8192)
+        payload = b'x' * (1 << 20)
+
+        sender = filament.spawn(a.sendall, payload)
+        received = 0
+        while received < len(payload):
+            chunk = b.recv(65536)
+            assert chunk
+            received += len(chunk)
+        sender.wait()
+        assert received == len(payload)
+    finally:
+        a.close()
+        b.close()
+
+
+def test_fd_wait_past_absolute_deadline():
+    # An abstimeout already in the past exercises the "deadline has already
+    # gone" branch of the absolute->relative conversion deterministically.
+    r, w = _quiet_nonblocking_fd()
+    try:
+        with pytest.raises(fil_exc.Timeout):
+            _cio.fd_wait_read_ready(r.fileno(), abstimeout=(1, 0))
+    finally:
+        r.close()
+        w.close()
+
+
+def test_three_readers_with_timeouts_share_one_socket():
+    # Same as test_three_readers_share_one_socket but with a deadline set, so
+    # every classic-path EAGAIN retry re-arms against the remaining time.
+    a, b = fsocket.socketpair()
+    a.settimeout(10)
+    got = []
+
+    def reader():
+        while True:
+            d = a.recv(16)
+            if not d:
+                return
+            got.append(d)
+
+    readers = [filament.spawn(reader) for _ in range(3)]
+    try:
+        for _ in range(40):
+            b.sendall(b'm')
+            filament.sleep(0.001)
+    finally:
+        b.close()
+    for r in readers:
+        r.wait()
+    a.close()
+    assert len(b''.join(got)) == 40
+
+
+def test_queue_rollback_is_the_zero_cross_wakes_join():
+    # Deterministic version of the join-strand regression: arrange for the
+    # doomed putter to be signaled its slot AND thrown into in the same
+    # wakeup (the throw is queued ahead of the wakeup switch), so its
+    # rollback is the transition to zero -- which must wake the joiner.
+    q = _cqueue.Queue(1)
+    q.put('first')
+
+    state = {'joined': False}
+
+    def joiner():
+        q.join()
+        state['joined'] = True
+
+    def putter():
+        with pytest.raises(BaseException):
+            q.put('second')
+
+    j = filament.spawn(joiner)
+    p = filament.spawn(putter)
+    filament.sleep(0)             # both park
+
+    # Queue the throw FIRST; the get() below queues the putter's wakeup
+    # switch behind it, so the putter resumes signaled-and-thrown (UNWIND).
+    _ctimer.Timer(0, p.throw)
+    assert q.get() == 'first'     # hands the slot to the doomed putter
+    q.task_done()                 # count is now only the doomed put
+    filament.sleep(0)             # timer throws; rollback crosses zero
+
+    for _ in range(100):
+        if state['joined']:
+            break
+        filament.sleep(0.01)
+    j.wait()
+    p.wait()
+    assert state['joined']
+
+
+def test_thrpool_result_delivered_into_killed_waiter():
+    # The worker finishes and signals while the waiting greenthread already
+    # has a throw queued ahead of its wakeup: it resumes signaled-and-thrown
+    # and must drop the result on the unwind path without leaking or
+    # touching the worker's memory.
+    tp = _cthrpool.ThreadPool(1, 1)
+    try:
+        fil = filament.spawn(tp.run, std_time.sleep, 0.001)
+        filament.sleep(0.01)            # fil is parked waiting on the result
+        _ctimer.Timer(0, fil.throw)     # throw queued ahead of any wakeup
+        std_time.sleep(0.05)            # native sleep: the worker completes
+                                        # and signals without us yielding
+        filament.sleep(0)               # timer fires: signaled + thrown
+        try:
+            fil.wait()
+        except BaseException:
+            pass
+    finally:
+        tp.shutdown(now=True, wait=True)

@@ -67,20 +67,95 @@ struct _fil_waiter {
  * init/destroy cycle each time.  Recycle them instead: pooled waiters keep
  * their mutex/cond initialized, so a warm wait skips all four.
  *
- * Locking: NONE, deliberately.  fil_waiter_alloc() and fil_waiter_decref()
- * are only ever called with the GIL held (see the 'refcnt' comment above:
- * refcnt is likewise GIL-protected, and alloc/decref happen on the Python
- * side of every path; off-GIL signalers never alloc or decref).  The GIL
- * therefore serializes all freelist access.  NOTE: these statics are
- * per-translation-unit (this is a header), which is fine -- each pool is
- * just a cache of interchangeable malloc'd blocks; a block allocated via one
- * TU's pool may be released into another's without harm.
+ * Locking: NONE on a normal build, where the GIL serializes alloc/decref --
+ * both only ever run with the GIL held, on the thread that owns the waiter's
+ * scheduler (see the 'refcnt' comment above), and off-GIL signalers never
+ * touch either.  NOTE: these statics are per-translation-unit (this is a
+ * header), which is fine -- each pool is just a cache of interchangeable
+ * malloc'd blocks; a block allocated via one TU's pool may be released into
+ * another's without harm.
+ *
+ * On a FREE-THREADING build (PEP 703) that reasoning evaporates: there is no
+ * GIL to serialize anything, so two schedulers on two OS threads pop the same
+ * block concurrently and a waiter ends up bound to one scheduler while another
+ * believes it owns it.  Observed as "greenlet.error: Cannot switch to a
+ * different thread", a lost wakeup, or a segfault once the block is reused --
+ * six out of six parallel-io runs failed one of those three ways.  There, the
+ * pool is per thread instead, which removes the sharing rather than locking
+ * it, so neither build pays for a mutex.
+ *
+ * Why not just make it per-thread everywhere: __thread in a -fPIC shared
+ * library uses the global-dynamic TLS model, so each access is a
+ * __tls_get_addr() call, and these are the hottest lines in the scheduler --
+ * measured ~5% of throughput on a park-heavy echo workload.  Not worth paying
+ * on builds that cannot benefit.  (initial-exec would avoid the call but can
+ * fail to load a dlopen'd extension once static TLS is exhausted, which is
+ * exactly what an extension module is.)
+ *
+ * The per-thread pool is drained by a pthread_key destructor at thread exit;
+ * without it a process that churns threads would leak both the blocks and
+ * their mutex/cond pairs.  The list head itself lives in TLS rather than
+ * behind the key, so the hot path is a TLS read and not a
+ * pthread_getspecific(); the key exists only to get the destructor called.
  */
 #ifndef FIL_WAITER_FREELIST_MAX
 #define FIL_WAITER_FREELIST_MAX 1024
 #endif
+
+#ifdef Py_GIL_DISABLED
+
+#if defined(_MSC_VER)
+#  define FIL_WAITER_TLS __declspec(thread)
+#else
+#  define FIL_WAITER_TLS __thread
+#endif
+
+static FIL_WAITER_TLS FilWaiter *_fil_waiter_freelist = NULL;
+static FIL_WAITER_TLS int _fil_waiter_freelist_len = 0;
+/* Set once per thread, to a non-NULL sentinel, purely so the key's destructor
+ * runs at thread exit; the pool itself is the TLS pair above. */
+static FIL_WAITER_TLS int _fil_waiter_pool_registered = 0;
+static pthread_key_t _fil_waiter_pool_key;
+static pthread_once_t _fil_waiter_pool_once = PTHREAD_ONCE_INIT;
+
+/* Runs on the exiting thread, so it sees that thread's TLS pool. */
+static void _fil_waiter_pool_cleanup(void *unused)
+{
+    FilWaiter *waiter;
+
+    (void)unused;
+    while ((waiter = _fil_waiter_freelist) != NULL) {
+        _fil_waiter_freelist = (FilWaiter *)(void *)waiter->waiter_list.next;
+        pthread_mutex_destroy(&(waiter->waiter_lock));
+        pthread_cond_destroy(&(waiter->waiter_cond));
+        free(waiter);
+    }
+    _fil_waiter_freelist_len = 0;
+}
+
+static void _fil_waiter_pool_key_init(void)
+{
+    pthread_key_create(&_fil_waiter_pool_key, _fil_waiter_pool_cleanup);
+}
+
+static inline void _fil_waiter_pool_register(void)
+{
+    if (!_fil_waiter_pool_registered) {
+        _fil_waiter_pool_registered = 1;
+        pthread_once(&_fil_waiter_pool_once, _fil_waiter_pool_key_init);
+        /* Any non-NULL value; the destructor reads TLS, not this pointer. */
+        pthread_setspecific(_fil_waiter_pool_key, (void *)&_fil_waiter_pool_registered);
+    }
+}
+
+#else  /* !Py_GIL_DISABLED -- GIL build: process-wide pool, no TLS, no register */
+
 static FilWaiter *_fil_waiter_freelist = NULL;
 static int _fil_waiter_freelist_len = 0;
+
+#define _fil_waiter_pool_register() ((void)0)
+
+#endif  /* Py_GIL_DISABLED */
 
 static inline FilWaiter *fil_waiter_alloc(void)
 {
@@ -122,6 +197,8 @@ static inline void fil_waiter_decref(FilWaiter *waiter)
         Py_CLEAR(waiter->sched);
         Py_CLEAR(waiter->gl);
         if (_fil_waiter_freelist_len < FIL_WAITER_FREELIST_MAX) {
+            /* First block cached on this thread arms the exit destructor. */
+            _fil_waiter_pool_register();
             waiter->waiter_list.next = (FilWaiterList *)(void *)_fil_waiter_freelist;
             _fil_waiter_freelist = waiter;
             _fil_waiter_freelist_len++;
@@ -399,9 +476,19 @@ static inline int fil_waiter_wait(FilWaiter *waiter, struct timespec *ts, PyObje
         if (ts != NULL && waiter->timeout_event == NULL)
         {
             waiter->refcnt++;
-            fil_scheduler_add_event_ref(waiter->sched, ts, 0,
-                                        (fil_event_cb_t)_fil_waiter_handle_timeout,
-                                        waiter, &(waiter->timeout_event));
+            if (fil_scheduler_add_event_ref(waiter->sched, ts, 0,
+                                            (fil_event_cb_t)_fil_waiter_handle_timeout,
+                                            waiter, &(waiter->timeout_event)) < 0)
+            {
+                /* OOM: no event owns the reference we just took, so give it
+                 * back or the waiter (and its mutex/cond and sched/gl refs)
+                 * leaks for good.  The wait proceeds without a deadline --
+                 * acceptable, the process is dying of OOM -- and bailing out
+                 * here instead would mean re-running the whole resume
+                 * settlement against a signaler that may already be
+                 * switching us. */
+                waiter->refcnt--;
+            }
         }
 
         fil_scheduler_switch(waiter->sched);
@@ -643,6 +730,10 @@ static inline void fil_waiter_signal_nogil(FilWaiter *waiter)
 #define fil_waiterlist_empty(waiter_list) ((waiter_list).next == &(waiter_list))
 
 #define fil_waiterlist_wait(waiter_list, ts, exc) _fil_waiterlist_wait(&(waiter_list), ts, exc)
+#ifdef Py_GIL_DISABLED
+#define fil_waiterlist_wait_locked(waiter_list, ts, exc, lock) \
+    _fil_waiterlist_wait_locked(&(waiter_list), ts, exc, lock)
+#endif
 #define fil_waiterlist_signal_first(waiter_list) _fil_waiterlist_signal_first(&(waiter_list))
 #define fil_waiterlist_signal_all(waiter_list) _fil_waiterlist_signal_all(&(waiter_list))
 
@@ -672,6 +763,86 @@ static inline void _fil_waiterlist_del(FilWaiterList *entry)
     prev->next = next;
 }
 
+/*
+ * Wait on 'waiter_list', optionally dropping 'lock' across the wait itself.
+ *
+ * 'lock' is the owner's state lock (a queue's, say).  It must be held on entry
+ * so that adding ourselves to the list is atomic with respect to whatever
+ * emptiness/fullness test the caller just made -- otherwise a signaler can
+ * squeeze in between the test and the add, and its wakeup goes to nobody.  It
+ * is dropped for the wait and retaken before we return, so the caller's
+ * invariants hold on both sides.
+ *
+ * Passing NULL means "no lock", which is what every GIL build does: there the
+ * GIL is the mutual exclusion and this compiles back to the original function.
+ *
+ * Signaling before the waiter actually parks is safe and needs no lock: the
+ * signal sets SIGNALED, and fil_waiter_wait() tests SIGNALED before it does
+ * anything else.
+ */
+#ifdef Py_GIL_DISABLED
+static inline int _fil_waiterlist_wait_locked(FilWaiterList *waiter_list, struct timespec *ts, PyObject *timeout_exc, pthread_mutex_t *lock)
+{
+    int err;
+    FilWaiter *waiter = fil_waiter_alloc();
+
+    if (waiter == NULL) {
+        return -1;
+    }
+
+    _fil_waiterlist_add(waiter_list, waiter);
+
+    pthread_mutex_unlock(lock);
+    err = fil_waiter_wait(waiter, ts, timeout_exc);
+    pthread_mutex_lock(lock);
+
+    if (err)
+    {
+        FilWaiterList *entry = &(waiter->waiter_list);
+
+        if (entry->next == entry)
+        {
+            /* We gave up (timeout or throw), but before we could retake
+             * 'lock' a signaler holding it popped us off the list and spent
+             * its signal on us -- __fil_waiterlist_signal_first self-points
+             * the detached entry, which is what we are seeing.  Under the
+             * GIL that window does not exist (the whole give-up runs in one
+             * GIL hold); here it does, and swallowing the signal strands the
+             * hand-over: a queue item nobody is woken for, a Lock left
+             * locked with its waiter gone, a Semaphore permit lost.
+             *
+             * The hand-over is OURS now, so resolve it the way
+             * fil_waiter_wait() resolves the same race when it sees it in
+             * time: a plain timeout loses to the signal -- drop the timeout
+             * exception and report success -- and a throw becomes
+             * SIGNALED_UNWIND so the caller passes the hand-over back
+             * through its usual unwind path. */
+            if (err == -ETIMEDOUT)
+            {
+                PyErr_Clear();
+                err = 0;
+            }
+            else if (err < 0)
+            {
+                err = FIL_WAITER_SIGNALED_UNWIND;
+            }
+        }
+        else
+        {
+            _fil_waiterlist_del(entry);
+        }
+    }
+
+    fil_waiter_decref(waiter);
+
+    return err;
+}
+#endif  /* Py_GIL_DISABLED */
+
+/* Left exactly as it was.  Routing this through the _locked variant above with
+ * a NULL lock looked tidier and cost 6.6% of queue throughput on a stock build:
+ * the extra branches pushed it past the inliner's threshold, so it stopped
+ * being folded into fil_wfifoq_get()/put().  Keep the two bodies separate. */
 static inline int _fil_waiterlist_wait(FilWaiterList *waiter_list, struct timespec *ts, PyObject *timeout_exc)
 {
     int err;

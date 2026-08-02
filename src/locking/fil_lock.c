@@ -27,10 +27,46 @@
 #include "core/filament.h"
 #include "locking/fil_lock.h"
 
+/*
+ * Mutual exclusion for the lock's own state.
+ *
+ * None on a stock build: acquire() and release() run under the GIL and neither
+ * releases it between testing 'locked'/the waiter list and acting on the test.
+ *
+ * On a FREE-THREADING build (PEP 703) both halves race.  filament.patcher can
+ * turn threading.Lock/RLock -- including the ones inside logging -- into these,
+ * so a tpool worker on a real OS thread and a greenthread contend for the same
+ * lock object concurrently.  Two failures, not one:
+ *
+ *   - 'locked' is a plain int, so two acquirers can both see it clear and both
+ *     take the lock;
+ *   - the same test-then-add hole as the queue and the message: a releaser that
+ *     lands between "the list is empty, so I will wait" and the actual add
+ *     signals nobody, and the acquirer parks on a lock that is free.
+ *
+ * That is the other half of the test_cross_thread_137 deadlock (the first half
+ * was fil_message.c). RLock's 'owner'/'count' are covered by the same lock --
+ * PyFilRLock embeds PyFilLock as its first member.
+ */
+#ifdef Py_GIL_DISABLED
+#  define FIL_LOCK_LOCK(__l)    pthread_mutex_lock(&((__l)->mutex))
+#  define FIL_LOCK_UNLOCK(__l)  pthread_mutex_unlock(&((__l)->mutex))
+#  define FIL_LOCK_WAIT(__l, __list, __ts, __exc) \
+       fil_waiterlist_wait_locked(__list, __ts, __exc, &((__l)->mutex))
+#else
+#  define FIL_LOCK_LOCK(__l)    ((void)0)
+#  define FIL_LOCK_UNLOCK(__l)  ((void)0)
+#  define FIL_LOCK_WAIT(__l, __list, __ts, __exc) \
+       fil_waiterlist_wait(__list, __ts, __exc)
+#endif
+
 typedef struct _pyfil_lock {
     PyObject_HEAD
     int locked;
     FilWaiterList waiters;
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_t mutex;
+#endif
 } PyFilLock;
 
 typedef struct _pyfil_rlock {
@@ -47,6 +83,9 @@ static PyFilLock *_lock_new(PyTypeObject *type, PyObject *args, PyObject *kw)
     if (self != NULL)
     {
         fil_waiterlist_init(self->waiters);
+#ifdef Py_GIL_DISABLED
+        pthread_mutex_init(&(self->mutex), NULL);
+#endif
     }
 
     return self;
@@ -60,6 +99,9 @@ static int _lock_init(PyFilLock *self, PyObject *args, PyObject *kwargs)
 static void _lock_dealloc(PyFilLock *self)
 {
     assert(fil_waiterlist_empty(self->waiters));
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_destroy(&(self->mutex));
+#endif
 
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
@@ -87,20 +129,25 @@ static void __lock_handoff(PyFilLock *lock)
 
 static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
 {
+    FIL_LOCK_LOCK(lock);
+
     if (!lock->locked && fil_waiterlist_empty(lock->waiters))
     {
         lock->locked = 1;
+        FIL_LOCK_UNLOCK(lock);
         return 0;
     }
 
     if (!blocking)
     {
+        FIL_LOCK_UNLOCK(lock);
         return 1;
     }
 
-    int err = fil_waiterlist_wait(lock->waiters, ts, NULL);
+    int err = FIL_LOCK_WAIT(lock, lock->waiters, ts, NULL);
     if (err < 0)
     {
+        FIL_LOCK_UNLOCK(lock);
         return err;
     }
 
@@ -109,16 +156,21 @@ static int __lock_acquire(PyFilLock *lock, int blocking, struct timespec *ts)
     if (err == FIL_WAITER_SIGNALED_UNWIND)
     {
         __lock_handoff(lock);
+        FIL_LOCK_UNLOCK(lock);
         return -1;
     }
 
+    FIL_LOCK_UNLOCK(lock);
     return 0;
 }
 
 static int __lock_release(PyFilLock *lock)
 {
+    FIL_LOCK_LOCK(lock);
+
     if (!lock->locked)
     {
+        FIL_LOCK_UNLOCK(lock);
         PyErr_SetString(PyExc_RuntimeError, "release without acquire");
         return -1;
     }
@@ -126,6 +178,7 @@ static int __lock_release(PyFilLock *lock)
     if (fil_waiterlist_empty(lock->waiters))
     {
         lock->locked = 0;
+        FIL_LOCK_UNLOCK(lock);
         return 0;
     }
 
@@ -134,6 +187,7 @@ static int __lock_release(PyFilLock *lock)
      * additional work to resolve them.
      */
     fil_waiterlist_signal_first(lock->waiters);
+    FIL_LOCK_UNLOCK(lock);
     return 0;
 }
 
@@ -142,28 +196,34 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
     uint64_t owner;
 
     owner = fil_get_ident();
+    FIL_LOCK_LOCK(&(lock->lock));
+
     if (!lock->lock.locked && fil_waiterlist_empty(lock->lock.waiters))
     {
         lock->lock.locked = 1;
         lock->owner = owner;
         lock->count = 1;
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return 0;
     }
 
     if (owner == lock->owner)
     {
         lock->count++;
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return 0;
     }
 
     if (!blocking)
     {
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return 1;
     }
 
-    int err = fil_waiterlist_wait(lock->lock.waiters, ts, NULL);
+    int err = FIL_LOCK_WAIT(&(lock->lock), lock->lock.waiters, ts, NULL);
     if (err < 0)
     {
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return err;
     }
 
@@ -174,25 +234,31 @@ static int __rlock_acquire(PyFilRLock *lock, int blocking, struct timespec *ts)
         /* Hand the lock straight on: 'owner'/'count' were never set, so this
          * is the base lock's hand-off, not a recursive release. */
         __lock_handoff(&(lock->lock));
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return -1;
     }
 
     lock->owner = owner;
     lock->count = 1;
 
+    FIL_LOCK_UNLOCK(&(lock->lock));
     return 0;
 }
 
 static int __rlock_release(PyFilRLock *lock)
 {
+    FIL_LOCK_LOCK(&(lock->lock));
+
     if (!lock->lock.locked || (fil_get_ident() != lock->owner))
     {
+        FIL_LOCK_UNLOCK(&(lock->lock));
         PyErr_SetString(PyExc_RuntimeError, "cannot release un-acquired lock");
         return -1;
     }
 
     if (--lock->count > 0)
     {
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return 0;
     }
 
@@ -201,6 +267,7 @@ static int __rlock_release(PyFilRLock *lock)
     if (fil_waiterlist_empty(lock->lock.waiters))
     {
         lock->lock.locked = 0;
+        FIL_LOCK_UNLOCK(&(lock->lock));
         return 0;
     }
 
@@ -209,6 +276,7 @@ static int __rlock_release(PyFilRLock *lock)
      * additional work to resolve them.
      */
     fil_waiterlist_signal_first(lock->lock.waiters);
+    FIL_LOCK_UNLOCK(&(lock->lock));
     return 0;
 }
 

@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "filament"
-version = "0.9.4"
+version = "0.9.5a1"
 description = "Filament: Microthreads for Python"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -43,6 +43,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Operating System :: POSIX",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]

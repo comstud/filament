@@ -101,6 +101,13 @@ struct _event_cb_info
     uint32_t flags;
     event_processor_t processor;
     void *processor_arg;
+    /* Absolute deadline for this operation, and whether there is one.  The
+     * retry-on-EAGAIN path below has to re-arm the event, and re-arming with
+     * the ORIGINAL relative timeout each time would push the deadline out on
+     * every spurious wake; keeping it absolute means the remaining time is
+     * recomputed instead. */
+    struct timespec deadline;
+    int has_deadline;
 
     union
     {
@@ -196,6 +203,39 @@ static int _send_processor(evutil_socket_t fd, struct _send_info *ri)
 }
 
 /*
+ * Absolute deadline -> the relative timeval libevent wants.  Returns 1 if the
+ * deadline has already passed (caller should treat it as an immediate
+ * timeout), 0 otherwise.
+ */
+static int _iothread_reltime(const struct timespec *deadline, struct timeval *tv)
+{
+    struct timeval now;
+    int usec = deadline->tv_nsec / 1000;
+
+    gettimeofday(&now, NULL);
+
+    if (usec < now.tv_usec)
+    {
+        tv->tv_usec = 1000000 + usec - now.tv_usec;
+        now.tv_sec += 1;
+    }
+    else
+    {
+        tv->tv_usec = usec - now.tv_usec;
+    }
+
+    if (deadline->tv_sec < now.tv_sec)
+    {
+        tv->tv_sec = 0;
+        tv->tv_usec = 0;
+        return 1;
+    }
+
+    tv->tv_sec = deadline->tv_sec - now.tv_sec;
+    return 0;
+}
+
+/*
  * SYNCHRONIZATION INVARIANT for the io-thread <-> waiting-greenthread handoff.
  * This is the crux of the whole io layer's thread-safety; keep it intact.
  *
@@ -279,9 +319,38 @@ static void _iothread_event_cb(evutil_socket_t fd, short what, void *arg)
     if ((ecbi->processor != NULL) &&
         (ecbi->processor(fd, ecbi->processor_arg) != 0))
     {
-        /* continue to poll */
-        pthread_mutex_unlock(&(ecbi->ecbi_lock));
-        return;
+        /* EAGAIN: somebody else got the bytes.  Wait for the next readiness.
+         *
+         * The event MUST be re-added here.  It is not EV_PERSIST (see
+         * _iothread_process), so libevent has already deactivated it by the
+         * time this callback runs -- simply returning left the waiter parked
+         * on an event that would never fire again AND with its timeout gone,
+         * i.e. blocked forever regardless of settimeout().  It only bites when
+         * two or more classic waiters share one fd, because a lone waiter's
+         * processor always wins the race and never lands here; that is why it
+         * needed three concurrent readers on one socket to show up.
+         *
+         * Re-arm against the ORIGINAL absolute deadline rather than the
+         * original relative one, or every spurious wake would extend it. */
+        struct timeval tv_retry;
+        struct timeval *tvp = NULL;
+        int expired = 0;
+
+        if (ecbi->has_deadline)
+        {
+            expired = _iothread_reltime(&(ecbi->deadline), &tv_retry);
+            tvp = &tv_retry;
+        }
+
+        if (!expired && event_add(ecbi->event, tvp) == 0)
+        {
+            pthread_mutex_unlock(&(ecbi->ecbi_lock));
+            return;
+        }
+
+        /* Deadline already gone, or we cannot re-arm: report it as a timeout
+         * rather than leaving the caller parked forever. */
+        ecbi->flags |= IOTHR_ECBI_FLAGS_TIMEOUT;
     }
 
     ecbi->flags |= IOTHR_ECBI_FLAGS_DONE;
@@ -496,7 +565,8 @@ static int _iothread_init(PyFilIOThread *self, PyObject *args, PyObject *kargs)
 
     err = pthread_create(&(self->thr_id), NULL,
                          (void *(*)(void *))_iothread_loop, self);
-    if (err < 0)
+    /* pthread_create returns a positive errno on failure, not -1. */
+    if (err != 0)
     {
         PyErr_SetString(PyExc_RuntimeError,
                         "Couldn't create new event thread");
@@ -621,35 +691,12 @@ static int _iothread_process(PyFilIOThread *iothr, int fd, short event,
 
     ecbi->iothr = iothr;
 
+    ecbi->has_deadline = (timeout != NULL);
     if (timeout != NULL)
     {
-        struct timeval now;
-        int usec = timeout->tv_nsec / 1000;
-
-        /* Need to convert absolute time to relative time */
-
-        gettimeofday(&now, NULL);
+        ecbi->deadline = *timeout;
         tv = &tv_buf;
-
-        if (usec < now.tv_usec)
-        {
-            tv->tv_usec = 1000000 + usec - now.tv_usec;
-            now.tv_sec += 1;
-        }
-        else
-        {
-            tv->tv_usec = usec - now.tv_usec;
-        }
-
-        if (timeout->tv_sec < now.tv_sec)
-        {
-            tv->tv_sec = 0;
-            tv->tv_usec = 0;
-        }
-        else
-        {
-            tv->tv_sec = timeout->tv_sec - now.tv_sec;
-        }
+        (void)_iothread_reltime(timeout, tv);
     }
 
     ev = event_new(iothr->event_base, fd, event, _iothread_event_cb, ecbi);
@@ -808,10 +855,47 @@ struct _fil_io_fdwait
      * including the multi-reader one where the edge was consumed by ANOTHER
      * waiter's wakeup and thus latched nothing. */
     unsigned int edge_seq;
-    int busy;              /* a wait_cached caller is between park and its
-                              post-wake bookkeeping; defers a concurrent
-                              destroy's free to that caller */
+    int busy;              /* COUNT of wait_cached callers between park and
+                              their post-wake bookkeeping; defers a concurrent
+                              destroy's free to the last of them.  A count and
+                              not a flag: the io callback clears 'waiter' when
+                              it signals, so a second caller can park (and be
+                              busy) while the first's wakeup is still queued
+                              behind it -- a flag let the first caller's exit
+                              zero it with the second still parked, and a
+                              destroy then freed the struct under that parked
+                              waiter. */
     int orphaned;          /* owner destroyed us while busy/parked */
+
+    /* Eager io (see FilIOEagerIO in fil_iothread.h).  'er_armed' is set by
+     * the parked caller immediately before it publishes 'waiter', and cleared
+     * by whoever consumes it -- the io callback, or the caller itself after it
+     * wakes.  The caller ALWAYS clears it post-wake, even on the error paths,
+     * because er_buf points into caller-owned memory (a PyBytes or the
+     * caller's Py_buffer) that becomes free to release the moment the call
+     * returns: a stale arm would be a use-after-free in the io thread.
+     *
+     * These live here, on the heap, rather than in the caller's frame because
+     * the io thread writes them while the caller's greenlet is parked, and
+     * classic greenlets copy and restore the whole C stack across a switch
+     * (commit 30dcec8) -- stack writes made by another thread are discarded. */
+    void *er_buf;
+    size_t er_len;
+    int er_flags;
+    int er_is_send;        /* which syscall to make on er_buf */
+    int er_armed;
+    /* An eager cycle is outstanding: armed, or completed and not yet consumed.
+     * Only the caller that set it may arm again or read er_done.  Without this
+     * the result was effectively owned by the fdwait rather than by the waiter,
+     * and with several readers taking turns on one socket a second caller could
+     * park between the first's signal and its consume, arm, and zero er_done --
+     * silently destroying bytes the io thread had already taken from the
+     * kernel.  Those reads were simply lost: the socket had delivered them and
+     * nobody ever saw them. */
+    int er_pending;
+    int er_done;           /* io thread completed the call; result/errn valid */
+    ssize_t er_result;
+    int er_errn;
 };
 
 static void _iothread_fdwait_event_cb(evutil_socket_t fd, short what, void *arg)
@@ -819,7 +903,6 @@ static void _iothread_fdwait_event_cb(evutil_socket_t fd, short what, void *arg)
     FilIOFDWait *fdw = (FilIOFDWait *)arg;
     FilWaiter *waiter;
 
-    (void)fd;
     (void)what;
 
     pthread_mutex_lock(&(fdw->lock));
@@ -828,6 +911,52 @@ static void _iothread_fdwait_event_cb(evutil_socket_t fd, short what, void *arg)
     if (waiter != NULL)
     {
         fdw->waiter = NULL;
+
+        /* Eager io: do the caller's recv()/send() here, on this thread, before
+         * waking it.  We hold NO GIL, so this costs one syscall and nothing
+         * else; the same call on the woken thread would additionally drop and
+         * reacquire the GIL around itself.
+         *
+         * Only worth doing if the waiter is still genuinely parked.  The check
+         * is advisory (it is the same test fil_waiter_signal_nogil makes under
+         * waiter_lock, read here without it): if we lose that race the bytes we
+         * consumed are dropped and the pending exception wins, which is exactly
+         * what already happens when a throw lands in the same wakeup as a
+         * successful recv (see the comments in _sock_recv_common).  Skipping
+         * the read when we can cheaply see we are not the waker keeps that
+         * window no wider than it already was.
+         *
+         * The syscall runs under fdw->lock.  That is deliberate and matches the
+         * classic path, which likewise holds ecbi_lock across its syscall: it
+         * serialises this fd's teardown behind a call that cannot block. */
+        if (fdw->er_armed)
+        {
+            fdw->er_armed = 0;
+
+            if (!fil_waiter_signaled(waiter) && fil_waiter_waiting(waiter))
+            {
+                ssize_t r;
+
+                do
+                {
+                    r = fdw->er_is_send
+                        ? send(fd, fdw->er_buf, fdw->er_len, fdw->er_flags)
+                        : recv(fd, fdw->er_buf, fdw->er_len, fdw->er_flags);
+                } while (r < 0 && errno == EINTR);
+
+                if (r >= 0 || !FIL_IS_EAGAIN(errno))
+                {
+                    fdw->er_result = r;
+                    fdw->er_errn = (r < 0) ? errno : 0;
+                    fdw->er_done = 1;
+                }
+                /* EAGAIN: the fd was not really ready after all (spurious
+                 * edge, or another greenthread on this direction got there
+                 * first).  Leave er_done clear and let the woken caller retry
+                 * the syscall itself, as before. */
+            }
+        }
+
         /* GIL-free untimed wakeup; safe while holding fdw->lock (see the
          * locking notes above). */
         fil_waiter_signal_nogil(waiter);
@@ -884,12 +1013,19 @@ static void _iothread_fdwait_free(FilIOFDWait *fdw)
  *         fil_iothread_*_ready path
  *   -1 -- error, timeout included (Python exception set)
  */
-int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc)
+int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd, int for_write, unsigned int seq, struct timespec *timeout, PyObject *timeout_exc, FilIOEagerIO *eager)
 {
     FilIOFDWait *fdw = *cachep;
     FilWaiter *waiter;
     int err;
     int orphaned;
+
+    int armed_here = 0;
+
+    if (eager != NULL)
+    {
+        eager->done = 0;
+    }
 
     if (fdw == NULL)
     {
@@ -906,7 +1042,27 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
             return -1;
         }
         pthread_mutex_init(&(fdw->lock), NULL);
+#ifdef Py_GIL_DISABLED
+        {
+            /* Two OS threads' first waits on this (fd, direction) can both
+             * see the slot NULL; without the CAS both install, one fdwait is
+             * orphaned with a live persistent event (leak), and a waiter
+             * parked on it is unreachable by destroy() -- it hangs forever
+             * once the fd closes.  Loser adopts the winner's. */
+            FilIOFDWait *expected = NULL;
+
+            if (!__atomic_compare_exchange_n(cachep, &expected, fdw, 0,
+                                             __ATOMIC_ACQ_REL,
+                                             __ATOMIC_ACQUIRE))
+            {
+                pthread_mutex_destroy(&(fdw->lock));
+                free(fdw);
+                fdw = expected;
+            }
+        }
+#else
         *cachep = fdw;
+#endif
     }
 
     pthread_mutex_lock(&(fdw->lock));
@@ -956,8 +1112,24 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
         return -1;
     }
 
+    /* Arm the eager call only if it matches the direction we are waiting on,
+     * and only immediately before publishing the waiter -- the io callback acts
+     * on it exclusively while a waiter is parked. */
+    if (eager != NULL && eager->buffer != NULL && !eager->is_send == !for_write &&
+        !fdw->er_pending)
+    {
+        armed_here = 1;
+        fdw->er_pending = 1;
+        fdw->er_buf = eager->buffer;
+        fdw->er_len = eager->buf_sz;
+        fdw->er_flags = eager->flags;
+        fdw->er_is_send = eager->is_send;
+        fdw->er_done = 0;
+        fdw->er_armed = 1;
+    }
+
     fdw->waiter = waiter;
-    fdw->busy = 1;
+    fdw->busy++;
     pthread_mutex_unlock(&(fdw->lock));
 
     err = fil_waiter_wait(waiter, timeout, timeout_exc);
@@ -970,8 +1142,41 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
          * dead waiter. */
         fdw->waiter = NULL;
     }
-    fdw->busy = 0;
-    orphaned = fdw->orphaned;
+    /* Only the caller that armed may disarm or consume: er_buf is this call's
+     * memory, and er_done is this call's result.  A caller that parked without
+     * arming (because a cycle was already outstanding) must leave both alone. */
+    if (armed_here)
+    {
+        fdw->er_armed = 0;
+        fdw->er_buf = NULL;
+        if (fdw->er_done)
+        {
+            fdw->er_done = 0;
+            /* The io thread COMPLETED the transfer: recv'd bytes have left
+             * the kernel queue and sent bytes are already on the wire.  If
+             * our deadline fired in the same wakeup race, reporting "timed
+             * out" would silently destroy them -- a recv'd chunk vanishes
+             * from the stream, a sent one is invisibly on the wire and a
+             * retry duplicates it.  The completed transfer wins the race:
+             * drop the timeout and hand the result back.  A THROW (kill, an
+             * expiring Timeout) still wins over the bytes, exactly as it
+             * does on the classic path's processor race. */
+            if (eager != NULL && (!err || err == -ETIMEDOUT))
+            {
+                if (err)
+                {
+                    PyErr_Clear();
+                    err = 0;
+                }
+                eager->result = fdw->er_result;
+                eager->errn = fdw->er_errn;
+                eager->done = 1;
+            }
+        }
+        fdw->er_pending = 0;
+    }
+    fdw->busy--;
+    orphaned = (fdw->orphaned && fdw->busy == 0);
     pthread_mutex_unlock(&(fdw->lock));
 
     fil_waiter_decref(waiter);
@@ -979,9 +1184,9 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
     if (orphaned)
     {
         /* The owner destroyed the cache while we were parked (fd closed
-         * under us); we inherit the free.  The owner already deleted the
-         * libevent event (so no callback can be in flight) and already
-         * cleared/replaced *cachep -- do not touch it. */
+         * under us); the LAST busy caller out inherits the free.  The owner
+         * already deleted the libevent event (so no callback can be in
+         * flight) and already cleared/replaced *cachep -- do not touch it. */
         _iothread_fdwait_free(fdw);
     }
 
@@ -1020,6 +1225,13 @@ void fil_iothread_fdwait_destroy(FilIOFDWait *fdw)
 
     pthread_mutex_lock(&(fdw->lock));
 
+    /* event_del above guarantees no callback is in flight or can start, so
+     * disarming here cannot race one.  Belt and braces: the fd is going away,
+     * and nothing may recv() on it again. */
+    fdw->er_armed = 0;
+    fdw->er_buf = NULL;
+    fdw->er_pending = 0;
+
     waiter = fdw->waiter;
     if (waiter != NULL)
     {
@@ -1055,25 +1267,51 @@ static void _event_log_cb(int severity, const char *msg)
     (void)0;
 }
 
+#ifdef Py_GIL_DISABLED
+/* Creation of the singleton below is not GIL-serialized on a free-threading
+ * build: two threads' first blocking ops can both see NULL and each spin up a
+ * whole io thread + event base, one of which then runs, unjoined, straight
+ * through interpreter finalization.  The mutex guards only the one-time slow
+ * path. */
+static pthread_mutex_t _iothread_singleton_lock = PTHREAD_MUTEX_INITIALIZER;
+#  define _FIL_IOTHR_SINGLETON_LOCK()   pthread_mutex_lock(&_iothread_singleton_lock)
+#  define _FIL_IOTHR_SINGLETON_UNLOCK() pthread_mutex_unlock(&_iothread_singleton_lock)
+#else
+#  define _FIL_IOTHR_SINGLETON_LOCK()   ((void)0)
+#  define _FIL_IOTHR_SINGLETON_UNLOCK() ((void)0)
+#endif
+
 PyFilIOThread *fil_iothread_get(void)
 {
     if (_IOThreadObj == NULL)
     {
         PyFilIOThread *self;
 
+        _FIL_IOTHR_SINGLETON_LOCK();
+        if (_IOThreadObj != NULL)
+        {
+            /* Somebody else created it while we took the lock. */
+            _FIL_IOTHR_SINGLETON_UNLOCK();
+            Py_INCREF(_IOThreadObj);
+            return _IOThreadObj;
+        }
+
         self = (PyFilIOThread *)_iothread_new(&_iothread_type, NULL, NULL);
         if (self == NULL)
         {
+            _FIL_IOTHR_SINGLETON_UNLOCK();
             return NULL;
         }
 
         if (_iothread_init(self, NULL, NULL) < 0)
         {
+            _FIL_IOTHR_SINGLETON_UNLOCK();
             Py_DECREF(self);
             return NULL;
         }
 
         _IOThreadObj = self;
+        _FIL_IOTHR_SINGLETON_UNLOCK();
 
         /* Register the Python-level atexit shutdown now that the thread is
          * running.  See _iothread_atexit_py() for why this (rather than only

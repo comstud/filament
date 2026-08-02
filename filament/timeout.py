@@ -109,6 +109,12 @@ class Timeout(exc.Timeout):
             # Cancelled between firing and running -- ignore.
             return
         self._timer = None
+        if self._target.dead:
+            # Fired after the target already finished: nothing to interrupt.
+            # Throwing into a dead greenlet re-raises the exception right
+            # here in the timer callback, where it can only be reported as
+            # unraisable noise.
+            return
         exception = self.exception
         if exception is None or exception is False or \
                 not (isinstance(exception, BaseException) or
@@ -117,10 +123,23 @@ class Timeout(exc.Timeout):
             # Default, silent-sentinel, or a non-exception payload (gevent
             # allows e.g. a string message): raise ourselves; __str__ carries
             # the payload.  The silent case is suppressed in __exit__.
-            self._target.throw(self)
+            thrown = self
         else:
             # Raise the caller supplied exception (class or instance).
-            self._target.throw(exception)
+            thrown = exception
+        try:
+            self._target.throw(thrown)
+        except BaseException as e:
+            # The target did not catch what we threw and its greenlet died
+            # unwinding; greenlet re-raises the escaping exception here, in
+            # the thrower.  Our own timeout coming back is DELIVERY, not an
+            # error -- a timeout is allowed to kill its greenthread (gevent
+            # ignores this the same way).  Anything else is a genuine error
+            # from the dying target: let it out, and the timer machinery
+            # reports it as unraisable.
+            if not (e is thrown or
+                    (isinstance(thrown, type) and isinstance(e, thrown))):
+                raise
 
     def cancel(self):
         """Disarm the timeout if it has not fired yet."""

@@ -27,9 +27,36 @@
 #include "core/filament.h"
 #include "locking/fil_semaphore.h"
 
+/*
+ * Mutual exclusion for the semaphore's state.
+ *
+ * None on a stock build -- the GIL serializes acquire()/release() and neither
+ * releases it between testing 'counter'/the waiter list and acting on that
+ * test.  On a FREE-THREADING build both race: two acquirers can each see
+ * counter > 0 and both decrement it, and a release() landing between "I must
+ * wait" and the actual add to the list signals an empty list, parking an
+ * acquirer on a semaphore that has a permit for it.  Same shape as
+ * fil_lock.c/fil_message.c; see the comment in fil_wfifoq.h for the full
+ * rationale.  Order: sema_lock -> waiter_lock -> sched_lock.
+ */
+#ifdef Py_GIL_DISABLED
+#  define FIL_SEMA_LOCK(__s)    pthread_mutex_lock(&((__s)->mutex))
+#  define FIL_SEMA_UNLOCK(__s)  pthread_mutex_unlock(&((__s)->mutex))
+#  define FIL_SEMA_WAIT(__s, __list, __ts, __exc) \
+       fil_waiterlist_wait_locked(__list, __ts, __exc, &((__s)->mutex))
+#else
+#  define FIL_SEMA_LOCK(__s)    ((void)0)
+#  define FIL_SEMA_UNLOCK(__s)  ((void)0)
+#  define FIL_SEMA_WAIT(__s, __list, __ts, __exc) \
+       fil_waiterlist_wait(__list, __ts, __exc)
+#endif
+
 typedef struct _pyfil_semaphore {
     PyObject_HEAD
     Py_ssize_t counter;
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_t mutex;
+#endif
     FilWaiterList waiters;
 } PyFilSemaphore;
 
@@ -41,6 +68,9 @@ static PyFilSemaphore *_semaphore_new(PyTypeObject *type, PyObject *args, PyObje
     {
         fil_waiterlist_init(self->waiters);
         self->counter = 1;
+#ifdef Py_GIL_DISABLED
+        pthread_mutex_init(&(self->mutex), NULL);
+#endif
     }
 
     return self;
@@ -49,6 +79,9 @@ static PyFilSemaphore *_semaphore_new(PyTypeObject *type, PyObject *args, PyObje
 static void _semaphore_dealloc(PyFilSemaphore *self)
 {
     assert(fil_waiterlist_empty(self->waiters));
+#ifdef Py_GIL_DISABLED
+    pthread_mutex_destroy(&(self->mutex));
+#endif
 
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
@@ -90,24 +123,29 @@ static void __semaphore_release(PyFilSemaphore *sema);
 
 static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timespec *ts)
 {
+    FIL_SEMA_LOCK(sema);
+
     /* If there are waiters, we should let them acquire before we do */
     if ((sema->counter > 0) && fil_waiterlist_empty(sema->waiters))
     {
         sema->counter--;
+        FIL_SEMA_UNLOCK(sema);
         return 0;
     }
 
     if (!blocking)
     {
+        FIL_SEMA_UNLOCK(sema);
         return EAGAIN;
     }
 
     /* Preserve the error code (-ETIMEDOUT vs other) so acquire() can report
      * a timeout by returning False like Lock/RLock do.
      */
-    int err = fil_waiterlist_wait(sema->waiters, ts, NULL);
+    int err = FIL_SEMA_WAIT(sema, sema->waiters, ts, NULL);
     if (err < 0)
     {
+        FIL_SEMA_UNLOCK(sema);
         return err;
     }
 
@@ -122,12 +160,15 @@ static int __semaphore_acquire(PyFilSemaphore *sema, int blocking, struct timesp
         PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
         __semaphore_release(sema);
         PyErr_Restore(exc_type, exc_value, exc_tb);
+        FIL_SEMA_UNLOCK(sema);
         return -1;
     }
 
+    FIL_SEMA_UNLOCK(sema);
     return 0;
 }
 
+/* Caller holds the semaphore lock, where there is one. */
 static void __semaphore_release(PyFilSemaphore *sema)
 {
     if (sema->counter < 0)
@@ -231,11 +272,32 @@ static PyObject *_semaphore_acquire(PyFilSemaphore *self, PyObject *args, PyObje
 #endif
 
 PyDoc_STRVAR(_semaphore_release_doc, "Release the semaphore.  Returns the new counter (gevent parity).");
+#ifndef Py_GIL_DISABLED
+
+/* Stock build: verbatim.  Snapshotting the counter into a local so it can be
+ * read before the unlock costs a stack spill here -- 8 bytes of .text and two
+ * instructions -- so the two builds keep separate bodies, as in fil_wfifoq.h. */
 static PyObject *_semaphore_release(PyFilSemaphore *self, PyObject *args)
 {
     __semaphore_release(self);
     return PyInt_FromSsize_t(self->counter);
 }
+
+#else  /* Py_GIL_DISABLED */
+
+static PyObject *_semaphore_release(PyFilSemaphore *self, PyObject *args)
+{
+    Py_ssize_t counter;
+
+    FIL_SEMA_LOCK(self);
+    __semaphore_release(self);
+    /* Read under the lock; another releaser may bump it the moment we drop. */
+    counter = self->counter;
+    FIL_SEMA_UNLOCK(self);
+    return PyInt_FromSsize_t(counter);
+}
+
+#endif /* Py_GIL_DISABLED */
 
 PyDoc_STRVAR(_semaphore_locked_doc, "True if the semaphore cannot be acquired immediately.");
 static PyObject *_semaphore_locked(PyFilSemaphore *self)
@@ -263,7 +325,9 @@ static PyObject *_semaphore_enter(PyFilSemaphore *self)
 
 static PyObject *_semaphore_exit(PyFilSemaphore *self, PyObject *args)
 {
+    FIL_SEMA_LOCK(self);
     __semaphore_release(self);
+    FIL_SEMA_UNLOCK(self);
     Py_RETURN_NONE;
 }
 

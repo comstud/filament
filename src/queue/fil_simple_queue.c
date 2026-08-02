@@ -56,8 +56,21 @@ static int _queue_init(PyFilSimpleQueue *self, PyObject *args, PyObject *kwargs)
     return 0;
 }
 
+/* GC support; see the note above _queue_traverse in fil_queue.c. */
+static int _queue_traverse(PyFilSimpleQueue *self, visitproc visit, void *arg)
+{
+    return fil_wfifoq_traverse(&(self->queue), visit, arg);
+}
+
+static int _queue_clear(PyFilSimpleQueue *self)
+{
+    fil_wfifoq_clear_items(&(self->queue));
+    return 0;
+}
+
 static void _queue_dealloc(PyFilSimpleQueue *self)
 {
+    PyObject_GC_UnTrack(self);
     fil_wfifoq_deinit(&(self->queue));
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
@@ -89,8 +102,16 @@ static PyObject *_queue_get_common(PyFilSimpleQueue *self, PyObject *block, PyOb
 {
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    /* IsTrue can raise (a __bool__ that throws); carrying on with the
+     * exception set ends in "returned a result with an exception set". */
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -154,8 +175,14 @@ static PyObject *_queue_put_common(PyFilSimpleQueue *self, PyObject *item, PyObj
 {
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -262,10 +289,10 @@ static PyTypeObject _queue_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_HAVE_GC,     /* tp_flags */
     0,                                          /* tp_doc */
-    0,                                          /* tp_traverse */
-    0,                                          /* tp_clear */
+    (traverseproc)_queue_traverse,                 /* tp_traverse */
+    (inquiry)_queue_clear,                         /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
     0,                                          /* tp_iter */
@@ -281,7 +308,10 @@ static PyTypeObject _queue_type = {
     (initproc)_queue_init,                      /* tp_init */
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_queue_new,                        /* tp_new */
-    PyObject_Del,                               /* tp_free */
+    /* Must match tp_alloc: PyType_GenericAlloc allocates (and tracks) a GC
+     * header for Py_TPFLAGS_HAVE_GC types, so freeing with PyObject_Del
+     * corrupts the heap. */
+    PyObject_GC_Del,                            /* tp_free */
     0,                                          /* tp_is_gc */
     0,                                          /* tp_bases */
     0,                                          /* tp_mro */

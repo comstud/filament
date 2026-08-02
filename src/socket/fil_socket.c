@@ -190,7 +190,6 @@ static PyObject *_sock_ ## NAME SIG                                         \
         {                                                                   \
             goto out;                                                       \
         }                                                                   \
-        self->first_misses++;                                               \
         /* One ABSOLUTE deadline for the whole call, computed once here and \
          * reused by every retry below and by the classic fallback; moving  \
          * it inside the loop would let each spurious edge extend it. */    \
@@ -210,7 +209,7 @@ static PyObject *_sock_ ## NAME SIG                                         \
                         _FIL_FDWAIT_SLOT_ ## READ_OR_WRITE(self),           \
                         self->_sock_fd,                                     \
                         _FIL_FDWAIT_ISWR_ ## READ_OR_WRITE,                 \
-                        fdw_seq, ts, _SOCK_TIMEOUT);                        \
+                        fdw_seq, ts, _SOCK_TIMEOUT, NULL);                  \
                 if (err != 0)                                               \
                 {                                                           \
                     break;                                                  \
@@ -261,7 +260,6 @@ typedef struct _pyfil_socket {
     int family;
     int type;
     int proto;
-    int first_misses;
 
 #define PYFIL_SOCKET_FLAGS_TRY_WITHOUT_POLL 0x00000001
 #define PYFIL_SOCKET_FLAGS_DO_IN_BACKGROUND 0x00000002
@@ -652,6 +650,7 @@ static inline int _sock_init_from_sock_and_fileno(PyFilSocket *self, PyObject *_
 static inline int _sock_init_from_fileno(PyFilSocket *self, SOCKET_T fileno)
 {
     PyObject *_sock;
+    int err;
 
     _sock = _new_internal_socket(self->family, self->type, self->proto, fileno);
     if (_sock == NULL)
@@ -659,7 +658,11 @@ static inline int _sock_init_from_fileno(PyFilSocket *self, SOCKET_T fileno)
         return -1;
     }
 
-    return _sock_init_from_sock_and_fileno(self, _sock, fileno);
+    /* _sock_init_from_sock_and_fileno takes its own reference; ours would
+     * otherwise pin the internal socket (and its fd) forever. */
+    err = _sock_init_from_sock_and_fileno(self, _sock, fileno);
+    Py_DECREF(_sock);
+    return err;
 }
 
 static inline PyObject *_create_new_socket_from_fileno(int family, int type, int proto, SOCKET_T fileno)
@@ -1229,7 +1232,7 @@ FIL_CPROXY_VARG(ioctl)
 
 #endif
 
-static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, int flags)
+static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, Py_ssize_t len, int flags)
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
@@ -1259,8 +1262,6 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
             return outlen;
         }
 
-        self->first_misses++;
-
         /* One ABSOLUTE deadline for the whole call, computed once here and
          * reused by every retry below AND by the classic fallback further
          * down.  It must not be recomputed inside the retry loop: each
@@ -1279,12 +1280,28 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
         if ((iothr = fil_iothread_get()) != NULL)
         {
             int werr;
+            /* Ask the io thread to perform the recv itself, into this same
+             * buffer, before it wakes us: it holds no GIL, so it pays the bare
+             * syscall where we would additionally pay a GIL drop + reacquire
+             * around it.  'buf' stays valid throughout because we are parked --
+             * the PyBytes (or the caller's Py_buffer) cannot be released until
+             * this call returns.  If the io thread does not manage it, 'done'
+             * stays 0 and we retry the syscall ourselves exactly as before. */
+            FilIOEagerIO eager;
+
+            eager.buffer = buf;
+            eager.buf_sz = (size_t)len;
+            eager.flags = flags;
+            eager.is_send = 0;
+            eager.done = 0;
+            eager.result = -1;
+            eager.errn = 0;
 
             for (;;)
             {
                 werr = fil_iothread_wait_cached(iothr, &self->fdwait_read,
                                                 self->_sock_fd, 0, fdw_seq,
-                                                ts, _SOCK_TIMEOUT);
+                                                ts, _SOCK_TIMEOUT, &eager);
                 if (werr != 0)
                 {
                     break;
@@ -1292,11 +1309,19 @@ static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, i
 
                 fdw_seq = fil_iothread_fdwait_seq(self->fdwait_read);
 
-                Py_BEGIN_ALLOW_THREADS
+                if (eager.done)
+                {
+                    outlen = eager.result;
+                    errno = eager.errn;
+                }
+                else
+                {
+                    Py_BEGIN_ALLOW_THREADS
 
-                outlen = recv(self->_sock_fd, buf, len, flags);
+                    outlen = recv(self->_sock_fd, buf, len, flags);
 
-                Py_END_ALLOW_THREADS
+                    Py_END_ALLOW_THREADS
+                }
 
                 if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
                 {
@@ -1401,11 +1426,12 @@ the remote end is closed and all data is read, return the empty string.");
 /* s.recv(nbytes [,flags]) method */
 static PyObject *_sock_recv(PyFilSocket *self, PyObject *args)
 {
-    int recvlen, flags = 0;
+    Py_ssize_t recvlen;
+    int flags = 0;
     ssize_t outlen;
     PyObject *buf;
 
-    if (!PyArg_ParseTuple(args, "i|i:recv", &recvlen, &flags))
+    if (!PyArg_ParseTuple(args, "n|i:recv", &recvlen, &flags))
     {
         return NULL;
     }
@@ -1457,13 +1483,17 @@ static PyObject *_sock_recv_into(PyFilSocket *self, PyObject *args, PyObject *kw
 {
     static char *kwlist[] = {"buffer", "nbytes", "flags", 0};
 
-    int recvlen = 0, flags = 0;
+    Py_ssize_t recvlen = 0;
+    int flags = 0;
     ssize_t readlen;
     Py_buffer buf;
     Py_ssize_t buflen;
 
-    /* Get the buffer's memory */
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "w*|ii:recv_into", kwlist,
+    /* Get the buffer's memory.  'recvlen' stays Py_ssize_t all the way into
+     * _sock_recv_common: an 'int' here silently truncated a >=2GB buffer's
+     * length, turning the negative-size check into a no-op and handing the
+     * kernel (and the io thread's eager recv) a garbage size. */
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "w*|ni:recv_into", kwlist,
                                      &buf, &recvlen, &flags))
     {
         return NULL;
@@ -1546,7 +1576,7 @@ FIL_CPROXY_POLL(
  * socket with settimeout() set could block forever.  Keeping the flag explicit
  * closes that and lets every segment use the fast path, not just the first.
  */
-static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, int flags, struct timespec *ts_buf, struct timespec **tsptr, int *ts_valid)
+static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, Py_ssize_t len, int flags, struct timespec *ts_buf, struct timespec **tsptr, int *ts_valid)
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
@@ -1574,8 +1604,6 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
             return outlen;
         }
 
-        self->first_misses++;
-
         /* One ABSOLUTE deadline, computed at the first point we actually have
          * to block and reused by every retry, by the classic fallback, and by
          * every later sendall() segment; see _sock_recv_common for why it must
@@ -1594,12 +1622,28 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
         if ((iothr = fil_iothread_get()) != NULL)
         {
             int werr;
+            /* Same deal as the recv side: let the io thread issue the send
+             * itself, from this same buffer, before it wakes us.  Nothing is
+             * copied and nothing is buffered -- we stay parked until the call
+             * has been made, so 'buf' (the caller's Py_buffer) is alive
+             * throughout and send() still reports synchronously how many bytes
+             * reached the kernel, which is what sendall() and settimeout()
+             * both depend on. */
+            FilIOEagerIO eager;
+
+            eager.buffer = buf;
+            eager.buf_sz = (size_t)len;
+            eager.flags = flags;
+            eager.is_send = 1;
+            eager.done = 0;
+            eager.result = -1;
+            eager.errn = 0;
 
             for (;;)
             {
                 werr = fil_iothread_wait_cached(iothr, &self->fdwait_write,
                                                 self->_sock_fd, 1, fdw_seq,
-                                                *tsptr, _SOCK_TIMEOUT);
+                                                *tsptr, _SOCK_TIMEOUT, &eager);
                 if (werr != 0)
                 {
                     break;
@@ -1607,11 +1651,19 @@ static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, i
 
                 fdw_seq = fil_iothread_fdwait_seq(self->fdwait_write);
 
-                Py_BEGIN_ALLOW_THREADS
+                if (eager.done)
+                {
+                    outlen = eager.result;
+                    errno = eager.errn;
+                }
+                else
+                {
+                    Py_BEGIN_ALLOW_THREADS
 
-                outlen = send(self->_sock_fd, buf, len, flags);
+                    outlen = send(self->_sock_fd, buf, len, flags);
 
-                Py_END_ALLOW_THREADS
+                    Py_END_ALLOW_THREADS
+                }
 
                 if ((outlen >= 0) || !FIL_IS_EAGAIN(errno))
                 {
@@ -1750,7 +1802,7 @@ static PyObject *_sock_sendall(PyFilSocket *self, PyObject *args)
 {
     Py_buffer pbuf;
     int flags = 0;
-    int len;
+    Py_ssize_t len;
     char *buf;
     struct timespec ts_buf, *ts = NULL;
     int ts_valid = 0;
@@ -1937,7 +1989,6 @@ static PyMemberDef _sock_memberlist[] = {
     { "type", T_INT, offsetof(PyFilSocket, type), READONLY, "the socket type" },
     { "proto", T_INT, offsetof(PyFilSocket, proto), READONLY, "the socket protocol" },
     { "_sock", T_OBJECT, offsetof(PyFilSocket, _sock), READONLY, "the real _socket.socket that filament has wrapped" },
-    { "fil_first_misses", T_INT, offsetof(PyFilSocket, first_misses), READONLY, "how many misses on try before poll" },
     { NULL, },
 };
 
@@ -2064,9 +2115,12 @@ static PyObject *_socket_socketpair(PyObject *self, PyObject *args)
         return NULL;
     }
 
-    /* steals the references; cannot fail */
-    PyTuple_SET_ITEM(res, 0, sock1);
-    PyTuple_SET_ITEM(res, 1, sock2);
+    /* PyTuple_SetItem, not SET_ITEM: the slots still hold the underlying
+     * _socket.socket objects, and the raw macro would overwrite those
+     * references without releasing them -- pinning both internal sockets
+     * (and their fds) forever. */
+    PyTuple_SetItem(res, 0, sock1);
+    PyTuple_SetItem(res, 1, sock2);
 
     return res;
 }

@@ -14,27 +14,27 @@
         "result": {
           "k": 100000,
           "tracked_spawn_per_sec": {
-            "per_sec_median": 246952.58412125355,
-            "per_sec_min": 241337.3991906749,
-            "per_sec_max": 260402.5479672984,
+            "per_sec_median": 245717.6010620936,
+            "per_sec_min": 245527.607811061,
+            "per_sec_max": 260205.12125897102,
             "reps": 5,
             "samples": [
-              246952.6,
-              245080.7,
-              260402.5,
-              257668.2,
-              241337.4
+              245527.6,
+              245717.6,
+              260205.1,
+              257208.0,
+              245713.6
             ]
           },
           "fireforget_spawn_n_per_sec": {
-            "per_sec_median": 232002.7976760589,
-            "per_sec_min": 222732.3451204079,
-            "per_sec_max": 235528.53171362172,
+            "per_sec_median": 223025.67071148855,
+            "per_sec_min": 222687.49904190502,
+            "per_sec_max": 232827.34858065963,
             "reps": 3,
             "samples": [
-              235528.5,
-              232002.8,
-              222732.3
+              232827.3,
+              222687.5,
+              223025.7
             ]
           },
           "fireforget_error": null
@@ -52,27 +52,27 @@
         "result": {
           "k": 100000,
           "tracked_spawn_per_sec": {
-            "per_sec_median": 90369.84647724747,
-            "per_sec_min": 89677.87201728755,
-            "per_sec_max": 96447.71352731003,
+            "per_sec_median": 90785.14632206701,
+            "per_sec_min": 89021.21318792988,
+            "per_sec_max": 95760.33315336455,
             "reps": 5,
             "samples": [
-              90369.8,
-              93670.9,
-              90196.1,
-              96447.7,
-              89677.9
+              90785.1,
+              92567.1,
+              89021.2,
+              95760.3,
+              90549.5
             ]
           },
           "fireforget_spawn_n_per_sec": {
-            "per_sec_median": 195403.65504006742,
-            "per_sec_min": 193340.64407460202,
-            "per_sec_max": 201504.28428687487,
+            "per_sec_median": 196819.71733257335,
+            "per_sec_min": 193758.1201419502,
+            "per_sec_max": 201320.35266547484,
             "reps": 3,
             "samples": [
-              195403.7,
-              193340.6,
-              201504.3
+              196819.7,
+              193758.1,
+              201320.4
             ]
           },
           "fireforget_error": null
@@ -90,27 +90,27 @@
         "result": {
           "k": 100000,
           "tracked_spawn_per_sec": {
-            "per_sec_median": 100594.09868794595,
-            "per_sec_min": 91426.64008060291,
-            "per_sec_max": 103657.0366286787,
+            "per_sec_median": 100896.6933308273,
+            "per_sec_min": 91217.0895595561,
+            "per_sec_max": 103725.34805393107,
             "reps": 5,
             "samples": [
-              103657.0,
-              100594.1,
-              91426.6,
-              96448.8,
-              101775.4
+              103725.3,
+              101983.8,
+              91217.1,
+              98517.6,
+              100896.7
             ]
           },
           "fireforget_spawn_n_per_sec": {
-            "per_sec_median": 173833.94812252748,
-            "per_sec_min": 158857.13374240434,
-            "per_sec_max": 174506.98817561078,
+            "per_sec_median": 169996.33011047778,
+            "per_sec_min": 161052.77570061915,
+            "per_sec_max": 172598.82114007062,
             "reps": 3,
             "samples": [
-              158857.1,
-              173833.9,
-              174507.0
+              161052.8,
+              169996.3,
+              172598.8
             ]
           },
           "fireforget_error": null
@@ -132,16 +132,16 @@
           "iters_each": 10000,
           "total_switches": 1000000,
           "switches_per_sec": {
-            "per_sec_median": 2203276.6137932995,
-            "per_sec_min": 2180736.515876598,
-            "per_sec_max": 2212119.8346775016,
+            "per_sec_median": 2186745.2546093715,
+            "per_sec_min": 2167599.9933555867,
+            "per_sec_max": 2210291.6815667255,
             "reps": 5,
             "samples": [
-              2188591.1,
-              2180736.5,
-              2203276.6,
-              2212119.8,
-              2205583.1
+              2186745.3,
+              2187376.6,
+              2172804.9,
+              2167600.0,
+              2210291.7
             ]
           }
         },
@@ -160,16 +160,16 @@
           "iters_each": 10000,
           "total_switches": 1000000,
           "switches_per_sec": {
-            "per_sec_median": 920910.6431610093,
-            "per_sec_min": 912846.5831670198,
-            "per_sec_max": 925337.0371573931,
+            "per_sec_median": 956011.592121243,
+            "per_sec_min": 944622.6424633126,
+            "per_sec_max": 959569.8155036628,
             "reps": 5,
             "samples": [
-              912846.6,
-              916408.5,
-              925337.0,
-              920910.6,
-              922175.8
+              959569.8,
+              956011.6,
+              944622.6,
+              947975.2,
+              957195.4
             ]
           }
         },
@@ -188,16 +188,16 @@
           "iters_each": 10000,
           "total_switches": 1000000,
           "switches_per_sec": {
-            "per_sec_median": 478773.85876933153,
-            "per_sec_min": 478333.30484854913,
-            "per_sec_max": 483530.77966294455,
+            "per_sec_median": 485015.44797313574,
+            "per_sec_min": 484104.0072976402,
+            "per_sec_max": 489394.9516154108,
             "reps": 5,
             "samples": [
-              479780.6,
-              478333.3,
-              483530.8,
-              478771.6,
-              478773.9
+              484358.8,
+              489395.0,
+              484104.0,
+              485015.4,
+              486709.0
             ]
           }
         },
@@ -216,31 +216,31 @@
         "result": {
           "uncontended_ops": 1000000,
           "uncontended_ops_per_sec": {
-            "per_sec_median": 20115231.306628972,
-            "per_sec_min": 19961095.42305302,
-            "per_sec_max": 20184476.830312725,
+            "per_sec_median": 20119850.74582887,
+            "per_sec_min": 20021240.138342462,
+            "per_sec_max": 20201873.691721756,
             "reps": 5,
             "samples": [
-              20184476.8,
-              19974369.3,
-              19961095.4,
-              20115231.3,
-              20180763.5
+              20087676.3,
+              20119850.7,
+              20021240.1,
+              20201873.7,
+              20127628.9
             ]
           },
           "contended_greenthreads": 50,
           "contended_total_ops": 200000,
           "contended_ops_per_sec": {
-            "per_sec_median": 19171395.069814198,
-            "per_sec_min": 19082767.689564258,
-            "per_sec_max": 19279749.055995263,
+            "per_sec_median": 20424089.941006206,
+            "per_sec_min": 19159679.483556386,
+            "per_sec_max": 20480245.364267718,
             "reps": 5,
             "samples": [
-              19171395.1,
-              19138109.5,
-              19268505.9,
-              19279749.1,
-              19082767.7
+              19159679.5,
+              20424089.9,
+              20465003.8,
+              20480245.4,
+              20278258.3
             ]
           }
         },
@@ -257,31 +257,31 @@
         "result": {
           "uncontended_ops": 1000000,
           "uncontended_ops_per_sec": {
-            "per_sec_median": 7689605.0329927765,
-            "per_sec_min": 7622506.930451713,
-            "per_sec_max": 7701112.552363484,
+            "per_sec_median": 7678952.577028707,
+            "per_sec_min": 7450280.737323992,
+            "per_sec_max": 7791091.845635021,
             "reps": 5,
             "samples": [
-              7689605.0,
-              7692233.2,
-              7622506.9,
-              7686552.4,
-              7701112.6
+              7450280.7,
+              7791091.8,
+              7678952.6,
+              7660374.8,
+              7767525.2
             ]
           },
           "contended_greenthreads": 50,
           "contended_total_ops": 200000,
           "contended_ops_per_sec": {
-            "per_sec_median": 7168333.912114813,
-            "per_sec_min": 7133320.6566104535,
-            "per_sec_max": 7575209.520955623,
+            "per_sec_median": 7646232.079268584,
+            "per_sec_min": 7613866.707430266,
+            "per_sec_max": 7685404.141060593,
             "reps": 5,
             "samples": [
-              7575209.5,
-              7168333.9,
-              7133320.7,
-              7150793.2,
-              7335223.9
+              7685404.1,
+              7634681.1,
+              7674947.6,
+              7613866.7,
+              7646232.1
             ]
           }
         },
@@ -298,31 +298,31 @@
         "result": {
           "uncontended_ops": 1000000,
           "uncontended_ops_per_sec": {
-            "per_sec_median": 5697988.230785011,
-            "per_sec_min": 5596371.572224651,
-            "per_sec_max": 5896493.356217486,
+            "per_sec_median": 5835854.023024891,
+            "per_sec_min": 5728762.295749812,
+            "per_sec_max": 5910851.101074743,
             "reps": 5,
             "samples": [
-              5648989.3,
-              5873128.5,
-              5697988.2,
-              5596371.6,
-              5896493.4
+              5728762.3,
+              5853515.8,
+              5763251.7,
+              5910851.1,
+              5835854.0
             ]
           },
           "contended_greenthreads": 50,
           "contended_total_ops": 200000,
           "contended_ops_per_sec": {
-            "per_sec_median": 6073384.275201055,
-            "per_sec_min": 6041878.068303044,
-            "per_sec_max": 6089924.433223811,
+            "per_sec_median": 5740193.836261228,
+            "per_sec_min": 5716122.544219602,
+            "per_sec_max": 5784563.534598468,
             "reps": 5,
             "samples": [
-              6041878.1,
-              6073384.3,
-              6063402.8,
-              6089924.4,
-              6077367.1
+              5728779.9,
+              5716122.5,
+              5740193.8,
+              5784563.5,
+              5748473.5
             ]
           }
         },
@@ -341,16 +341,16 @@
         "result": {
           "items": 200000,
           "items_per_sec": {
-            "per_sec_median": 8313419.574217377,
-            "per_sec_min": 8129672.502415665,
-            "per_sec_max": 8351608.391928454,
+            "per_sec_median": 8628851.358792003,
+            "per_sec_min": 8559372.81639825,
+            "per_sec_max": 8710015.746692725,
             "reps": 5,
             "samples": [
-              8129672.5,
-              8297652.0,
-              8313419.6,
-              8314835.6,
-              8351608.4
+              8559372.8,
+              8623416.8,
+              8667440.8,
+              8628851.4,
+              8710015.7
             ]
           }
         },
@@ -367,16 +367,16 @@
         "result": {
           "items": 200000,
           "items_per_sec": {
-            "per_sec_median": 6155917.9524909835,
-            "per_sec_min": 6095722.5948934695,
-            "per_sec_max": 6181135.963227689,
+            "per_sec_median": 6313241.71632714,
+            "per_sec_min": 6238315.051826395,
+            "per_sec_max": 6349987.912754021,
             "reps": 5,
             "samples": [
-              6118966.3,
-              6155918.0,
-              6095722.6,
-              6161298.9,
-              6181136.0
+              6290610.0,
+              6238315.1,
+              6323661.0,
+              6313241.7,
+              6349987.9
             ]
           }
         },
@@ -393,16 +393,16 @@
         "result": {
           "items": 200000,
           "items_per_sec": {
-            "per_sec_median": 2647470.703462108,
-            "per_sec_min": 2616335.1801861143,
-            "per_sec_max": 2674776.6966183865,
+            "per_sec_median": 2633108.125109361,
+            "per_sec_min": 2601182.487636906,
+            "per_sec_max": 2656482.73895216,
             "reps": 5,
             "samples": [
-              2668623.3,
-              2674776.7,
-              2617246.6,
-              2647470.7,
-              2616335.2
+              2656482.7,
+              2625067.8,
+              2633108.1,
+              2642188.6,
+              2601182.5
             ]
           }
         },
@@ -422,16 +422,16 @@
           "items": 100000,
           "maxsize": 100,
           "items_per_sec": {
-            "per_sec_median": 3457173.0751670687,
-            "per_sec_min": 3379688.2368387836,
-            "per_sec_max": 3489975.533480392,
+            "per_sec_median": 3122884.5379977617,
+            "per_sec_min": 3087433.1725123036,
+            "per_sec_max": 3187270.702303175,
             "reps": 5,
             "samples": [
-              3388928.9,
-              3457173.1,
-              3467196.0,
-              3489975.5,
-              3379688.2
+              3122884.5,
+              3111423.7,
+              3187270.7,
+              3087433.2,
+              3137845.4
             ]
           }
         },
@@ -443,7 +443,7 @@
         "python": "3.11.15",
         "greenlet": "3.3.2",
         "status": "error",
-        "error": "LoopExit: This operation would block forever\n\tHub: <Hub '' at 0x7f7fd0af2bb0 epoll default pending=0 ref=0 fileno=4 thread_ident=0x7f7fd105b740>\n\tHandles:\n[]",
+        "error": "LoopExit: This operation would block forever\n\tHub: <Hub '' at 0x7f56886bbb50 epoll default pending=0 ref=0 fileno=4 thread_ident=0x7f5688cbb740>\n\tHandles:\n[]",
         "lib_version": "26.7.0",
         "result": null,
         "log_mode": "naive"
@@ -468,19 +468,19 @@
         "result": {
           "calls": 3000,
           "calls_per_sec": {
-            "per_sec_median": 135330.26675738458,
-            "per_sec_min": 98183.57437815366,
-            "per_sec_max": 255271.96143750366,
+            "per_sec_median": 102134.17190103495,
+            "per_sec_min": 99765.93917902258,
+            "per_sec_max": 104535.98001681967,
             "reps": 5,
             "samples": [
-              98711.9,
-              98183.6,
-              135330.3,
-              250274.7,
-              255272.0
+              104439.8,
+              104536.0,
+              102134.2,
+              99765.9,
+              101424.3
             ]
           },
-          "mean_latency_us": 7.39
+          "mean_latency_us": 9.79
         },
         "log_mode": "naive"
       },
@@ -495,19 +495,19 @@
         "result": {
           "calls": 3000,
           "calls_per_sec": {
-            "per_sec_median": 56239.49025095949,
-            "per_sec_min": 54448.548996446596,
-            "per_sec_max": 56434.517938398334,
+            "per_sec_median": 56486.74051951041,
+            "per_sec_min": 56070.02088839586,
+            "per_sec_max": 56723.72503316883,
             "reps": 5,
             "samples": [
-              56291.5,
-              56229.6,
-              56239.5,
-              56434.5,
-              54448.5
+              56542.0,
+              56070.0,
+              56486.7,
+              56723.7,
+              56399.7
             ]
           },
-          "mean_latency_us": 17.78
+          "mean_latency_us": 17.7
         },
         "log_mode": "naive"
       },
@@ -522,19 +522,19 @@
         "result": {
           "calls": 3000,
           "calls_per_sec": {
-            "per_sec_median": 20279.058775259524,
-            "per_sec_min": 19972.805294401314,
-            "per_sec_max": 21280.94475489212,
+            "per_sec_median": 20075.614529523245,
+            "per_sec_min": 19947.161429391963,
+            "per_sec_max": 21306.88702929097,
             "reps": 5,
             "samples": [
-              20279.1,
-              20188.0,
-              19972.8,
-              20360.1,
-              21280.9
+              21306.9,
+              20075.6,
+              19978.0,
+              19947.2,
+              20126.1
             ]
           },
-          "mean_latency_us": 49.31
+          "mean_latency_us": 49.81
         },
         "log_mode": "naive"
       }
@@ -553,22 +553,22 @@
             "concurrency": 100,
             "roundtrips_each": 100,
             "total_requests": 10000,
-            "requests_per_sec_median": 96048.56860881444,
-            "requests_per_sec_min": 60298.47734365434,
-            "requests_per_sec_max": 97155.76404265531,
-            "p50_ms": 0.982,
-            "p99_ms": 1.533,
+            "requests_per_sec_median": 90554.06544051744,
+            "requests_per_sec_min": 62939.76840677926,
+            "requests_per_sec_max": 91048.2357792171,
+            "p50_ms": 1.051,
+            "p99_ms": 1.43,
             "reps": 3
           },
           "c1000_r20": {
             "concurrency": 1000,
             "roundtrips_each": 20,
             "total_requests": 20000,
-            "requests_per_sec_median": 75876.4143176585,
-            "requests_per_sec_min": 62458.250366138454,
-            "requests_per_sec_max": 80123.48920665604,
-            "p50_ms": 9.906,
-            "p99_ms": 19.947,
+            "requests_per_sec_median": 110987.88308403958,
+            "requests_per_sec_min": 61332.73474175236,
+            "requests_per_sec_max": 113595.78349024437,
+            "p50_ms": 6.412,
+            "p99_ms": 9.539,
             "reps": 3
           }
         },
@@ -587,22 +587,22 @@
             "concurrency": 100,
             "roundtrips_each": 100,
             "total_requests": 10000,
-            "requests_per_sec_median": 71191.63093771468,
-            "requests_per_sec_min": 70675.4837634138,
-            "requests_per_sec_max": 72578.77391346941,
-            "p50_ms": 1.334,
-            "p99_ms": 1.494,
+            "requests_per_sec_median": 72704.9504616562,
+            "requests_per_sec_min": 71158.11214669475,
+            "requests_per_sec_max": 74754.34748531396,
+            "p50_ms": 1.353,
+            "p99_ms": 1.516,
             "reps": 3
           },
           "c1000_r20": {
             "concurrency": 1000,
             "roundtrips_each": 20,
             "total_requests": 20000,
-            "requests_per_sec_median": 60709.58774530006,
-            "requests_per_sec_min": 58234.31393681418,
-            "requests_per_sec_max": 61125.38764165659,
-            "p50_ms": 13.459,
-            "p99_ms": 34.424,
+            "requests_per_sec_median": 60165.7197311086,
+            "requests_per_sec_min": 59366.630540766,
+            "requests_per_sec_max": 60461.836035553024,
+            "p50_ms": 13.45,
+            "p99_ms": 15.759,
             "reps": 3
           }
         },
@@ -621,22 +621,22 @@
             "concurrency": 100,
             "roundtrips_each": 100,
             "total_requests": 10000,
-            "requests_per_sec_median": 52206.39004810829,
-            "requests_per_sec_min": 51649.59776439814,
-            "requests_per_sec_max": 52446.51452332109,
-            "p50_ms": 1.871,
-            "p99_ms": 2.752,
+            "requests_per_sec_median": 49206.9301894336,
+            "requests_per_sec_min": 48911.464113833215,
+            "requests_per_sec_max": 49923.70086136129,
+            "p50_ms": 1.953,
+            "p99_ms": 2.816,
             "reps": 3
           },
           "c1000_r20": {
             "concurrency": 1000,
             "roundtrips_each": 20,
             "total_requests": 20000,
-            "requests_per_sec_median": 38060.85435450817,
-            "requests_per_sec_min": 37466.83702465223,
-            "requests_per_sec_max": 38311.91503547266,
-            "p50_ms": 23.651,
-            "p99_ms": 43.739,
+            "requests_per_sec_median": 35907.088053973566,
+            "requests_per_sec_min": 35374.44981995767,
+            "requests_per_sec_max": 36048.4749022881,
+            "p50_ms": 21.893,
+            "p99_ms": 40.023,
             "reps": 3
           }
         },
@@ -654,7 +654,7 @@
         "lib_version": "filament(greenlet 3.3.2)",
         "result": {
           "status": "ok",
-          "msgs_per_sec": 40314.3,
+          "msgs_per_sec": 151771.6,
           "error": null,
           "label": "filament.tpool",
           "mode": "naive"
@@ -671,7 +671,7 @@
         "lib_version": "26.7.0",
         "result": {
           "status": "ok",
-          "msgs_per_sec": 136636.5,
+          "msgs_per_sec": 7206.6,
           "error": null,
           "label": "gevent.threadpool.ThreadPool",
           "mode": "naive"
@@ -681,20 +681,127 @@
       "gevent:workaround": {
         "framework": "gevent",
         "benchmark": "logging137",
-        "status": "deadlock",
-        "error": "timeout after 30s",
-        "result": null
+        "python": "3.11.15",
+        "greenlet": "3.3.2",
+        "status": "ok",
+        "error": null,
+        "lib_version": "26.7.0",
+        "result": {
+          "status": "ok",
+          "msgs_per_sec": 2209.2,
+          "error": null,
+          "label": "gevent.get_hub().threadpool + native locks",
+          "mode": "workaround"
+        },
+        "log_mode": "workaround"
       },
       "eventlet": {
         "framework": "eventlet",
         "benchmark": "logging137",
         "status": "deadlock",
-        "error": "timeout after 30s",
+        "error": "timeout after 45s",
         "result": null
+      }
+    },
+    "netecho": {
+      "filament": {
+        "framework": "filament",
+        "benchmark": "netecho",
+        "status": "ok",
+        "result": {
+          "c200": {
+            "requests_per_sec_mean": 185453.8313100499,
+            "requests_per_sec_min": 175941.2563590337,
+            "requests_per_sec_max": 197727.6440218117,
+            "p50_ms": 1.042,
+            "p99_ms": 1.323,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
+            "concurrency": 200
+          },
+          "c1000": {
+            "requests_per_sec_mean": 176815.00713183265,
+            "requests_per_sec_min": 168572.9610680443,
+            "requests_per_sec_max": 182822.2156200436,
+            "p50_ms": 5.695,
+            "p99_ms": 6.8,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
+            "concurrency": 1000
+          }
+        }
+      },
+      "gevent": {
+        "framework": "gevent",
+        "benchmark": "netecho",
+        "status": "ok",
+        "result": {
+          "c200": {
+            "requests_per_sec_mean": 107835.27068163452,
+            "requests_per_sec_min": 107350.58360009234,
+            "requests_per_sec_max": 108139.48334559506,
+            "p50_ms": 1.817,
+            "p99_ms": 2.068,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
+            "concurrency": 200
+          },
+          "c1000": {
+            "requests_per_sec_mean": 101421.03508993724,
+            "requests_per_sec_min": 100468.87703718347,
+            "requests_per_sec_max": 102651.07400696387,
+            "p50_ms": 9.701,
+            "p99_ms": 18.865,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
+            "concurrency": 1000
+          }
+        }
+      },
+      "eventlet": {
+        "framework": "eventlet",
+        "benchmark": "netecho",
+        "status": "ok",
+        "result": {
+          "c200": {
+            "requests_per_sec_mean": 75079.16805256497,
+            "requests_per_sec_min": 74197.61359064041,
+            "requests_per_sec_max": 76673.98404499902,
+            "p50_ms": 2.653,
+            "p99_ms": 5.072,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
+            "concurrency": 200
+          },
+          "c1000": {
+            "requests_per_sec_mean": 68486.8621127319,
+            "requests_per_sec_min": 67428.9344077021,
+            "requests_per_sec_max": 69791.06725488942,
+            "p50_ms": 14.431,
+            "p99_ms": 29.266,
+            "reps": 3,
+            "errors": 0,
+            "gomaxprocs": 3,
+            "generator": "scorbunny.local",
+            "concurrency": 1000
+          }
+        }
       }
     }
   },
-  "measured_utc": "2026-07-29",
-  "commit": "",
-  "host": "AMD Ryzen Threadripper PRO 5975WX, 32c/64t"
+  "measured_utc": "2026-08-01",
+  "commit": "a25ac2d",
+  "host": "AMD Ryzen Threadripper PRO 5975WX, 32c/64t",
+  "free_threaded": false,
+  "gil_enabled": true
 }

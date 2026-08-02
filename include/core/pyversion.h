@@ -102,6 +102,38 @@ extern int _Py_dup(int fd);
  * unit) and assigns the created module to `mod`.
  * ------------------------------------------------------------------
  */
+/*
+ * Free-threading (PEP 703): tell the runtime this extension does not rely on
+ * the GIL.  Without it, importing any single-phase-init module makes CPython
+ * silently switch the GIL back on for the whole process, so a free-threading
+ * build behaves exactly like a normal one and the parallelism is unavailable
+ * unless the user sets PYTHON_GIL=0 by hand.
+ *
+ * This is an assertion about the C code, not a request, and it is only made
+ * because the state the GIL used to serialise is now locked explicitly: the
+ * waiter freelist is per-thread, and the fifo queue, Message, Lock/RLock,
+ * Semaphore and Condition each hold their own mutex across the state test and
+ * the decision to wait.  See the comments on those types.
+ *
+ * The vendored greenlet declares the same thing for _fil_greenlet
+ * (vendor/greenlet/greenlet.cpp), which is why that module alone never
+ * re-enabled the GIL.
+ *
+ * Compiled out entirely on a normal build -- PyUnstable_Module_SetGIL only
+ * exists when Py_GIL_DISABLED is defined.
+ */
+#ifdef Py_GIL_DISABLED
+#  define _FIL_MODULE_DECLARE_GIL_NOT_USED(mod)                           \
+    do {                                                                  \
+        if ((mod) != NULL)                                                \
+        {                                                                 \
+            PyUnstable_Module_SetGIL((mod), Py_MOD_GIL_NOT_USED);         \
+        }                                                                 \
+    } while (0)
+#else
+#  define _FIL_MODULE_DECLARE_GIL_NOT_USED(mod) ((void)0)
+#endif
+
 #define _FIL_MODULE_INIT_FN_NAME(name)   PyMODINIT_FUNC PyInit_##name(void)
 #define _FIL_MODULE_INIT_ERROR           NULL
 #define _FIL_MODULE_INIT_SUCCESS(mod)    (mod)
@@ -117,7 +149,8 @@ extern int _Py_dup(int fd);
         NULL,     /* m_clear */                                           \
         NULL      /* m_free */                                            \
     };                                                                    \
-    (mod) = PyModule_Create(&_fil_module_def)
+    (mod) = PyModule_Create(&_fil_module_def);                            \
+    _FIL_MODULE_DECLARE_GIL_NOT_USED(mod)
 
 #else  /* Python 2 */
 

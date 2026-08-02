@@ -79,8 +79,26 @@ static int _queue_init(PyFilQueue *self, PyObject *args, PyObject *kwargs)
     return 0;
 }
 
+/*
+ * GC support.  A queued item routinely closes a cycle back to the queue --
+ * the ubiquitous worker pattern hands tasks that carry their reply queue --
+ * and without a traverse the collector cannot see through the ring, so the
+ * whole cycle (queue, items and everything they pin) leaks.
+ */
+static int _queue_traverse(PyFilQueue *self, visitproc visit, void *arg)
+{
+    return fil_wfifoq_traverse(&(self->queue), visit, arg);
+}
+
+static int _queue_clear(PyFilQueue *self)
+{
+    fil_wfifoq_clear_items(&(self->queue));
+    return 0;
+}
+
 static void _queue_dealloc(PyFilQueue *self)
 {
+    PyObject_GC_UnTrack(self);
     fil_wfifoq_deinit(&(self->queue));
     /* Respect tp_free: Python subclass instances are GC-allocated, and
      * PyObject_Del on them frees the wrong pointer (heap corruption). */
@@ -120,8 +138,16 @@ static PyObject *_queue_get_common(PyFilQueue *self, PyObject *block, PyObject *
 {
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    /* IsTrue can raise (a __bool__ that throws); carrying on with the
+     * exception set ends in "returned a result with an exception set". */
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -174,13 +200,69 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
 }
 #endif
 
+/*
+ * unfinished_tasks is counted BEFORE the item can be seen, and rolled back if
+ * it never went in.
+ *
+ * Counting afterwards looks equivalent and is not: fil_wfifoq_put*() publishes
+ * the item AND signals a waiting getter, and for a native (non-greenthread)
+ * waiter that signal releases the GIL around pthread_cond_signal.  The woken
+ * consumer therefore runs before the increment does -- it takes the item and
+ * calls task_done(), which decrements a count that was never incremented.
+ * unfinished_tasks underflows into "task_done() called too many times", the
+ * consumer dies on that ValueError, whatever it had left to consume is
+ * stranded, and join() waits for a count that can no longer reach zero.
+ *
+ * A NULL return means the item was not enqueued -- both put paths enqueue and
+ * signal only on success -- so the rollback cannot race a task_done().
+ *
+ * Written out at each call site rather than shared: a helper taking a
+ * "nowait" flag cost 2.7% of queue throughput and 4KB of text, because the
+ * branch keeps both put variants live in every caller.
+ */
+
+/*
+ * Roll back the pre-counted task for a put that never enqueued.
+ *
+ * If the rollback is what brings the count to zero, task_done_waiters must be
+ * woken here: no task_done() is coming for a count that is already zero, so a
+ * join()er that parked while this doomed put held the count up would sleep
+ * forever.  Concretely: queue full, join() parked, a second putter parks; a
+ * consumer drains the queue and task_done()s everything (join re-checks, sees
+ * the doomed put's count, re-parks); the parked putter is then killed and its
+ * rollback is the transition to zero.  The put is failing with an exception
+ * pending and signaling can raise (fil_scheduler_add_event_ref allocates), so
+ * hold the caller's exception out of the way.  Cold path -- only runs when a
+ * put fails -- so sharing it costs nothing.
+ */
+static void _queue_uncount_task(PyFilQueue *self)
+{
+    FIL_WFIFOQ_LOCK(&(self->queue));
+    if (--self->unfinished_tasks == 0 &&
+        !fil_waiterlist_empty(self->task_done_waiters))
+    {
+        PyObject *exc_type, *exc_value, *exc_tb;
+
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+        fil_waiterlist_signal_all(self->task_done_waiters);
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+    }
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
+}
+
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
 static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
 {
-    PyObject *res = fil_wfifoq_put_nowait(&(self->queue), item);
-    if (res != NULL)
+    PyObject *res;
+
+    FIL_WFIFOQ_LOCK(&(self->queue));
+    self->unfinished_tasks++;
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
+
+    res = fil_wfifoq_put_nowait(&(self->queue), item);
+    if (res == NULL)
     {
-        self->unfinished_tasks++;
+        _queue_uncount_task(self);
     }
     return res;
 }
@@ -191,8 +273,14 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
     PyObject *res;
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -202,7 +290,20 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
 
     if (timeout_dbl == 0)
     {
-        return fil_wfifoq_put_nowait(&(self->queue), item);
+        /* put(item, block=False) went straight to the non-blocking put and
+         * never counted the task at all, so a later task_done() for it raised
+         * "called too many times" -- while put_nowait(item), which lands in
+         * the same place, counted it correctly. */
+        FIL_WFIFOQ_LOCK(&(self->queue));
+        self->unfinished_tasks++;
+        FIL_WFIFOQ_UNLOCK(&(self->queue));
+
+        res = fil_wfifoq_put_nowait(&(self->queue), item);
+        if (res == NULL)
+        {
+            _queue_uncount_task(self);
+        }
+        return res;
     }
 
     if (fil_timespec_from_double_interval(timeout_dbl, &tsbuf, &ts))
@@ -210,10 +311,14 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
         return NULL;
     }
 
+    FIL_WFIFOQ_LOCK(&(self->queue));
+    self->unfinished_tasks++;
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
+
     res = fil_wfifoq_put(&(self->queue), item, ts);
-    if (res != NULL)
+    if (res == NULL)
     {
-        self->unfinished_tasks++;
+        _queue_uncount_task(self);
     }
     return res;
 }
@@ -266,14 +371,22 @@ Raises a ValueError if called more times than there were items\n\
 placed in the queue.\n");
 static PyObject *_queue_task_done(PyFilQueue *self)
 {
+    /* Shares the queue's own lock: unfinished_tasks and task_done_waiters
+     * belong to the same object as the fifo, and join()/task_done() never nest
+     * inside put()/get(), so one lock covers both without an ordering
+     * question.  A no-op on stock builds. */
+    FIL_WFIFOQ_LOCK(&(self->queue));
+
     if (self->unfinished_tasks == 0)
     {
+        FIL_WFIFOQ_UNLOCK(&(self->queue));
         PyErr_SetString(PyExc_ValueError, "task_done() called too many times");
         return NULL;
     }
 
     self->unfinished_tasks--;
     fil_waiterlist_signal_all(self->task_done_waiters);
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
 
     Py_RETURN_NONE;
 }
@@ -312,14 +425,19 @@ static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    FIL_WFIFOQ_LOCK(&(self->queue));
+
     while (self->unfinished_tasks)
     {
         /* We use full error just to distinguish a timeout from
          * a different type of exception.
          */
-        if (fil_waiterlist_wait(self->task_done_waiters, ts, _FIL_QUEUE_FULL_ERROR))
+        if (FIL_WFIFOQ_WAIT(&(self->queue), self->task_done_waiters, ts,
+                            _FIL_QUEUE_FULL_ERROR))
         {
             PyObject *exc_type, *exc_value, *exc_tb;
+
+            FIL_WFIFOQ_UNLOCK(&(self->queue));
 
             PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
             if (!PyErr_GivenExceptionMatches(exc_type, _FIL_QUEUE_FULL_ERROR))
@@ -335,6 +453,8 @@ static PyObject *_queue_join(PyFilQueue *self, PyObject *args, PyObject *kwargs)
             Py_RETURN_FALSE;
         }
     }
+
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
     Py_RETURN_TRUE;
 }
 
@@ -432,10 +552,10 @@ static PyTypeObject _queue_type = {
     PyObject_GenericGetAttr,                    /* tp_getattro */
     0,                                          /* tp_setattro */
     0,                                          /* tp_as_buffer */
-    FIL_DEFAULT_TPFLAGS,                        /* tp_flags */
+    FIL_DEFAULT_TPFLAGS|Py_TPFLAGS_HAVE_GC,     /* tp_flags */
     0,                                          /* tp_doc */
-    0,                                          /* tp_traverse */
-    0,                                          /* tp_clear */
+    (traverseproc)_queue_traverse,                 /* tp_traverse */
+    (inquiry)_queue_clear,                         /* tp_clear */
     0,                                          /* tp_richcompare */
     0,                                          /* tp_weaklistoffset */
     PyObject_SelfIter,                          /* tp_iter */
@@ -451,7 +571,10 @@ static PyTypeObject _queue_type = {
     (initproc)_queue_init,                      /* tp_init */
     PyType_GenericAlloc,                        /* tp_alloc */
     (newfunc)_queue_new,                        /* tp_new */
-    PyObject_Del,                               /* tp_free */
+    /* Must match tp_alloc: PyType_GenericAlloc allocates (and tracks) a GC
+     * header for Py_TPFLAGS_HAVE_GC types, so freeing with PyObject_Del
+     * corrupts the heap. */
+    PyObject_GC_Del,                            /* tp_free */
     0,                                          /* tp_is_gc */
     0,                                          /* tp_bases */
     0,                                          /* tp_mro */

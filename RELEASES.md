@@ -1,5 +1,226 @@
 # Release notes
 
+## 0.9.5a1 (2026-08-02)
+
+**Performance**
+
+- The io thread performs a blocked socket `recv()` into the waiting
+  greenthread's own buffer before waking it, and issues a blocked `send()` from
+  the caller's buffer the same way. The wakeup hands back data rather than mere
+  readiness, and the woken side does not re-enter the kernel at all.
+
+  This restores something the original design had and the edge-triggered work
+  quietly dropped: the kernel-to-user copy used to happen on the io thread with
+  the GIL released, while Python carried on running whatever greenthreads were
+  already scheduled. When the cached edge-triggered path went in it went in as a
+  *readiness* signal and the syscall moved back onto the calling thread as a
+  side effect. The cached path keeps its cheap persistent event; it just
+  delivers bytes again.
+
+  The syscall count does not change -- *which thread pays* does. On the calling
+  thread every `recv` is bracketed by a GIL drop and reacquire, and that thread
+  is the saturated one. Echo gains **+9.7% to +88%** depending on payload and
+  concurrency, with p99 7-47% better. That is the ceiling, not the expectation:
+  the win scales with how thin the Python layer above the socket is, so a locust
+  `FastPingUser` @1000 users sees **+11.6%** (1.18x -> 1.32x gevent) and a bottle
+  WSGI handler sees nothing measurable. Eager `send` is a wash on loopback --
+  the kernel autotunes `SO_SNDBUF` to megabytes there, so it never arms -- and
+  worth **+33%** on bulk transfer (8 GB in 4 MB blocks, 9.4 -> 12.5 GB/s, main
+  thread CPU per MB -25%).
+
+  Nothing is speculatively read and nothing is buffered. The io thread issues
+  exactly the call the parked greenthread asked for, with its length and flags,
+  into its buffer -- so `recv_into` keeps its single copy, `MSG_PEEK` still does
+  not consume, and TCP backpressure stays in the kernel. If the io thread cannot
+  complete the call it reports nothing and the caller retries as before.
+  `accept`, `recvfrom` and all TLS are untouched.
+
+  This corrects the last paragraph of the 0.9.4 note below: handing the syscall
+  to the io thread is not a handoff, because it already has the edge and already
+  does the wakeup. The earlier comparison only looked otherwise because the one
+  configuration that then read on the io thread was the classic path, which also
+  pays ~3 us of per-operation registration churn.
+
+**Bug fixes**
+
+- `Queue.task_done()` could raise `ValueError: task_done() called too many
+  times` for a task that really had been queued, and `Queue.join()` could then
+  wait forever. Two faults, both older than 0.9.4: `put(item, block=False)` went
+  straight to the non-blocking put and never counted the task, and
+  `unfinished_tasks` was incremented *after* the item was already visible to a
+  waiting getter -- so a native consumer could take it and call `task_done()`
+  before the producer's increment ran. About one run in four with native
+  producer and consumer threads. The task is now counted before the item can be
+  seen, and rolled back if the put fails.
+
+- A blocked read or write on a descriptor with more than one waiter could hang
+  forever, ignoring `settimeout()` entirely. The io thread's per-operation event
+  is not `EV_PERSIST`, so libevent has already deactivated it by the time the
+  callback runs; where the callback retried and found nothing -- another waiter
+  having taken the bytes first -- it returned as though the event were still
+  armed, leaving the waiter on an event that could never fire and a deadline
+  that could never expire. It is now re-armed against its original absolute
+  deadline. It takes two waiters at once, so with N blocked on one descriptor,
+  N-2 hung. The path is used by all TLS io, `os.read`/`os.write` on non-regular
+  descriptors, `connect()`, and any second-and-later waiter on one descriptor.
+
+- A memory-safety audit of the whole C codebase -- every subsystem, stock and
+  free-threaded builds -- found and fixed eighteen bugs, and a follow-up pass
+  closed out everything it left open. The ones a user could plausibly meet:
+
+  - Passing an exception *instance* as `timeout_exc` walked its refcount down
+    by one on every timeout that was raised and caught -- a use-after-free once
+    it reached zero with live holders. Passing something that is neither an
+    exception nor a callable crashed the interpreter outright; it raises
+    `TypeError` now.
+  - On the cached io path, two greenthreads taking turns on one socket could
+    leave `close()` freeing the per-descriptor wait state under the one still
+    parked on it (use-after-free, then double free): the "busy" marker was a
+    flag where it had to be a count. No free-threading required.
+  - An eager transfer that completed just as the deadline expired was thrown
+    away: received bytes silently vanished from the stream, sent bytes were
+    invisibly on the wire and a retry duplicated them. A completed transfer
+    now wins the race and hands its data back; only a kill still discards.
+  - `Queue` and `SimpleQueue` leaked every item still enqueued when the queue
+    was deallocated, and reference cycles through queued items (the ubiquitous
+    "task carries its reply queue") or through a `Condition`'s lock were
+    invisible to the garbage collector and therefore immortal. All three are
+    GC types now, the ring traversed in place.
+  - `accept()` and `dup()` leaked the wrapped `_socket.socket` -- and with it
+    the file descriptor, for the life of the process, if the application
+    relied on refcounting rather than an explicit `close()`. `socketpair()`
+    leaked both inner sockets the same way.
+  - `sendall()` of a buffer over 4 GiB sent the truncated remainder and
+    reported success; buffer lengths were `int` in several places and are
+    `Py_ssize_t` end to end now.
+  - `ThreadPool`: the background shutdown helper read pool state after the
+    pool was freed, on every shutdown; a worker-spawn failure during
+    construction deadlocked holding the GIL that the half-started workers
+    were blocked waiting for; and several error paths leaked or
+    over-released.
+  - Killing a greenthread blocked in `put()` on a full queue could leave
+    `join()` waiting forever on a count that had already reached zero; the
+    rollback now wakes the joiners it used to strand.
+  - `Condition.wait()` joins the waiter list *before* calling the lock's
+    `release()`, so a Python-level lock whose release can switch greenthreads
+    no longer opens a window where `notify()` finds an empty list and the
+    waiter sleeps through its own notification.
+  - A `Timer` callback that raises is reported through the unraisable hook,
+    as `threading.Timer` does, instead of leaving its exception pending for
+    whatever the scheduler happened to run next; and `Timeout` no longer
+    throws into a greenlet that has already finished, which only ever
+    bounced the exception straight back as noise.
+  - A cross-thread `abort()` waiter could consume the wakeup meant for a
+    sleeping scheduler, delaying a newly armed earliest deadline by up to the
+    scheduler's 250 ms nap -- the old FIXME about the shared condvar; it
+    broadcasts now, and everyone re-checks its own predicate.
+
+**Free-threading (PEP 703)**
+
+- filament builds and runs on free-threaded CPython with the GIL genuinely
+  disabled, out of the box: every extension module declares
+  `Py_mod_gil = Py_MOD_GIL_NOT_USED`, so importing filament no longer switches
+  the GIL back on for the whole process. On 3.14.6t the suite passes with no
+  environment variable set, and N greenthread schedulers on N OS threads execute
+  Python genuinely in parallel -- **5.93x on six cores** for CPU-bound work,
+  against 1.01x for the same binary with the GIL enabled.
+
+  That needed removing the places that had been using the GIL as a mutex. The
+  waiter freelist is per-thread rather than one unlocked process-wide list; the
+  fifo queue, `Message`, `Lock`/`RLock`, `Semaphore`, `Condition` and
+  `Queue.join()` each hold their own lock across the state test *and* the
+  decision to wait, dropping it only for the wait itself. Stock builds are
+  unaffected, and that is verified rather than assumed: with all of it reverted
+  a stock build is byte-identical, same `.text` size and instruction count in
+  every module, because each locked type keeps its original body under
+  `#ifndef Py_GIL_DISABLED`.
+
+  What it costs on one thread, measured on one host with the GIL on against off:
+  spawn and the semaphores land within a few percent, context switching runs at
+  0.67x, echo about 3%. The one real drop is the mixed green+native queue at
+  **0.39x** -- native threads and greenthreads genuinely run at once there and
+  contend for the queue's own mutex where the GIL used to serialise them for
+  free. One thing improves sharply, and only on macOS: `#137` goes from 1.4-1.8k
+  to 142-153k msgs/s (**~90x**), because what it was measuring on that host was
+  GIL handoff between real OS threads. Linux is 1.05x; it never had the problem.
+
+- `ThreadPool` and `Timer` joined the locked set. Both are inherently
+  cross-thread objects and both had still been using the GIL as their mutex:
+  the pool registry, the shutdown state and the worker-to-waiter result
+  handshake each get their own lock -- two concurrent `shutdown()` calls now
+  produce one winner and one `RuntimeError` instead of two helper threads
+  freeing the pool twice -- and the atexit sweep takes its reference with
+  `TryIncRef` on 3.14+, so it cannot revive a pool that is mid-deallocation
+  on another thread. A `Timer` can be cancelled from two threads at once; the
+  loser no longer dereferences a scheduler the winner already released.
+
+- A timed wait that raced its own wakeup could swallow it. A waiter giving up
+  on a timeout (or unwinding from a kill) can be popped and signaled by a
+  concurrent notifier before it retakes the owner's lock; the signal died with
+  it -- a queue item nobody was woken for, a `Lock` left locked forever with
+  its waiter gone, a lost `Semaphore` permit. The race is now settled the way
+  the wait itself settles it: a timeout concedes to a signal that already
+  picked the waiter (the wait simply succeeds), and a kill passes the signal
+  on to the next waiter. Under the GIL the window does not exist; nothing
+  changes on a stock build.
+
+- The queue ring's chunk freelists -- shared *between* queues, per
+  translation unit -- sit behind their own mutex rather than racing (a chunk
+  changes hands once per 8192 queue operations, far too cold for the lock to
+  matter), and the io thread singleton and the per-socket cached-wait slot
+  can no longer be doubly created by two threads' first blocking io.
+
+  Caveat, revised from the first alpha: the audited set is now every filament
+  primitive -- the locking and queue types, `Message`, `ThreadPool`, `Timer`,
+  the io layer and the scheduler handoffs. The advisory accessors (`qsize()`,
+  `locked()` and friends) remain deliberately unlocked snapshot reads.
+
+- Removed the socket attribute `fil_first_misses`. It was reporting-only, and a
+  plain `int` on the io hot path can lose increments once two threads share a
+  socket with no GIL. `iobench/apply_counters.py` measures the same thing, and
+  more, when it is actually wanted.
+
+**Testing & benchmarks**
+
+- The suite grew adversarial coverage for the audit work: concurrency stress
+  tests that hammer `ThreadPool` run-vs-shutdown, double shutdown, registry
+  churn, the timeout/cancel handshake, concurrent `Timer.cancel()` and
+  multi-thread queue chunk churn (racy only on free-threaded builds, but run
+  everywhere), and cycle-collection regression tests that pin each
+  queue/condition cycle shape with a weakref and demand the collector
+  actually reclaims it.
+- `benchmarks/RESULTS.md` was re-measured end to end on both architectures, and
+  both now run the same interpreter set (amd64 3.14.4 -> 3.14.6, aarch64 3.9.6 ->
+  3.9.25). Every row carries the commit it was measured at. It is tables only
+  now; the methodology, the caveats about which numbers may be compared with
+  which, and the recipe for re-running it live in `benchmarks/METHODOLOGY.md`.
+- **Free-threaded tables on both architectures**, the same suite on 3.14.6t with
+  the GIL genuinely off, plus a filament GIL-on against GIL-off comparison per
+  host. filament completes every benchmark on both. gevent 26.7.0 publishes no
+  free-threaded wheel at all, and eventlet **segfaults** -- SIGSEGV, reproduced
+  outside the harness.
+- **The echo row is now a server measurement.** `benchmarks/netecho` drives the
+  server from a second machine with one fixed Go generator, three repeats per
+  cell with the arms alternated, so it can no longer conflate a fast server with
+  a fast client the way the in-process form did. filament leads gevent by
+  **1.51-2.01x** and eventlet by **1.93-3.56x** across the matrix, p50 and p99
+  ordered the same way in every cell. The in-process form still runs and remains
+  the source for the one row that has no second host (aarch64 2.7).
+- Harness fixes: a worker killed by a signal is reported as such rather than as
+  a generic crash (this is how eventlet's SIGSEGV was found); the GIL on/off
+  comparison refuses to divide runs from different hosts or sizes; and the
+  in-process echo staggers its client starts, without which that benchmark
+  measured the platform's connection setup rather than the echo server.
+- Built and tested on CPython 3.9 through 3.15 plus 3.14t on **three**
+  platforms: x86_64 Linux, aarch64 Linux and aarch64 macOS (2.7 on aarch64 Linux
+  as well) -- 25 combinations, all green, warning-free on Linux. CI covers
+  3.9-3.15 and 3.14t on amd64 and arm64, and the published wheels now include
+  cp314t. Two groups of tests skip by design: the six lazy
+  frame-materialisation cases in `test_debug_mode.py`, which need the vendored
+  greenlet on a 3.12/3.13 GIL build, and the two in `test_free_threading.py`,
+  which assert the GIL stays off after every extension is imported and so have
+  nothing to check on an ordinary build.
+
 ## 0.9.4 (2026-07-30)
 
 **Packaging**
