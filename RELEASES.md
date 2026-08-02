@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.9.5a1 (2026-08-02)
 
 **Performance**
 

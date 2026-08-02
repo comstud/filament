@@ -1,3 +1,19 @@
+filament (0.9.5~a1) unstable; urgency=medium
+
+  * The io thread performs a blocked socket recv()/send() itself, into the
+    caller's own buffer, so the wakeup hands back data rather than readiness.
+    Echo +9.7% to +88%; locust FastPingUser @1000 +11.6%.
+  * Free-threaded (PEP 703) support: builds and runs with the GIL genuinely
+    disabled, out of the box. 5.93x on six cores for CPU-bound work.
+  * Fix Queue.task_done() raising for a task that really was queued, and
+    Queue.join() then waiting forever.
+  * Fix a blocked read/write with more than one waiter hanging forever,
+    ignoring settimeout().
+  * Remove the socket attribute fil_first_misses (reporting-only, and unsafe
+    to increment without a GIL).
+
+ -- Chris Behrens <cbehrens@codestud.com>  Sun, 02 Aug 2026 12:00:00 +0000
+
 filament (0.9.4) unstable; urgency=medium
 
   * A socket with settimeout() set now uses the same cheap cached
