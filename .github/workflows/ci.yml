@@ -20,10 +20,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Full cartesian product: 7 Pythons x 2 arches = 14 jobs. The `include`
+        # Full cartesian product: 8 Pythons x 2 arches = 16 jobs. The `include`
         # rows only attach the human-readable `arch` label to each `os` (they
         # match existing combinations rather than adding new ones).
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        #
+        # 3.14t is the free-threaded (PEP 703) build. Only 3.14t is here:
+        # filament's free-threading work was developed and validated against
+        # 3.14, and 3.13t is a different enough runtime that listing it would
+        # be claiming coverage nobody has checked.
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15"]
         os: ["ubuntu-24.04", "ubuntu-24.04-arm"]
         include:
           - os: ubuntu-24.04
@@ -61,6 +66,17 @@ jobs:
       - name: Build extensions in place
         run: |
           .venv/bin/python setup.py build_ext --inplace
+
+      # A free-threaded interpreter silently switches the GIL back ON if any
+      # imported extension has not declared Py_mod_gil = Py_MOD_GIL_NOT_USED,
+      # and the suite would still pass -- against the stock runtime. Assert the
+      # property the build actually claims, before running anything.
+      - name: Assert the GIL is really disabled
+        if: endsWith(matrix.python, 't')
+        run: >
+          .venv/bin/python -c "import sys, filament;
+          assert not sys._is_gil_enabled(), 'importing filament re-enabled the GIL';
+          print('gil disabled: ok')"
 
       - name: Run test suite
         run: |
