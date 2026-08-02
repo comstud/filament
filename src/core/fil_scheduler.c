@@ -268,9 +268,25 @@ static inline FilSchedEvent *_get_ready_events(PyFilScheduler *sched, struct tim
 
 static void _scheduler_key_delete(void *sched)
 {
+    /* pthread TSD destructor: runs at thread exit, on a thread whose Python
+     * thread state is already gone -- a bare Py_DECREF here runs with no GIL
+     * (racing every GIL-held refcount op on a normal build, and invalid
+     * outright on a free-threading one), and if it is the LAST reference it
+     * runs the scheduler's dealloc with no thread state at all.  Attach one
+     * for the duration; if the interpreter is finalizing, attaching would
+     * abort (the gilstate TSS key is gone on 3.14+), so leak the reference
+     * -- the process is exiting anyway. */
     if (sched != NULL)
     {
+        PyGILState_STATE gstate;
+
+        if (fil_py_is_finalizing())
+        {
+            return;
+        }
+        gstate = PyGILState_Ensure();
         Py_DECREF((PyObject *)sched);
+        PyGILState_Release(gstate);
     }
 }
 

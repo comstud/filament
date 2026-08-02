@@ -788,7 +788,39 @@ static inline int _fil_waiterlist_wait_locked(FilWaiterList *waiter_list, struct
 
     if (err)
     {
-        _fil_waiterlist_del(&(waiter->waiter_list));
+        FilWaiterList *entry = &(waiter->waiter_list);
+
+        if (entry->next == entry)
+        {
+            /* We gave up (timeout or throw), but before we could retake
+             * 'lock' a signaler holding it popped us off the list and spent
+             * its signal on us -- __fil_waiterlist_signal_first self-points
+             * the detached entry, which is what we are seeing.  Under the
+             * GIL that window does not exist (the whole give-up runs in one
+             * GIL hold); here it does, and swallowing the signal strands the
+             * hand-over: a queue item nobody is woken for, a Lock left
+             * locked with its waiter gone, a Semaphore permit lost.
+             *
+             * The hand-over is OURS now, so resolve it the way
+             * fil_waiter_wait() resolves the same race when it sees it in
+             * time: a plain timeout loses to the signal -- drop the timeout
+             * exception and report success -- and a throw becomes
+             * SIGNALED_UNWIND so the caller passes the hand-over back
+             * through its usual unwind path. */
+            if (err == -ETIMEDOUT)
+            {
+                PyErr_Clear();
+                err = 0;
+            }
+            else if (err < 0)
+            {
+                err = FIL_WAITER_SIGNALED_UNWIND;
+            }
+        }
+        else
+        {
+            _fil_waiterlist_del(entry);
+        }
     }
 
     fil_waiter_decref(waiter);

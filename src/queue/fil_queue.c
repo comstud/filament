@@ -120,8 +120,16 @@ static PyObject *_queue_get_common(PyFilQueue *self, PyObject *block, PyObject *
 {
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    /* IsTrue can raise (a __bool__ that throws); carrying on with the
+     * exception set ends in "returned a result with an exception set". */
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -194,6 +202,36 @@ static PyObject *_queue_get(PyFilQueue *self, PyObject *args, PyObject *kwargs)
  * "nowait" flag cost 2.7% of queue throughput and 4KB of text, because the
  * branch keeps both put variants live in every caller.
  */
+
+/*
+ * Roll back the pre-counted task for a put that never enqueued.
+ *
+ * If the rollback is what brings the count to zero, task_done_waiters must be
+ * woken here: no task_done() is coming for a count that is already zero, so a
+ * join()er that parked while this doomed put held the count up would sleep
+ * forever.  Concretely: queue full, join() parked, a second putter parks; a
+ * consumer drains the queue and task_done()s everything (join re-checks, sees
+ * the doomed put's count, re-parks); the parked putter is then killed and its
+ * rollback is the transition to zero.  The put is failing with an exception
+ * pending and signaling can raise (fil_scheduler_add_event_ref allocates), so
+ * hold the caller's exception out of the way.  Cold path -- only runs when a
+ * put fails -- so sharing it costs nothing.
+ */
+static void _queue_uncount_task(PyFilQueue *self)
+{
+    FIL_WFIFOQ_LOCK(&(self->queue));
+    if (--self->unfinished_tasks == 0 &&
+        !fil_waiterlist_empty(self->task_done_waiters))
+    {
+        PyObject *exc_type, *exc_value, *exc_tb;
+
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+        fil_waiterlist_signal_all(self->task_done_waiters);
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+    }
+    FIL_WFIFOQ_UNLOCK(&(self->queue));
+}
+
 PyDoc_STRVAR(_queue_put_nowait_doc, "Put into queue.");
 static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
 {
@@ -206,9 +244,7 @@ static PyObject *_queue_put_nowait(PyFilQueue *self, PyObject *item)
     res = fil_wfifoq_put_nowait(&(self->queue), item);
     if (res == NULL)
     {
-        FIL_WFIFOQ_LOCK(&(self->queue));
-        self->unfinished_tasks--;
-        FIL_WFIFOQ_UNLOCK(&(self->queue));
+        _queue_uncount_task(self);
     }
     return res;
 }
@@ -219,8 +255,14 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
     PyObject *res;
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -241,9 +283,7 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
         res = fil_wfifoq_put_nowait(&(self->queue), item);
         if (res == NULL)
         {
-            FIL_WFIFOQ_LOCK(&(self->queue));
-            self->unfinished_tasks--;
-            FIL_WFIFOQ_UNLOCK(&(self->queue));
+            _queue_uncount_task(self);
         }
         return res;
     }
@@ -260,9 +300,7 @@ static PyObject *_queue_put_common(PyFilQueue *self, PyObject *item, PyObject *b
     res = fil_wfifoq_put(&(self->queue), item, ts);
     if (res == NULL)
     {
-        FIL_WFIFOQ_LOCK(&(self->queue));
-        self->unfinished_tasks--;
-        FIL_WFIFOQ_UNLOCK(&(self->queue));
+        _queue_uncount_task(self);
     }
     return res;
 }

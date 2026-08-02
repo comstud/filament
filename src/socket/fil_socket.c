@@ -650,6 +650,7 @@ static inline int _sock_init_from_sock_and_fileno(PyFilSocket *self, PyObject *_
 static inline int _sock_init_from_fileno(PyFilSocket *self, SOCKET_T fileno)
 {
     PyObject *_sock;
+    int err;
 
     _sock = _new_internal_socket(self->family, self->type, self->proto, fileno);
     if (_sock == NULL)
@@ -657,7 +658,11 @@ static inline int _sock_init_from_fileno(PyFilSocket *self, SOCKET_T fileno)
         return -1;
     }
 
-    return _sock_init_from_sock_and_fileno(self, _sock, fileno);
+    /* _sock_init_from_sock_and_fileno takes its own reference; ours would
+     * otherwise pin the internal socket (and its fd) forever. */
+    err = _sock_init_from_sock_and_fileno(self, _sock, fileno);
+    Py_DECREF(_sock);
+    return err;
 }
 
 static inline PyObject *_create_new_socket_from_fileno(int family, int type, int proto, SOCKET_T fileno)
@@ -1227,7 +1232,7 @@ FIL_CPROXY_VARG(ioctl)
 
 #endif
 
-static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, int len, int flags)
+static inline ssize_t _sock_recv_common(PyFilSocket *self, char *buf, Py_ssize_t len, int flags)
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
@@ -1421,11 +1426,12 @@ the remote end is closed and all data is read, return the empty string.");
 /* s.recv(nbytes [,flags]) method */
 static PyObject *_sock_recv(PyFilSocket *self, PyObject *args)
 {
-    int recvlen, flags = 0;
+    Py_ssize_t recvlen;
+    int flags = 0;
     ssize_t outlen;
     PyObject *buf;
 
-    if (!PyArg_ParseTuple(args, "i|i:recv", &recvlen, &flags))
+    if (!PyArg_ParseTuple(args, "n|i:recv", &recvlen, &flags))
     {
         return NULL;
     }
@@ -1477,13 +1483,17 @@ static PyObject *_sock_recv_into(PyFilSocket *self, PyObject *args, PyObject *kw
 {
     static char *kwlist[] = {"buffer", "nbytes", "flags", 0};
 
-    int recvlen = 0, flags = 0;
+    Py_ssize_t recvlen = 0;
+    int flags = 0;
     ssize_t readlen;
     Py_buffer buf;
     Py_ssize_t buflen;
 
-    /* Get the buffer's memory */
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "w*|ii:recv_into", kwlist,
+    /* Get the buffer's memory.  'recvlen' stays Py_ssize_t all the way into
+     * _sock_recv_common: an 'int' here silently truncated a >=2GB buffer's
+     * length, turning the negative-size check into a no-op and handing the
+     * kernel (and the io thread's eager recv) a garbage size. */
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "w*|ni:recv_into", kwlist,
                                      &buf, &recvlen, &flags))
     {
         return NULL;
@@ -1566,7 +1576,7 @@ FIL_CPROXY_POLL(
  * socket with settimeout() set could block forever.  Keeping the flag explicit
  * closes that and lets every segment use the fast path, not just the first.
  */
-static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, int len, int flags, struct timespec *ts_buf, struct timespec **tsptr, int *ts_valid)
+static inline ssize_t _sock_send_common(PyFilSocket *self, char *buf, Py_ssize_t len, int flags, struct timespec *ts_buf, struct timespec **tsptr, int *ts_valid)
 {
     ssize_t outlen;
     PyFilIOThread *iothr;
@@ -1792,7 +1802,7 @@ static PyObject *_sock_sendall(PyFilSocket *self, PyObject *args)
 {
     Py_buffer pbuf;
     int flags = 0;
-    int len;
+    Py_ssize_t len;
     char *buf;
     struct timespec ts_buf, *ts = NULL;
     int ts_valid = 0;
@@ -2105,9 +2115,12 @@ static PyObject *_socket_socketpair(PyObject *self, PyObject *args)
         return NULL;
     }
 
-    /* steals the references; cannot fail */
-    PyTuple_SET_ITEM(res, 0, sock1);
-    PyTuple_SET_ITEM(res, 1, sock2);
+    /* PyTuple_SetItem, not SET_ITEM: the slots still hold the underlying
+     * _socket.socket objects, and the raw macro would overwrite those
+     * references without releasing them -- pinning both internal sockets
+     * (and their fds) forever. */
+    PyTuple_SetItem(res, 0, sock1);
+    PyTuple_SetItem(res, 1, sock2);
 
     return res;
 }

@@ -89,8 +89,16 @@ static PyObject *_queue_get_common(PyFilSimpleQueue *self, PyObject *block, PyOb
 {
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    /* IsTrue can raise (a __bool__ that throws); carrying on with the
+     * exception set ends in "returned a result with an exception set". */
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {
@@ -154,8 +162,14 @@ static PyObject *_queue_put_common(PyFilSimpleQueue *self, PyObject *item, PyObj
 {
     double timeout_dbl = 0;
     struct timespec tsbuf, *ts = NULL;
+    int blocking = (block == NULL) ? 1 : PyObject_IsTrue(block);
 
-    if (block == NULL || PyObject_IsTrue(block))
+    if (blocking < 0)
+    {
+        return NULL;
+    }
+
+    if (blocking)
     {
         if (fil_double_from_timeout_obj(timeout, &timeout_dbl))
         {

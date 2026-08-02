@@ -565,7 +565,8 @@ static int _iothread_init(PyFilIOThread *self, PyObject *args, PyObject *kargs)
 
     err = pthread_create(&(self->thr_id), NULL,
                          (void *(*)(void *))_iothread_loop, self);
-    if (err < 0)
+    /* pthread_create returns a positive errno on failure, not -1. */
+    if (err != 0)
     {
         PyErr_SetString(PyExc_RuntimeError,
                         "Couldn't create new event thread");
@@ -854,9 +855,16 @@ struct _fil_io_fdwait
      * including the multi-reader one where the edge was consumed by ANOTHER
      * waiter's wakeup and thus latched nothing. */
     unsigned int edge_seq;
-    int busy;              /* a wait_cached caller is between park and its
-                              post-wake bookkeeping; defers a concurrent
-                              destroy's free to that caller */
+    int busy;              /* COUNT of wait_cached callers between park and
+                              their post-wake bookkeeping; defers a concurrent
+                              destroy's free to the last of them.  A count and
+                              not a flag: the io callback clears 'waiter' when
+                              it signals, so a second caller can park (and be
+                              busy) while the first's wakeup is still queued
+                              behind it -- a flag let the first caller's exit
+                              zero it with the second still parked, and a
+                              destroy then freed the struct under that parked
+                              waiter. */
     int orphaned;          /* owner destroyed us while busy/parked */
 
     /* Eager io (see FilIOEagerIO in fil_iothread.h).  'er_armed' is set by
@@ -1034,7 +1042,27 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
             return -1;
         }
         pthread_mutex_init(&(fdw->lock), NULL);
+#ifdef Py_GIL_DISABLED
+        {
+            /* Two OS threads' first waits on this (fd, direction) can both
+             * see the slot NULL; without the CAS both install, one fdwait is
+             * orphaned with a live persistent event (leak), and a waiter
+             * parked on it is unreachable by destroy() -- it hangs forever
+             * once the fd closes.  Loser adopts the winner's. */
+            FilIOFDWait *expected = NULL;
+
+            if (!__atomic_compare_exchange_n(cachep, &expected, fdw, 0,
+                                             __ATOMIC_ACQ_REL,
+                                             __ATOMIC_ACQUIRE))
+            {
+                pthread_mutex_destroy(&(fdw->lock));
+                free(fdw);
+                fdw = expected;
+            }
+        }
+#else
         *cachep = fdw;
+#endif
     }
 
     pthread_mutex_lock(&(fdw->lock));
@@ -1101,7 +1129,7 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
     }
 
     fdw->waiter = waiter;
-    fdw->busy = 1;
+    fdw->busy++;
     pthread_mutex_unlock(&(fdw->lock));
 
     err = fil_waiter_wait(waiter, timeout, timeout_exc);
@@ -1124,11 +1152,22 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
         if (fdw->er_done)
         {
             fdw->er_done = 0;
-            /* Hand the result back only on the success path.  If the wait ended
-             * by timeout or throw, the exception wins and these bytes are
-             * dropped -- the same trade the post-wake recv already makes. */
-            if (!err && eager != NULL)
+            /* The io thread COMPLETED the transfer: recv'd bytes have left
+             * the kernel queue and sent bytes are already on the wire.  If
+             * our deadline fired in the same wakeup race, reporting "timed
+             * out" would silently destroy them -- a recv'd chunk vanishes
+             * from the stream, a sent one is invisibly on the wire and a
+             * retry duplicates it.  The completed transfer wins the race:
+             * drop the timeout and hand the result back.  A THROW (kill, an
+             * expiring Timeout) still wins over the bytes, exactly as it
+             * does on the classic path's processor race. */
+            if (eager != NULL && (!err || err == -ETIMEDOUT))
             {
+                if (err)
+                {
+                    PyErr_Clear();
+                    err = 0;
+                }
                 eager->result = fdw->er_result;
                 eager->errn = fdw->er_errn;
                 eager->done = 1;
@@ -1136,8 +1175,8 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
         }
         fdw->er_pending = 0;
     }
-    fdw->busy = 0;
-    orphaned = fdw->orphaned;
+    fdw->busy--;
+    orphaned = (fdw->orphaned && fdw->busy == 0);
     pthread_mutex_unlock(&(fdw->lock));
 
     fil_waiter_decref(waiter);
@@ -1145,9 +1184,9 @@ int fil_iothread_wait_cached(PyFilIOThread *iothr, FilIOFDWait **cachep, int fd,
     if (orphaned)
     {
         /* The owner destroyed the cache while we were parked (fd closed
-         * under us); we inherit the free.  The owner already deleted the
-         * libevent event (so no callback can be in flight) and already
-         * cleared/replaced *cachep -- do not touch it. */
+         * under us); the LAST busy caller out inherits the free.  The owner
+         * already deleted the libevent event (so no callback can be in
+         * flight) and already cleared/replaced *cachep -- do not touch it. */
         _iothread_fdwait_free(fdw);
     }
 
@@ -1228,25 +1267,51 @@ static void _event_log_cb(int severity, const char *msg)
     (void)0;
 }
 
+#ifdef Py_GIL_DISABLED
+/* Creation of the singleton below is not GIL-serialized on a free-threading
+ * build: two threads' first blocking ops can both see NULL and each spin up a
+ * whole io thread + event base, one of which then runs, unjoined, straight
+ * through interpreter finalization.  The mutex guards only the one-time slow
+ * path. */
+static pthread_mutex_t _iothread_singleton_lock = PTHREAD_MUTEX_INITIALIZER;
+#  define _FIL_IOTHR_SINGLETON_LOCK()   pthread_mutex_lock(&_iothread_singleton_lock)
+#  define _FIL_IOTHR_SINGLETON_UNLOCK() pthread_mutex_unlock(&_iothread_singleton_lock)
+#else
+#  define _FIL_IOTHR_SINGLETON_LOCK()   ((void)0)
+#  define _FIL_IOTHR_SINGLETON_UNLOCK() ((void)0)
+#endif
+
 PyFilIOThread *fil_iothread_get(void)
 {
     if (_IOThreadObj == NULL)
     {
         PyFilIOThread *self;
 
+        _FIL_IOTHR_SINGLETON_LOCK();
+        if (_IOThreadObj != NULL)
+        {
+            /* Somebody else created it while we took the lock. */
+            _FIL_IOTHR_SINGLETON_UNLOCK();
+            Py_INCREF(_IOThreadObj);
+            return _IOThreadObj;
+        }
+
         self = (PyFilIOThread *)_iothread_new(&_iothread_type, NULL, NULL);
         if (self == NULL)
         {
+            _FIL_IOTHR_SINGLETON_UNLOCK();
             return NULL;
         }
 
         if (_iothread_init(self, NULL, NULL) < 0)
         {
+            _FIL_IOTHR_SINGLETON_UNLOCK();
             Py_DECREF(self);
             return NULL;
         }
 
         _IOThreadObj = self;
+        _FIL_IOTHR_SINGLETON_UNLOCK();
 
         /* Register the Python-level atexit shutdown now that the thread is
          * running.  See _iothread_atexit_py() for why this (rather than only

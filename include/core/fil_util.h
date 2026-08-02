@@ -76,6 +76,8 @@ static inline int fil_double_from_timeout_obj(PyObject *timeoutobj, double *dbl)
 
     if (!PyNumber_Check(timeoutobj))
     {
+        PyErr_SetString(PyExc_TypeError,
+                        "timeout must be None or a non-negative number");
         return -1;
     }
 
@@ -437,9 +439,24 @@ static inline void fil_set_timeout_exc(PyObject *timeout_exc)
             return;
         }
         PyErr_SetString(PyExc_TypeError, "timeout_exc callback should always raise");
+        Py_DECREF(exc_value);
         return;
     }
+    else
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "timeout_exc must be an exception class, an exception "
+                        "instance, or a callable that raises");
+        return;
+    }
+    /* PyErr_Restore steals a reference to each argument; 'exc_value' is the
+     * caller's borrowed timeout_exc and 'exc_type' is a borrowed Py_TYPE, so
+     * both must be incref'd here or every timeout that gets raised and
+     * cleared walks the instance's (and its class's) refcount down by one --
+     * a use-after-free once it hits zero with live holders. */
     exc_type = PyExceptionInstance_Class(exc_value);
+    Py_INCREF(exc_type);
+    Py_INCREF(exc_value);
     PyErr_Restore(exc_type, exc_value, exc_tb);
 }
 

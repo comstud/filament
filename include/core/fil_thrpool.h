@@ -287,6 +287,9 @@ static void _fil_thrpool_shutdown_async_thr(struct _ftp_shutdown_async_info *inf
 {
     FilThrPool *tpool = info->tpool;
     void *thread_state = NULL;
+    /* _fil_thrpool_shutdown() frees 'tpool' before it returns; anything of
+     * its still needed afterwards must be copied out first. */
+    FilThrPoolDeinitThrCallback thr_deinit_cb = tpool->opt.thr_deinit_cb;
 
     if (tpool->opt.thr_init_cb != NULL)
     {
@@ -302,9 +305,9 @@ static void _fil_thrpool_shutdown_async_thr(struct _ftp_shutdown_async_info *inf
         info->cb(thread_state, info->cb_arg);
     }
 
-    if (tpool->opt.thr_deinit_cb != NULL)
+    if (thr_deinit_cb != NULL)
     {
-        tpool->opt.thr_deinit_cb(thread_state);
+        thr_deinit_cb(thread_state);
     }
 
     free(info);
@@ -415,6 +418,7 @@ static inline int fil_thrpool_run(FilThrPool *tpool, FilThrPoolCallback cb, void
     if (tpool->flags & FIL_THRPOOL_FLAGS_SHUTDOWN)
     {
         pthread_mutex_unlock(&(tpool->lock));
+        free(cbinfo);
         return -2;
     }
 

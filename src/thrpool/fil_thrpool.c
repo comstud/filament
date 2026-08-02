@@ -198,16 +198,27 @@ static PyFilThrPool *_thrpool_new(PyTypeObject *type, PyObject *args, PyObject *
         tpool_opt.thr_init_cb_arg = self;
         tpool_opt.thr_deinit_cb = (FilThrPoolDeinitThrCallback)_thrpool_deinitthr_cb;
 
+        /* Drop the GIL for the create: if spawning the Nth worker fails,
+         * fil_thrpool_create() shuts the pool back down and waits for the
+         * workers it did start -- and each of those is sitting in its
+         * PyGILState_Ensure() init callback waiting for the GIL we hold.
+         * Holding it across the wait deadlocks the failure path. */
+        int create_errno;
+
+        Py_BEGIN_ALLOW_THREADS
         tpool = fil_thrpool_create(&tpool_opt);
+        create_errno = errno;
+        Py_END_ALLOW_THREADS
+
         if (tpool == NULL)
         {
-            if (errno == ENOMEM)
+            if (create_errno == ENOMEM)
             {
                 PyErr_SetString(PyExc_MemoryError, "out of memory");
             }
             else
             {
-                PyErr_Format(PyExc_RuntimeError, "Error creating thread pool: %d", errno);
+                PyErr_Format(PyExc_RuntimeError, "Error creating thread pool: %d", create_errno);
             }
             Py_DECREF(self);
             return NULL;
@@ -235,7 +246,21 @@ typedef struct _thrpool_shutdown_info
 
 static void _thrpool_shutdown_finish(PyFilThrState *thr_state, PyFilThrPoolShutdownInfo *info)
 {
-    PyEval_RestoreThread(thr_state->thr_state);
+    /* thr_state is the shutdown helper thread's init result: the failure
+     * sentinel if its malloc failed.  Everything below needs the GIL, so
+     * attach the slow way in that case rather than dereferencing -1. */
+    int have_thr_state = (thr_state != NULL &&
+                          thr_state != FIL_THRPOOL_THR_INIT_FAILURE_RESULT);
+    PyGILState_STATE gstate = PyGILState_UNLOCKED;
+
+    if (have_thr_state)
+    {
+        PyEval_RestoreThread(thr_state->thr_state);
+    }
+    else
+    {
+        gstate = PyGILState_Ensure();
+    }
 
     if (info->waiter)
     {
@@ -252,7 +277,14 @@ static void _thrpool_shutdown_finish(PyFilThrState *thr_state, PyFilThrPoolShutd
         Py_DECREF(info->self);
     }
 
-    thr_state->thr_state = PyEval_SaveThread();
+    if (have_thr_state)
+    {
+        thr_state->thr_state = PyEval_SaveThread();
+    }
+    else
+    {
+        PyGILState_Release(gstate);
+    }
     free(info);
 
     return;
@@ -275,6 +307,10 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
     info = malloc(sizeof(*info));
     if (info == NULL)
     {
+        if (waiter != NULL)
+        {
+            fil_waiter_decref(waiter);
+        }
         PyErr_SetString(PyExc_MemoryError, "out of memory");
         return -1;
     }
@@ -305,7 +341,13 @@ static int _thrpool_shutdown_async(PyFilThrPool *self, int now, int wait, int do
             fil_waiter_decref(waiter);
         }
         free(info);
-        Py_DECREF(self);
+        /* Only undo the reference this function took: with do_free set we are
+         * running inside tp_dealloc and self's refcount is already zero --
+         * a decref here re-enters dealloc on a dead object. */
+        if (!do_free)
+        {
+            Py_DECREF(self);
+        }
         return err;
     }
 

@@ -119,6 +119,16 @@ static inline void fil_wfifoq_deinit(FilWFifoQ *q)
     assert(fil_waiterlist_empty(q->putters));
     if (q->_queue_inited)
     {
+        void *item;
+
+        /* Every item in the ring holds the reference _fil_wfifoq_put took
+         * for the getter that never came; dropping the chunks without
+         * dropping those references leaks every item still queued at
+         * dealloc. */
+        while (fil_fifoq_get(&(q->queue), &item) == 0)
+        {
+            Py_DECREF((PyObject *)item);
+        }
         fil_fifoq_deinit(&(q->queue));
     }
     Py_CLEAR(q->empty_error);
