@@ -13,9 +13,9 @@ jobs:
   # Build manylinux wheels for cp39-cp314, plus the free-threaded cp314t, on
   # amd64 and native arm64 runners.
   # 3.15 is intentionally excluded from published wheels while it is a beta; the
-  # CI workflow still tests it. To add it once it ships, append
-  # cpython-prerelease to CIBW_ENABLE (it takes a space-separated list) and
-  # extend CIBW_BUILD.
+  # CI workflow still tests it. To add it once it ships, extend CIBW_BUILD
+  # (and bump EXPECTED_WHEELS below). While it is still a beta it would also
+  # need CIBW_ENABLE: "cpython-prerelease".
   wheels:
     name: wheels (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
@@ -31,15 +31,18 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.22
+        # v2.22 had no cp314/cp314t identifiers at all, and cibuildwheel
+        # silently ignores CIBW_BUILD selectors that match nothing -- that is
+        # how the 3.14 wheels went missing from v0.9.4/v0.9.5a1. The count
+        # check below turns any future silent drop into a hard failure.
+        uses: pypa/cibuildwheel@v4.1
         env:
           # cp314t is the free-threaded build. "cp314-*" does NOT match it --
-          # the free-threaded interpreters are separate identifiers and are off
-          # unless CIBW_ENABLE turns them on. Only 3.14t is published: that is
-          # the free-threaded runtime filament has been validated against.
-          # (CIBW_ENABLE replaced CIBW_FREE_THREADED_SUPPORT in cibuildwheel
-          # 2.22, hence the pin.)
-          CIBW_ENABLE: "cpython-freethreading"
+          # the free-threaded interpreters are separate identifiers. Since
+          # cibuildwheel 3.2 they build by default (the old
+          # CIBW_ENABLE: cpython-freethreading opt-in was removed in 4.0).
+          # Only 3.14t is published: that is the free-threaded runtime
+          # filament has been validated against.
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-*"
           CIBW_SKIP: "*-musllinux_*"
           # Native 64-bit only. Without this an x86_64 runner also builds
@@ -60,6 +63,20 @@ jobs:
           # directly would prepend {project} to sys.path and the source tree
           # (no built extensions) would shadow the installed wheel.
           CIBW_TEST_COMMAND: "cp -r {project}/tests . && python -m pytest tests -q --ignore=tests/test_wsgi.py"
+
+      - name: Verify wheel count
+        # One wheel per CIBW_BUILD selector. cibuildwheel ignores selectors
+        # that match no known interpreter, so a stale pin shows up here
+        # instead of as a quietly incomplete release.
+        env:
+          EXPECTED_WHEELS: "7"
+        run: |
+          count=$(ls wheelhouse/*.whl | wc -l)
+          ls -l wheelhouse/
+          if [ "$count" -ne "$EXPECTED_WHEELS" ]; then
+            echo "::error::expected $EXPECTED_WHEELS wheels, built $count"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
