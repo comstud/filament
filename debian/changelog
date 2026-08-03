@@ -1,4 +1,4 @@
-filament (0.9.5~a1) unstable; urgency=medium
+filament (0.9.5) unstable; urgency=medium
 
   * The io thread performs a blocked socket recv()/send() itself, into the
     caller's own buffer, so the wakeup hands back data rather than readiness.

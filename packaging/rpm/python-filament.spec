@@ -23,16 +23,17 @@
 # ValueError rather than anything that names setuptools.
 
 %global srcname filament
-# Prerelease: rpm would sort a Version of 0.9.5a1 as NEWER than 0.9.5, so the
-# alpha keeps the release version and carries the marker in Release (0.x.<pre>
-# sorts before the eventual 1%%{?dist}).  upstream_version is what pyproject
-# says and what make-tarball.sh names the archive, which is not the same
-# string -- Source0 and %%autosetup follow it, not %%{version}.
-%global upstream_version 0.9.5a1
+# upstream_version is what pyproject says and what make-tarball.sh names the
+# archive -- Source0 and %%autosetup follow it, not %%{version}. For a final
+# release the two match; for a prerelease they diverge: rpm would sort a
+# Version of 0.9.5a1 as NEWER than 0.9.5, so an alpha keeps the release
+# version and carries the marker in Release (0.x.<pre> sorts before the
+# eventual 1%%{?dist}).
+%global upstream_version 0.9.5
 
 Name:           python-%{srcname}
 Version:        0.9.5
-Release:        0.1.a1%{?dist}
+Release:        1%{?dist}
 Summary:        Microthreads for Python
 
 # MIT overall; PSF-2.0 for the Stackless-derived files in the vendored
@@ -89,7 +90,7 @@ Summary:        %{summary}
 %doc README.md RELEASES.md THIRD_PARTY_NOTICES.md AUTHORS
 
 %changelog
-* Sun Aug 02 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.5-0.1.a1
+* Sun Aug 02 2026 Chris Behrens <cbehrens@codestud.com> - 0.9.5-1
 - The io thread performs a blocked socket recv()/send() itself, into the
   caller's own buffer, so the wakeup hands back data rather than readiness.
   Echo +9.7%% to +88%%; locust FastPingUser @1000 +11.6%%.
